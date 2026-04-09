@@ -1,0 +1,92 @@
+# Qodo Merge / PR-Agent — revisión de PRs (seguridad, rendimiento, arquitectura)
+# Docs: https://docs.qodo.ai/code-review/get-started/configuration-overview/configuration-file
+
+[config]
+git_provider = "github"
+publish_output = true
+publish_output_progress = true
+disable_auto_feedback = false
+response_language = "es-ES"
+ai_timeout = 180
+verbosity_level = 1
+
+# Solo una sección de proveedor. Si no usas GitHub App, sustituye por [gitlab], [bitbucket_app], etc.
+[github_app]
+pr_commands = [
+  "/agentic_describe",
+  "/agentic_review"
+]
+handle_push_trigger = true
+push_trigger_ignore_bot_commits = true
+push_trigger_ignore_merge_commits = true
+push_commands = [
+  "/agentic_review"
+]
+
+[review_agent]
+comments_location_policy = "both"
+# 3 = action_required, 2 = remediation_recommended, 1 = informational
+inline_comments_severity_threshold = 2
+
+issues_user_guidelines = """
+Prioriza findings accionables en este orden:
+1) Seguridad
+2) Rendimiento
+3) Riesgo de romper arquitectura existente
+
+No reportes estilo si no impacta seguridad/rendimiento/mantenibilidad.
+Cada hallazgo debe incluir escenario concreto de fallo.
+"""
+
+compliance_user_guidelines = """
+Verifica compatibilidad con la arquitectura existente:
+- Controladores delgados, lógica de negocio en services.
+- Respeto de límites por módulo/dominio.
+- Uso de PrismaService (evitar SQL crudo sin justificación).
+- Contratos API/DTO consistentes (class-validator/class-transformer).
+"""
+
+[pr_reviewer]
+require_security_review = true
+require_tests_review = true
+require_estimate_effort_to_review = true
+require_ticket_analysis_review = true
+require_can_be_split_review = false
+require_todo_scan = false
+
+persistent_comment = true
+num_max_findings = 8
+final_update_message = true
+enable_review_labels_security = true
+enable_review_labels_effort = true
+
+extra_instructions = """
+Stack objetivo: NestJS + Prisma + PostgreSQL + Redis.
+
+SEGURIDAD (bloqueante):
+- Riesgos de auth/authz (guards, permisos, fuga de datos entre tenants).
+- Entradas sin validación/sanitización (DTOs, ValidationPipe).
+- Uso inseguro de secretos/tokens en código o logs.
+- Uso de consultas crudas sin parametrización.
+- Exposición de datos sensibles en respuestas/errores.
+
+RENDIMIENTO:
+- Consultas N+1 en Prisma, includes excesivos, falta de paginación/limits.
+- Operaciones de escritura múltiples sin transacción cuando corresponde.
+- Cargas innecesarias en hot paths.
+- Falta de caching razonable o invalidación peligrosa.
+- Riesgo de scans costosos por filtros/ordenaciones sin soporte de índices.
+
+ARQUITECTURA (compatibilidad):
+- Cambios que rompan contratos públicos (DTOs, rutas, payloads, códigos HTTP).
+- Lógica de negocio metida en controller en vez de service.
+- Acoplamiento entre módulos o violación de boundaries de dominio.
+- Introducción de patrones/librerías fuera del stack sin justificación.
+- Señala explícitamente "breaking change" cuando aplique.
+"""
+
+[pr_description]
+use_bullet_points = true
+enable_pr_type = true
+enable_pr_diagram = false
+final_update_message = true

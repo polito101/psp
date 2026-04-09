@@ -1,67 +1,8 @@
-## Contexto estándar del proyecto
+# Reglas de Cursor
 
-### Stack tecnológico (fuente de verdad)
-- Runtime: Node.js LTS
-- Lenguaje: TypeScript estricto (`noImplicitAny`, `strictNullChecks`)
-- Framework backend: NestJS (API REST versionada por URI)
-- ORM: Prisma
-- Base de datos principal: PostgreSQL
-- Caché e idempotencia: Redis (ioredis)
-- Documentación API: Swagger (`@nestjs/swagger`)
-- Testing: Jest
+La fuente de verdad para el agente está en **`.cursor/rules/`** (archivos `.mdc` con frontmatter):
 
-### Alcance actual del repositorio
-- Este repositorio es backend-first.
-- La app principal vive en `apps/psp-api`.
-- Si una sugerencia aplica a frontend (React, hooks, TanStack Query), no proponerla salvo que exista explícitamente un módulo frontend.
+- **`project-context.mdc`** — stack, convenciones NestJS/Prisma y reglas para la IA (`alwaysApply: true`).
+- **`daily-async-log-journal.mdc`** — Daily Async Log en `JOURNAL.md` (`alwaysApply: true`).
 
-### Convenciones de arquitectura
-- Organizar por dominio/módulo de NestJS: `src/<dominio>/`.
-- Cada dominio debe exponer, cuando aplique:
-  - `<dominio>.module.ts`
-  - `<dominio>.controller.ts`
-  - `<dominio>.service.ts`
-  - `dto/*.dto.ts`
-- Mantener controladores delgados y mover lógica de negocio a services.
-- Reutilizar `PrismaService` para acceso a datos; evitar SQL crudo salvo necesidad justificada.
-- Para operaciones de múltiples escrituras relacionadas, usar transacciones de Prisma.
-
-### Convenciones de nombrado
-- Clases, servicios, controladores, módulos y DTOs: PascalCase (`PaymentsService`, `CreatePaymentDto`).
-- Variables y funciones: camelCase.
-- Constantes globales: UPPER_SNAKE_CASE.
-- Archivos TypeScript de NestJS: kebab-case con sufijo de rol:
-  - `*.module.ts`, `*.controller.ts`, `*.service.ts`, `*.dto.ts`, `*.guard.ts`, `*.decorator.ts`.
-- En Prisma:
-  - Modelos en PascalCase.
-  - Campos de aplicación en camelCase.
-  - Usar `@map`/`@@map` para mapear a snake_case en DB cuando corresponda.
-
-### API, validación y seguridad
-- Definir DTOs con `class-validator`/`class-transformer` para entradas externas.
-- Mantener `ValidationPipe` global con `whitelist` y `forbidNonWhitelisted`.
-- En endpoints protegidos, aplicar guards y decorators existentes (`ApiKeyGuard`, `CurrentMerchant`).
-- Mantener contratos y ejemplos en Swagger para endpoints públicos.
-
-### Reglas de estilo y calidad
-- Preferir tipado explícito en límites de módulo (DTOs, respuestas públicas, helpers críticos).
-- Evitar `any`; si es inevitable, documentar por qué.
-- Manejar errores con excepciones de NestJS (`BadRequestException`, `NotFoundException`, etc.).
-- No introducir dependencias nuevas si ya existe una solución en el stack actual.
-- Mantener cambios pequeños, enfocados y coherentes con scripts existentes (`lint`, `test`).
-
-### Documentación "viva"
-- El código debe ser **autodocumentado**: nombres claros, funciones cortas y tipos explícitos. La IA (y los humanos) leen el código como fuente principal de verdad.
-- **TypeScript estricto** es parte del estándar de documentación: los tipos comunican contratos; no sustituir tipos fuertes con comentarios genéricos del estilo "usar TS estricto".
-- **JSDoc** en funciones y métodos que no sean triviales (API pública de un módulo, helpers compartidos, lógica de negocio densa): resumen breve, `@param` / `@returns` cuando aporten claridad, y notas sobre efectos secundarios o precondiciones si aplican.
-- Al trabajar en Cursor, se puede pedir explícitamente: *"Genera documentación JSDoc para esta función"* — no es solo para humanos; ayuda a que otra sesión de IA entienda la **intención** al instante.
-- Evitar comentarios que dupliquen el código; priorizar JSDoc y comentarios solo donde expliquen el **porqué**, invariantes o decisiones de diseño no obvias.
-
-### Decisiones para IA (consistencia de equipo)
-- Priorizar patrones ya usados en el código antes de proponer alternativas.
-- Al editar o crear funciones o métodos **públicos** o con lógica **no trivial**, proponer o actualizar **JSDoc** acorde a la sección "Documentación viva".
-- Si hay varias opciones válidas, elegir la más alineada con:
-  1) NestJS idiomático
-  2) Prisma + PostgreSQL
-  3) Redis para cache/idempotencia
-- No mezclar paradigmas o librerías de otros stacks sin requerimiento explícito.
+No dupliques aquí reglas largas; edita los `.mdc` correspondientes.
