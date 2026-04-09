@@ -1,0 +1,92 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Merchant {
+  id                String   @id @default(cuid())
+  name              String
+  apiKeyHash        String   @map("api_key_hash")
+  webhookUrl               String? @map("webhook_url")
+  webhookSecretCiphertext String  @map("webhook_secret_ciphertext")
+  feeBps            Int      @default(290) @map("fee_bps")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  paymentLinks PaymentLink[]
+  payments     Payment[]
+  ledgerLines  LedgerLine[]
+  webhooks     WebhookDelivery[]
+}
+
+model PaymentLink {
+  id          String    @id @default(cuid())
+  merchantId  String    @map("merchant_id")
+  slug        String    @unique
+  amountMinor Int       @map("amount_minor")
+  currency    String    @default("EUR")
+  expiresAt   DateTime? @map("expires_at")
+  metadata    Json?
+  status      String    @default("active")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  merchant Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  payments Payment[]
+
+  @@index([merchantId])
+}
+
+model Payment {
+  id             String   @id @default(cuid())
+  merchantId     String   @map("merchant_id")
+  paymentLinkId  String?  @map("payment_link_id")
+  idempotencyKey String?  @map("idempotency_key")
+  amountMinor    Int      @map("amount_minor")
+  currency       String
+  status         String
+  providerRef    String?  @map("provider_ref")
+  rail           String   @default("fiat")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  merchant     Merchant      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  paymentLink  PaymentLink?  @relation(fields: [paymentLinkId], references: [id], onDelete: SetNull)
+  ledgerLines  LedgerLine[]
+
+  @@unique([merchantId, idempotencyKey])
+  @@index([merchantId, status])
+}
+
+model LedgerLine {
+  id          String   @id @default(cuid())
+  merchantId  String   @map("merchant_id")
+  paymentId   String?  @map("payment_id")
+  entryType   String   @map("entry_type")
+  amountMinor Int      @map("amount_minor")
+  currency    String
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  payment  Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  @@index([merchantId, createdAt])
+}
+
+model WebhookDelivery {
+  id          String   @id @default(cuid())
+  merchantId  String   @map("merchant_id")
+  eventType   String   @map("event_type")
+  payload     Json
+  status      String   @default("pending")
+  attempts    Int      @default(0)
+  lastError   String?  @map("last_error")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId, status])
+}

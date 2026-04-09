@@ -1,0 +1,32 @@
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { PrismaModule } from './prisma/prisma.module';
+import { MerchantsModule } from './merchants/merchants.module';
+import { PaymentLinksModule } from './payment-links/payment-links.module';
+import { PaymentsModule } from './payments/payments.module';
+import { LedgerModule } from './ledger/ledger.module';
+import { WebhooksModule } from './webhooks/webhooks.module';
+import { CheckoutModule } from './checkout/checkout.module';
+import { RedisModule } from './redis/redis.module';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
+    ThrottlerModule.forRoot([
+      {
+        ttl: 60_000,
+        limit: 120,
+      },
+    ]),
+    PrismaModule,
+    RedisModule,
+    MerchantsModule,
+    PaymentLinksModule,
+    PaymentsModule,
+    LedgerModule,
+    WebhooksModule,
+    CheckoutModule,
+  ],
+})
+export class AppModule {}
