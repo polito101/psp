@@ -57,9 +57,35 @@ describe('ApiKeyGuard', () => {
     prisma.merchant.findUnique.mockResolvedValue({
       id: 'm_1',
       apiKeyHash: 'hash',
+      apiKeyRevokedAt: null,
+      apiKeyExpiresAt: null,
     });
     (compare as jest.Mock).mockResolvedValue(false);
 
+    await expect(
+      guard.canActivate(makeContext({ 'x-api-key': 'psp.m_1.secret' })),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('returns Unauthorized when api key is revoked', async () => {
+    prisma.merchant.findUnique.mockResolvedValue({
+      id: 'm_1',
+      apiKeyHash: 'hash',
+      apiKeyRevokedAt: new Date('2026-01-01'),
+      apiKeyExpiresAt: null,
+    });
+    await expect(
+      guard.canActivate(makeContext({ 'x-api-key': 'psp.m_1.secret' })),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('returns Unauthorized when api key is expired', async () => {
+    prisma.merchant.findUnique.mockResolvedValue({
+      id: 'm_1',
+      apiKeyHash: 'hash',
+      apiKeyRevokedAt: null,
+      apiKeyExpiresAt: new Date(Date.now() - 1000),
+    });
     await expect(
       guard.canActivate(makeContext({ 'x-api-key': 'psp.m_1.secret' })),
     ).rejects.toBeInstanceOf(UnauthorizedException);
@@ -69,6 +95,8 @@ describe('ApiKeyGuard', () => {
     prisma.merchant.findUnique.mockResolvedValue({
       id: 'm_1',
       apiKeyHash: 'hash',
+      apiKeyRevokedAt: null,
+      apiKeyExpiresAt: null,
     });
     (compare as jest.Mock).mockResolvedValue(true);
 

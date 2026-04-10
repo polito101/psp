@@ -31,11 +31,24 @@ export class ApiKeyGuard implements CanActivate {
     const merchantId = parts[1];
     const merchant = await this.prisma.merchant.findUnique({
       where: { id: merchantId },
-      select: { id: true, apiKeyHash: true },
+      select: {
+        id: true,
+        apiKeyHash: true,
+        apiKeyRevokedAt: true,
+        apiKeyExpiresAt: true,
+      },
     });
     if (!merchant) {
       throw new UnauthorizedException(UNAUTHORIZED_MESSAGE);
     }
+
+    if (merchant.apiKeyRevokedAt !== null) {
+      throw new UnauthorizedException(UNAUTHORIZED_MESSAGE);
+    }
+    if (merchant.apiKeyExpiresAt !== null && merchant.apiKeyExpiresAt < new Date()) {
+      throw new UnauthorizedException(UNAUTHORIZED_MESSAGE);
+    }
+
     const ok = await bcrypt.compare(apiKey, merchant.apiKeyHash);
     if (!ok) {
       throw new UnauthorizedException(UNAUTHORIZED_MESSAGE);

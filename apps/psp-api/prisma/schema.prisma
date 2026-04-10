@@ -8,13 +8,15 @@ datasource db {
 }
 
 model Merchant {
-  id                String   @id @default(cuid())
-  name              String
-  apiKeyHash        String   @map("api_key_hash")
-  webhookUrl               String? @map("webhook_url")
-  webhookSecretCiphertext String  @map("webhook_secret_ciphertext")
-  feeBps            Int      @default(290) @map("fee_bps")
-  createdAt         DateTime @default(now()) @map("created_at")
+  id                      String    @id @default(cuid())
+  name                    String
+  apiKeyHash              String    @map("api_key_hash")
+  apiKeyExpiresAt         DateTime? @map("api_key_expires_at")
+  apiKeyRevokedAt         DateTime? @map("api_key_revoked_at")
+  webhookUrl              String?   @map("webhook_url")
+  webhookSecretCiphertext String    @map("webhook_secret_ciphertext")
+  feeBps                  Int       @default(290) @map("fee_bps")
+  createdAt               DateTime  @default(now()) @map("created_at")
 
   paymentLinks PaymentLink[]
   payments     Payment[]
@@ -84,9 +86,11 @@ model WebhookDelivery {
   status      String   @default("pending")
   attempts    Int      @default(0)
   lastError   String?  @map("last_error")
+  scheduledAt DateTime @default(now()) @map("scheduled_at")
   createdAt   DateTime @default(now()) @map("created_at")
 
   merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
 
   @@index([merchantId, status])
+  @@index([status, scheduledAt])
 }
