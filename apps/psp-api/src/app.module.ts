@@ -10,6 +10,7 @@ import { LedgerModule } from './ledger/ledger.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { CheckoutModule } from './checkout/checkout.module';
 import { RedisModule } from './redis/redis.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { RedisModule } from './redis/redis.module';
     LedgerModule,
     WebhooksModule,
     CheckoutModule,
+    HealthModule,
   ],
   providers: [
     {

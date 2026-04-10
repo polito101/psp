@@ -1,7 +1,14 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { createHmac, randomUUID } from 'crypto';
 import { decryptUtf8 } from '../crypto/secret-box';
 import { PrismaService } from '../prisma/prisma.service';
+
+type DeliveryResult = {
+  status: 'delivered' | 'failed' | 'skipped';
+  attempts: number;
+  lastError: string | null;
+  deliveryId?: string;
+};
 
 @Injectable()
 export class WebhooksService {
@@ -22,18 +29,38 @@ export class WebhooksService {
     });
   }
 
+  private buildBody(eventType: string, payload: Record<string, unknown>): string {
+    return JSON.stringify({
+      id: randomUUID(),
+      type: eventType,
+      created_at: new Date().toISOString(),
+      data: payload,
+    });
+  }
+
   async deliver(
     merchantId: string,
     eventType: string,
     payload: Record<string, unknown>,
-  ): Promise<void> {
+  ): Promise<DeliveryResult> {
     const merchant = await this.prisma.merchant.findUnique({
       where: { id: merchantId },
       select: { webhookUrl: true, webhookSecretCiphertext: true },
     });
     if (!merchant?.webhookUrl) {
-      this.log.debug(`No webhook URL for merchant ${merchantId}`);
-      return;
+      this.log.debug(
+        JSON.stringify({
+          event: 'webhook.delivery.skipped',
+          merchantId,
+          eventType,
+          reason: 'missing_webhook_url',
+        }),
+      );
+      return {
+        status: 'skipped',
+        attempts: 0,
+        lastError: 'Missing webhook URL',
+      };
     }
 
     let webhookSecretPlain: string;
@@ -41,7 +68,7 @@ export class WebhooksService {
       webhookSecretPlain = decryptUtf8(merchant.webhookSecretCiphertext);
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
-      await this.prisma.webhookDelivery.create({
+      const delivery = await this.prisma.webhookDelivery.create({
         data: {
           merchantId,
           eventType,
@@ -51,15 +78,23 @@ export class WebhooksService {
           lastError: `Decrypt webhook secret: ${err}`,
         },
       });
-      return;
+      this.log.warn(
+        JSON.stringify({
+          event: 'webhook.delivery.decrypt_failed',
+          merchantId,
+          eventType,
+          error: err,
+        }),
+      );
+      return {
+        status: 'failed',
+        attempts: 1,
+        lastError: `Decrypt webhook secret: ${err}`,
+        deliveryId: delivery.id,
+      };
     }
 
-    const body = JSON.stringify({
-      id: randomUUID(),
-      type: eventType,
-      created_at: new Date().toISOString(),
-      data: payload,
-    });
+    const body = this.buildBody(eventType, payload);
     const timestamp = Math.floor(Date.now() / 1000).toString();
     const signature = this.signPayload(webhookSecretPlain, body, timestamp);
 
@@ -81,7 +116,7 @@ export class WebhooksService {
         });
 
         if (res.ok) {
-          await this.prisma.webhookDelivery.create({
+          const delivery = await this.prisma.webhookDelivery.create({
             data: {
               merchantId,
               eventType,
@@ -91,7 +126,21 @@ export class WebhooksService {
               lastError: null,
             },
           });
-          return;
+          this.log.log(
+            JSON.stringify({
+              event: 'webhook.delivery.delivered',
+              merchantId,
+              eventType,
+              deliveryId: delivery.id,
+              attempts,
+            }),
+          );
+          return {
+            status: 'delivered',
+            attempts,
+            lastError: null,
+            deliveryId: delivery.id,
+          };
         }
 
         lastError = `HTTP ${res.status}`;
@@ -104,7 +153,7 @@ export class WebhooksService {
       }
     }
 
-    await this.prisma.webhookDelivery.create({
+    const delivery = await this.prisma.webhookDelivery.create({
       data: {
         merchantId,
         eventType,
@@ -114,6 +163,70 @@ export class WebhooksService {
         lastError,
       },
     });
-    this.log.warn(`Webhook delivery failed after ${attempts} attempts: ${lastError ?? 'unknown'}`);
+    this.log.warn(
+      JSON.stringify({
+        event: 'webhook.delivery.failed',
+        merchantId,
+        eventType,
+        attempts,
+        lastError: lastError ?? 'unknown',
+      }),
+    );
+    return {
+      status: 'failed',
+      attempts,
+      lastError: lastError ?? 'unknown',
+      deliveryId: delivery.id,
+    };
+  }
+
+  async retryFailedDelivery(deliveryId: string): Promise<{
+    sourceDeliveryId: string;
+    retried: boolean;
+    status: 'delivered' | 'failed' | 'skipped';
+    attempts: number;
+    lastError: string | null;
+    retryDeliveryId?: string;
+  }> {
+    const source = await this.prisma.webhookDelivery.findUnique({
+      where: { id: deliveryId },
+      select: {
+        id: true,
+        merchantId: true,
+        eventType: true,
+        payload: true,
+        status: true,
+      },
+    });
+    if (!source) {
+      throw new NotFoundException('Webhook delivery not found');
+    }
+    if (source.status !== 'failed') {
+      throw new ConflictException('Only failed deliveries can be retried');
+    }
+
+    this.log.log(
+      JSON.stringify({
+        event: 'webhook.delivery.retry_requested',
+        sourceDeliveryId: source.id,
+        merchantId: source.merchantId,
+        eventType: source.eventType,
+      }),
+    );
+
+    const result = await this.deliver(
+      source.merchantId,
+      source.eventType,
+      source.payload as Record<string, unknown>,
+    );
+
+    return {
+      sourceDeliveryId: source.id,
+      retried: result.status !== 'skipped',
+      status: result.status,
+      attempts: result.attempts,
+      lastError: result.lastError,
+      retryDeliveryId: result.deliveryId,
+    };
   }
 }

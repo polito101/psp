@@ -21,6 +21,7 @@ npm run start:dev
 ```
 
 - Documentación OpenAPI: http://localhost:3000/api/docs
+- Health check: http://localhost:3000/health
 
 ### Crear comercio (bootstrap)
 
@@ -128,6 +129,7 @@ Invoke-RestMethod -Method Post "http://localhost:3000/api/v1/payments" `
 - En `capture`, el evento `payment.succeeded` se envía al `webhookUrl` del merchant.
 - La firma se envía en `X-PSP-Signature` con formato `t=<unix>,v1=<hmac_sha256>`.
 - Si falla la entrega, se reintenta hasta 3 veces antes de marcar `failed` en `webhook_deliveries`.
+- Operación interna: `POST /api/v1/webhooks/deliveries/{id}/retry` con `X-Internal-Secret` para reintentar entregas fallidas.
 
 ### Verificación de firma + anti-replay (receptor)
 
@@ -189,6 +191,31 @@ function verifyWebhook({
 | Amount/currency inconsistente | `POST /api/v1/payments` con importe distinto al link | `400 Amount/currency must match payment link` |
 | Reuso idempotencia con otro body | `POST /api/v1/payments` misma key y distinto payload | `409 Idempotency-Key already used with different payload` |
 | Exceso de ráfaga | muchas requests a `/payments` o `/payment-links` | `429 Too Many Requests` |
+
+## Smoke test (PowerShell)
+
+Script reproducible del flujo completo:
+
+- merchant -> payment-link -> payment -> capture -> balance
+- valida estado final y salud de la API
+
+```powershell
+cd apps/psp-api
+.\scripts\smoke-flow.ps1
+```
+
+Opcional con base URL distinta:
+
+```powershell
+.\scripts\smoke-flow.ps1 -BaseUrl "http://localhost:3000"
+```
+
+## CI
+
+Workflow dedicado para este servicio:
+
+- `.github/workflows/psp-api-ci.yml`
+- ejecuta `npm run -s lint` y `npm test --silent` cuando cambian archivos de `apps/psp-api`
 
 ## Variables
 
