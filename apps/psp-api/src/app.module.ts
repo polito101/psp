@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { PrismaModule } from './prisma/prisma.module';
 import { MerchantsModule } from './merchants/merchants.module';
 import { PaymentLinksModule } from './payment-links/payment-links.module';
@@ -27,6 +28,12 @@ import { RedisModule } from './redis/redis.module';
     LedgerModule,
     WebhooksModule,
     CheckoutModule,
+  ],
+  providers: [
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
   ],
 })
 export class AppModule {}

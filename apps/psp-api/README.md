@@ -99,20 +99,96 @@ Invoke-RestMethod -Method Post "http://localhost:3000/api/v1/payments" `
 - Si reutilizas la misma key con payload distinto, la API devuelve `409 Conflict`.
 - No uses el campo placeholder `"string"` en Swagger: usa IDs reales del sistema.
 
+## API keys (seguridad MVP)
+
+- Formato esperado: `psp.<merchantId>.<secret>`.
+- Para un merchant comprometido, revoca/rota creando nueva credencial y dejando de usar la anterior.
+- Nunca compartas `X-API-Key` por chat, capturas ni logs.
+- El backend responde `401 Unauthorized` de forma uniforme para evitar filtrado de pistas.
+
+### Rotación manual (demo)
+
+1. Crea un merchant nuevo con `POST /api/v1/merchants` y guarda su nueva `apiKey`.
+2. Actualiza consumidores para usar la nueva key.
+3. Deja de usar la key previa en scripts y Swagger.
+4. Si compartiste una key por error, rota inmediatamente.
+
 ## Troubleshooting rápido (PowerShell + Swagger)
 
-- `401 Invalid internal secret`: reinicia la API tras cambiar `.env` y revisa `INTERNAL_API_SECRET`.
-- `401 Invalid API key`: usa el `apiKey` real devuelto al crear merchant.
+- `401 Unauthorized` en `/merchants`: reinicia la API tras cambiar `.env` y revisa `INTERNAL_API_SECRET`.
+- `401 Unauthorized` en endpoints protegidos: usa el `apiKey` real devuelto al crear merchant.
 - `404 Payment link not found`: `paymentLinkId` debe ser el `id` real del link, no el `slug` ni `"string"`.
 - `400 Amount/currency must match payment link`: usa el mismo `amountMinor` y `currency` del link.
 - `400 Expected property name...`: JSON mal formado en body (evita escapados manuales complejos y usa `ConvertTo-Json`).
 - `409 Idempotency-Key already used with different payload`: genera una nueva key para una nueva intención de cobro.
+- `429 Too Many Requests`: espera a la ventana de rate limit o reduce ráfagas de requests.
 
 ## Webhooks
 
 - En `capture`, el evento `payment.succeeded` se envía al `webhookUrl` del merchant.
 - La firma se envía en `X-PSP-Signature` con formato `t=<unix>,v1=<hmac_sha256>`.
 - Si falla la entrega, se reintenta hasta 3 veces antes de marcar `failed` en `webhook_deliveries`.
+
+### Verificación de firma + anti-replay (receptor)
+
+```ts
+import { createHmac, timingSafeEqual } from 'crypto';
+
+function verifyWebhook({
+  rawBody,
+  signatureHeader,
+  secret,
+  maxSkewSeconds = 300, // +/- 5 min
+}: {
+  rawBody: string;
+  signatureHeader: string;
+  secret: string;
+  maxSkewSeconds?: number;
+}): boolean {
+  const parts = Object.fromEntries(
+    signatureHeader.split(',').map((s) => {
+      const [k, v] = s.split('=');
+      return [k, v];
+    }),
+  );
+  const ts = Number(parts.t);
+  const v1 = parts.v1;
+  if (!ts || !v1) return false;
+
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - ts) > maxSkewSeconds) return false;
+
+  const payload = `${ts}.${rawBody}`;
+  const expected = createHmac('sha256', secret).update(payload).digest('hex');
+  return timingSafeEqual(Buffer.from(expected), Buffer.from(v1));
+}
+```
+
+## Rate limiting
+
+- Se aplica throttling global y límites más estrictos en endpoints sensibles:
+  - `POST /api/v1/payments`: 30 requests / 60s
+  - `POST /api/v1/payment-links`: 20 requests / 60s
+- Si excedes el límite, la API responde `429 Too Many Requests`.
+
+## Checklist de arranque seguro (local/demo)
+
+- Cambia `INTERNAL_API_SECRET` y `APP_ENCRYPTION_KEY` antes de compartir entorno.
+- Reinicia la API cada vez que cambies variables en `.env`.
+- No guardes secretos reales en capturas, tickets o commits.
+- Usa `Idempotency-Key` en `POST /payments` para evitar dobles cobros por reintentos.
+- Verifica que `webhookUrl` apunte a HTTPS cuando salgas de entorno local.
+
+## Regresión de seguridad (esperado vs observado)
+
+| Caso | Request | Esperado |
+|---|---|---|
+| API key inválida | `POST /api/v1/payment-links` con `X-API-Key` falsa | `401 Unauthorized` |
+| Internal secret inválido | `POST /api/v1/merchants` con `X-Internal-Secret` incorrecta | `401 Unauthorized` |
+| Payment link inexistente | `POST /api/v1/payments` con `paymentLinkId` no válido | `404 Payment link not found` |
+| Amount/currency inconsistente | `POST /api/v1/payments` con importe distinto al link | `400 Amount/currency must match payment link` |
+| Reuso idempotencia con otro body | `POST /api/v1/payments` misma key y distinto payload | `409 Idempotency-Key already used with different payload` |
+| Exceso de ráfaga | muchas requests a `/payments` o `/payment-links` | `429 Too Many Requests` |
 
 ## Variables
 

@@ -108,6 +108,32 @@ describe('PaymentsService', () => {
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
+  it('returns existing payment after P2002 race when payload matches', async () => {
+    redis.getIdempotency.mockResolvedValue(null);
+    prisma.payment.create.mockRejectedValue({ code: 'P2002' });
+    prisma.payment.findUnique.mockResolvedValue({
+      id: 'pay_1',
+      amountMinor: 1999,
+      currency: 'EUR',
+      paymentLinkId: null,
+      rail: 'fiat',
+    });
+
+    const result = await service.create('m_1', {
+      amountMinor: 1999,
+      currency: 'EUR',
+      rail: 'fiat',
+      idempotencyKey: 'idem-race',
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: 'pay_1',
+        amountMinor: 1999,
+      }),
+    );
+  });
+
   it('captures payment and writes ledger + webhook side effects', async () => {
     prisma.payment.findFirst.mockResolvedValue({
       id: 'pay_1',

@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { ApiKeyGuard } from '../common/guards/api-key.guard';
@@ -14,6 +15,7 @@ export class PaymentLinksController {
   constructor(private readonly links: PaymentLinksService) {}
 
   @Post()
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @ApiOperation({ summary: 'Crear enlace de pago (Pay-by-link)' })
   create(
     @CurrentMerchant() merchant: { id: string },

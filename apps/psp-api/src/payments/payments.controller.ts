@@ -7,6 +7,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiHeader, ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { ApiKeyGuard } from '../common/guards/api-key.guard';
 import { CurrentMerchant } from '../common/decorators/merchant.decorator';
@@ -21,6 +22,7 @@ export class PaymentsController {
   constructor(private readonly payments: PaymentsService) {}
 
   @Post()
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @ApiOperation({ summary: 'Crear pago (pendiente); usar capture para sandbox fiat' })
   @ApiHeader({
     name: 'Idempotency-Key',
