@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { randomBytes } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
@@ -145,7 +146,7 @@ export class PaymentsService {
       select: { feeBps: true },
     });
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const p = await tx.payment.update({
         where: { id: paymentId },
         data: {
