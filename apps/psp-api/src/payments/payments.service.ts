@@ -22,6 +22,37 @@ export class PaymentsService {
     private readonly links: PaymentLinksService,
   ) {}
 
+  /**
+   * En reintentos idempotentes, la misma key debe referenciar exactamente
+   * la misma intención de pago para evitar colisiones silenciosas.
+   */
+  private assertIdempotencyPayloadMatch(
+    existing: {
+      amountMinor: number;
+      currency: string;
+      paymentLinkId: string | null;
+      rail: string;
+    },
+    incoming: {
+      amountMinor: number;
+      currency: string;
+      paymentLinkId?: string;
+      rail?: string;
+    },
+  ): void {
+    const incomingPaymentLinkId = incoming.paymentLinkId ?? null;
+    const incomingRail = incoming.rail ?? 'fiat';
+    const isSameIntent =
+      existing.amountMinor === incoming.amountMinor &&
+      existing.currency === incoming.currency &&
+      existing.paymentLinkId === incomingPaymentLinkId &&
+      existing.rail === incomingRail;
+
+    if (!isSameIntent) {
+      throw new ConflictException('Idempotency-Key already used with different payload');
+    }
+  }
+
   async create(
     merchantId: string,
     dto: {
@@ -46,6 +77,7 @@ export class PaymentsService {
           },
         });
         if (existing) {
+          this.assertIdempotencyPayloadMatch(existing, dto);
           return existing;
         }
       }
@@ -93,6 +125,7 @@ export class PaymentsService {
           },
         });
         if (existing) {
+          this.assertIdempotencyPayloadMatch(existing, dto);
           return existing;
         }
       }

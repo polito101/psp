@@ -28,7 +28,6 @@ async function bootstrap() {
     .setVersion('1.0')
     .addApiKey({ type: 'apiKey', name: 'X-API-Key', in: 'header' }, 'ApiKey')
     .addApiKey({ type: 'apiKey', name: 'X-Internal-Secret', in: 'header' }, 'InternalSecret')
-    .addApiKey({ type: 'apiKey', name: 'Idempotency-Key', in: 'header' }, 'IdempotencyKey')
     .build();
 
   const document = SwaggerModule.createDocument(app, config);

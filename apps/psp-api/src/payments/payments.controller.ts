@@ -22,7 +22,11 @@ export class PaymentsController {
 
   @Post()
   @ApiOperation({ summary: 'Crear pago (pendiente); usar capture para sandbox fiat' })
-  @ApiHeader({ name: 'Idempotency-Key', required: false })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description: 'Opcional. Reutiliza la misma clave solo para reintentos del mismo pago.',
+  })
   create(
     @CurrentMerchant() merchant: { id: string },
     @Body() dto: CreatePaymentDto,
