@@ -1,17 +1,15 @@
 # Daily Async Log
 
-> Entrada de **prueba** (2026-04-09), basada en historial reciente del repo y contexto de la sesión.
-
-## 2026-04-09
+## 2026-04-10
 
 ### 3 puntos clave
 
-1. **Qodo (PR-Agent):** Se añadió `.pr_agent.toml` en la raíz con foco en revisiones de PR (seguridad, rendimiento, riesgo arquitectónico) y respuestas en `es-ES`, más automatización orientada a `/agentic_describe` y `/agentic_review` bajo `[github_app]`.
-2. **Cursor / convenciones del repo:** Se consolidó el enfoque de reglas en `.cursor/rules/` (`project-context.mdc`, `daily-async-log-journal.mdc`) y `.cursorrules` como puntero; queda definido el flujo del Daily Async Log en `JOURNAL.md`.
-3. **Mintlify / Linear:** En código, se documentó `getKey()` en `apps/psp-api/src/crypto/secret-box.ts` con **JSDoc** (`@returns`, `@throws`), alineado con el estilo que reconoce Mintlify Doc Writer. **Linear:** no hay cambios versionados en el repo; en la sesión se aclaró el login (integración en Cursor y/o `LINEAR_API_KEY` para CLI).
+1. **Ciclo de vida de API keys:** Migración Prisma con `apiKeyExpiresAt` y `apiKeyRevokedAt` en `Merchant`; `ApiKeyGuard` rechaza keys revocadas o expiradas; `POST /api/v1/merchants` acepta `keyTtlDays` opcional; endpoints internos `POST .../merchants/:id/rotate-key` y `POST .../merchants/:id/revoke-key` (ambos con `X-Internal-Secret`).
+2. **Webhooks asíncronos (cola en DB):** `WebhooksService.deliver()` solo encola filas `webhook_deliveries` en `pending` con `scheduledAt`; un worker por `setInterval` procesa, reintenta con backoff y marca `delivered`/`failed`; el retry operativo vuelve a poner el registro en `pending` para el worker.
+3. **Corrección de contrato de `deliver()`:** El retorno tras encolar pasa a `status: 'pending'` (alineado con lo persistido), no `delivered`, para no sugerir entrega HTTP síncrona; tests actualizados en `webhooks.service.spec.ts` y `api-key.guard.spec.ts`.
 
 ### Siguientes pasos (compañero)
 
-- Hacer **merge a la rama por defecto** si falta algo pendiente y comprobar que Qodo aplica la config en **PRs nuevos** tras el merge.
-- Revisar cambios locales sin commitear (`secret-box.ts`, `package-lock.json`): decidir si el JSDoc y el lock entran en un PR dedicado.
-- Completar **Linear** en el entorno que use el equipo (Cursor o variable `LINEAR_API_KEY`) y, si aplica, documentar en el wiki interno el flujo de issues ↔ ramas.
+- Aplicar migración en entornos compartidos: `npx prisma migrate deploy` en `apps/psp-api` y `npx prisma generate` si el cliente quedó desfasado (cerrar procesos Node que bloqueen el DLL en Windows).
+- Actualizar **README** de `apps/psp-api` con: TTL/`keyTtlDays`, rotate/revoke, y que los webhooks se entregan en background (intervalo ~5s, hasta 3 intentos, backoff; `deliver()` devuelve `pending` al encolar).
+- Tras merge: comprobar **CI** (`.github/workflows/psp-api-ci.yml`) y, si hace falta operación, recordar que `POST .../webhooks/deliveries/:id/retry` ya no ejecuta el HTTP al instante, solo reencola.
