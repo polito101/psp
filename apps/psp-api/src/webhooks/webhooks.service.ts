@@ -6,7 +6,7 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
-import { createHmac, randomUUID } from 'crypto';
+import { createHmac } from 'crypto';
 import { decryptUtf8 } from '../crypto/secret-box';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -139,6 +139,7 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
         payload: true,
         attempts: true,
         status: true,
+        createdAt: true,
       },
     });
 
@@ -172,7 +173,12 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const body = this.buildBody(delivery.eventType, delivery.payload as Record<string, unknown>);
+    const body = this.buildWebhookEnvelope(
+      delivery.id,
+      delivery.createdAt,
+      delivery.eventType,
+      delivery.payload as Record<string, unknown>,
+    );
     const timestamp = Math.floor(Date.now() / 1000).toString();
     const signature = this.signPayload(webhookSecret, body, timestamp);
     const newAttempts = delivery.attempts + 1;
@@ -184,6 +190,7 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
           'Content-Type': 'application/json',
           'X-PSP-Signature': `t=${timestamp},v1=${signature}`,
           'X-PSP-Event': delivery.eventType,
+          'X-PSP-Delivery-Id': delivery.id,
         },
         body,
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
@@ -292,12 +299,22 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
   // Helpers privados
   // ──────────────────────────────────────────────────────────────────────────
 
-  private buildBody(eventType: string, payload: Record<string, unknown>): string {
+  /**
+   * Construye el JSON del webhook. `id` y `created_at` son estables por fila de entrega
+   * (coinciden con `WebhookDelivery.id` y `createdAt`) para que el receptor pueda deduplicar
+   * entre reintentos. El `timestamp` de la firma sigue siendo nuevo en cada intento.
+   */
+  private buildWebhookEnvelope(
+    deliveryId: string,
+    createdAt: Date,
+    eventType: string,
+    data: Record<string, unknown>,
+  ): string {
     return JSON.stringify({
-      id: randomUUID(),
+      id: deliveryId,
       type: eventType,
-      created_at: new Date().toISOString(),
-      data: payload,
+      created_at: createdAt.toISOString(),
+      data,
     });
   }
 }

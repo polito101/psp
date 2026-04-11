@@ -126,10 +126,12 @@ Invoke-RestMethod -Method Post "http://localhost:3000/api/v1/payments" `
 
 ## Webhooks
 
-- En `capture`, el evento `payment.succeeded` se envía al `webhookUrl` del merchant.
-- La firma se envía en `X-PSP-Signature` con formato `t=<unix>,v1=<hmac_sha256>`.
-- Si falla la entrega, se reintenta hasta 3 veces antes de marcar `failed` en `webhook_deliveries`.
-- Operación interna: `POST /api/v1/webhooks/deliveries/{id}/retry` con `X-Internal-Secret` para reintentar entregas fallidas.
+- En `capture`, el evento `payment.succeeded` se encola y un worker en segundo plano hace el `POST` al `webhookUrl` del merchant (no bloquea la respuesta del API).
+- Cuerpo JSON: `id` es el **id estable** de la fila `webhook_deliveries` (mismo valor en todos los reintentos de esa entrega); `created_at` es la marca de creación de esa fila (también estable). `data` lleva el payload del evento (p. ej. datos del pago). `type` es el nombre del evento (p. ej. `payment.succeeded`).
+- Cabecera `X-PSP-Delivery-Id`: mismo id que `id` en el body, útil para deduplicar sin parsear JSON.
+- La firma va en `X-PSP-Signature` con formato `t=<unix>,v1=<hmac_sha256>`. El `t` es **nuevo en cada intento** (anti-replay); el body firmado es idéntico entre reintentos salvo que cambies datos en servidor.
+- Reintentos automáticos con backoff hasta 3 intentos antes de `failed` en `webhook_deliveries`.
+- Operación interna: `POST /api/v1/webhooks/deliveries/{id}/retry` con `X-Internal-Secret` reencola una entrega fallida (mismo `id`/`created_at` de evento que antes).
 
 ### Verificación de firma + anti-replay (receptor)
 

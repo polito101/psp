@@ -61,11 +61,14 @@ describe('WebhooksService', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  const createdAtFixture = new Date('2026-04-10T12:00:00.000Z');
+
   // ── worker: processOne ───────────────────────────────────────────────────
   it('worker delivers successfully on first attempt', async () => {
     prisma.webhookDelivery.findUnique.mockResolvedValue({
       id: 'wd_1', merchantId: 'm_1', eventType: 'payment.succeeded',
       payload: { payment_id: 'p_1' }, attempts: 0, status: 'pending',
+      createdAt: createdAtFixture,
     });
     prisma.merchant.findUnique.mockResolvedValue({
       webhookUrl: 'https://example.com/hook',
@@ -76,6 +79,14 @@ describe('WebhooksService', () => {
     await (service as unknown as { processOne: (id: string) => Promise<void> }).processOne('wd_1');
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    const fetchOpts = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(fetchOpts.headers).toMatchObject(
+      expect.objectContaining({ 'X-PSP-Delivery-Id': 'wd_1' }),
+    );
+    const parsed = JSON.parse(fetchOpts.body as string);
+    expect(parsed.id).toBe('wd_1');
+    expect(parsed.created_at).toBe(createdAtFixture.toISOString());
+    expect(parsed.data).toEqual({ payment_id: 'p_1' });
     expect(prisma.webhookDelivery.update).toHaveBeenCalledWith({
       where: { id: 'wd_1' },
       data: expect.objectContaining({ status: 'delivered', attempts: 1, lastError: null }),
@@ -86,6 +97,7 @@ describe('WebhooksService', () => {
     prisma.webhookDelivery.findUnique.mockResolvedValue({
       id: 'wd_1', merchantId: 'm_1', eventType: 'payment.succeeded',
       payload: {}, attempts: 0, status: 'pending',
+      createdAt: createdAtFixture,
     });
     prisma.merchant.findUnique.mockResolvedValue({
       webhookUrl: 'https://example.com/hook',
@@ -105,6 +117,7 @@ describe('WebhooksService', () => {
     prisma.webhookDelivery.findUnique.mockResolvedValue({
       id: 'wd_1', merchantId: 'm_1', eventType: 'payment.succeeded',
       payload: {}, attempts: 2, status: 'pending',
+      createdAt: createdAtFixture,
     });
     prisma.merchant.findUnique.mockResolvedValue({
       webhookUrl: 'https://example.com/hook',
@@ -124,6 +137,7 @@ describe('WebhooksService', () => {
     prisma.webhookDelivery.findUnique.mockResolvedValue({
       id: 'wd_1', merchantId: 'm_1', eventType: 'payment.succeeded',
       payload: {}, attempts: 0, status: 'pending',
+      createdAt: createdAtFixture,
     });
     prisma.merchant.findUnique.mockResolvedValue({ webhookUrl: null });
 
