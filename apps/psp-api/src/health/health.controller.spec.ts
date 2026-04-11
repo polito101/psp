@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { HealthController } from './health.controller';
 
 describe('HealthController', () => {
@@ -9,10 +10,16 @@ describe('HealthController', () => {
   };
 
   let controller: HealthController;
+  let logErrorSpy: jest.SpyInstance;
 
   beforeEach(() => {
     jest.clearAllMocks();
     controller = new HealthController(prisma as never, redis as never);
+    logErrorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    logErrorSpy.mockRestore();
   });
 
   it('returns ok when DB and Redis checks pass', async () => {
@@ -73,6 +80,63 @@ describe('HealthController', () => {
     expect(result.status).toBe('degraded');
     expect(result.checks.db.status).toBe('error');
     expect(result.checks.redis.status).toBe('error');
+  });
+
+  describe('log sanitization', () => {
+    it('redacts connection URLs with credentials from DB error log', async () => {
+      prisma.$queryRaw.mockRejectedValue(
+        new Error('connect ECONNREFUSED postgresql://admin:secret@db-host:5432/prod'),
+      );
+      redis.getClient.mockReturnValue({ ping: jest.fn().mockResolvedValue('PONG') });
+
+      await controller.getHealth();
+
+      expect(logErrorSpy).toHaveBeenCalledTimes(1);
+      const logged: string = logErrorSpy.mock.calls[0][0] as string;
+      expect(logged).not.toMatch(/admin:secret/);
+      expect(logged).not.toMatch(/db-host/);
+      expect(logged).toContain('[redacted-url]');
+    });
+
+    it('redacts connection URLs from Redis error log', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      redis.getClient.mockReturnValue({
+        ping: jest.fn().mockRejectedValue(
+          new Error('ECONNREFUSED redis://internal-redis:6379'),
+        ),
+      });
+
+      await controller.getHealth();
+
+      expect(logErrorSpy).toHaveBeenCalledTimes(1);
+      const logged: string = logErrorSpy.mock.calls[0][0] as string;
+      expect(logged).not.toMatch(/internal-redis/);
+      expect(logged).toContain('[redacted-url]');
+    });
+
+    it('logs error name and sanitized message without URLs', async () => {
+      const err = new Error('connect ECONNREFUSED postgresql://x:y@host/db');
+      err.name = 'PrismaClientInitializationError';
+      prisma.$queryRaw.mockRejectedValue(err);
+      redis.getClient.mockReturnValue({ ping: jest.fn().mockResolvedValue('PONG') });
+
+      await controller.getHealth();
+
+      const logged: string = logErrorSpy.mock.calls[0][0] as string;
+      expect(logged).toContain('PrismaClientInitializationError');
+      expect(logged).not.toMatch(/x:y@host/);
+    });
+
+    it('truncates excessively long error messages in the log', async () => {
+      prisma.$queryRaw.mockRejectedValue(new Error('x'.repeat(500)));
+      redis.getClient.mockReturnValue({ ping: jest.fn().mockResolvedValue('PONG') });
+
+      await controller.getHealth();
+
+      const logged: string = logErrorSpy.mock.calls[0][0] as string;
+      // prefix "Health db check failed: Error: " + max 200 chars sanitized message
+      expect(logged.length).toBeLessThanOrEqual('Health db check failed: Error: '.length + 200);
+    });
   });
 });
 

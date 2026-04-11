@@ -338,7 +338,7 @@ describe('WebhooksService', () => {
     expect(active).toBe(0);
   });
 
-  it('runWithConcurrency completes all tasks even when some reject', async () => {
+  it('runWithConcurrency does not throw when a task rejects (synchronous rejection)', async () => {
     let completed = 0;
     const tasks = [
       async () => { completed++; },
@@ -346,7 +346,28 @@ describe('WebhooksService', () => {
       async () => { completed++; },
     ];
 
-    // No debe lanzar; Promise.allSettled absorbe los rechazos
+    await expect(
+      (service as unknown as { runWithConcurrency: (t: typeof tasks, l: number) => Promise<void> })
+        .runWithConcurrency(tasks, 2),
+    ).resolves.toBeUndefined();
+
+    expect(completed).toBe(2);
+  });
+
+  it('runWithConcurrency does not throw and completes remaining tasks when a fast-failing task rejects before a slow task resolves', async () => {
+    // Este test reproduce el escenario adverso: la tarea que falla (rápida) se asienta
+    // en Promise.race antes que la tarea lenta, lo que en la implementación anterior
+    // hacía que Promise.race lanzara y abortara el loop sin ejecutar la tercera tarea.
+    let completed = 0;
+    const tasks = [
+      // tarea lenta (simula IO de red en curso)
+      () => new Promise<void>((resolve) => setImmediate(() => { completed++; resolve(); })),
+      // tarea que rechaza en el mismo tick que la anterior resolvería
+      () => Promise.reject(new Error('transient failure')),
+      // tercera tarea: debe ejecutarse igualmente
+      async () => { completed++; },
+    ];
+
     await expect(
       (service as unknown as { runWithConcurrency: (t: typeof tasks, l: number) => Promise<void> })
         .runWithConcurrency(tasks, 2),

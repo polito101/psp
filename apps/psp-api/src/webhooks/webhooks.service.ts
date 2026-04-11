@@ -153,6 +153,12 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
    * en cuanto termina una tarea se inicia la siguiente sin esperar al bloque completo.
    * Equivalente a `p-limit` sin dependencias externas.
    *
+   * Las tareas se envuelven en `.catch()` antes de entrar en `executing` para que
+   * `Promise.race` **nunca rechace**: un fallo puntual (p. ej. error de red transitorio
+   * en `tryClaimAndProcess`) no debe abortar el loop ni dejar el resto del batch sin procesar.
+   * El bloque `finally` garantiza que esperamos todas las tareas activas incluso si
+   * un error inesperado escapa del bucle.
+   *
    * @param tasks Array de funciones que devuelven Promise (thunks).
    * @param limit Número máximo de tareas simultáneas.
    */
@@ -161,14 +167,29 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
     limit: number,
   ): Promise<void> {
     const executing = new Set<Promise<void>>();
-    for (const task of tasks) {
-      const p: Promise<void> = task().finally(() => executing.delete(p));
-      executing.add(p);
-      if (executing.size >= limit) {
-        await Promise.race(executing);
+    try {
+      for (const task of tasks) {
+        // La tarea absorbe su propio rechazo: tryClaimAndProcess ya maneja todos los
+        // errores internamente, pero este .catch es la última red de seguridad por si
+        // algún error escapa (bug futuro, OOM, etc.) y evita que Promise.race lance.
+        const p: Promise<void> = task()
+          .catch((e) => {
+            this.log.error(
+              JSON.stringify({
+                event: 'webhook.worker.unhandled_task_error',
+                error: e instanceof Error ? e.message : String(e),
+              }),
+            );
+          })
+          .finally(() => executing.delete(p));
+        executing.add(p);
+        if (executing.size >= limit) {
+          await Promise.race(executing);
+        }
       }
+    } finally {
+      await Promise.allSettled(executing);
     }
-    await Promise.allSettled(executing);
   }
 
   /**

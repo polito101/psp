@@ -5,6 +5,21 @@ import { SkipThrottle } from '@nestjs/throttler';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 
+/**
+ * Elimina substrings tipo `scheme://[user:pass@]host[:port][/path]` de un mensaje
+ * antes de enviarlo a logs para evitar filtrar credenciales o topología interna.
+ *
+ * Retorna el nombre del error y el mensaje sanitizado, ambos truncados a 200 caracteres.
+ */
+function sanitizeErrorForLog(e: unknown): string {
+  const name = e instanceof Error ? e.name : 'UnknownError';
+  const raw = e instanceof Error ? e.message : String(e);
+  const sanitized = raw
+    .replace(/[a-zA-Z][a-zA-Z0-9+\-.]*:\/\/[^\s"'>]*/g, '[redacted-url]')
+    .slice(0, 200);
+  return `${name}: ${sanitized}`;
+}
+
 type HealthCheck = {
   status: 'ok' | 'error';
   details?: string;
@@ -34,7 +49,7 @@ export class HealthController {
       // El mensaje real se loguea en servidor; al cliente solo llega un string genérico
       // para no filtrar detalles de infraestructura a través de un endpoint público.
       db.details = 'db check failed';
-      this.log.error(`Health db check failed: ${e instanceof Error ? e.message : String(e)}`);
+      this.log.error(`Health db check failed: ${sanitizeErrorForLog(e)}`);
     }
 
     try {
@@ -45,7 +60,7 @@ export class HealthController {
     } catch (e) {
       redisCheck.status = 'error';
       redisCheck.details = 'redis check failed';
-      this.log.error(`Health redis check failed: ${e instanceof Error ? e.message : String(e)}`);
+      this.log.error(`Health redis check failed: ${sanitizeErrorForLog(e)}`);
     }
 
     const status = db.status === 'ok' && redisCheck.status === 'ok' ? 'ok' : 'degraded';
