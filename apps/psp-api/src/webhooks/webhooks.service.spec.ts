@@ -184,6 +184,63 @@ describe('WebhooksService', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('worker marks delivery failed when findUnique returns null after claim (inconsistent state)', async () => {
+    // Claim exitoso, pero la fila desaparece entre el claim y el findUnique (fila borrada).
+    prisma.webhookDelivery.updateMany
+      .mockResolvedValueOnce({ count: 1 }) // claim
+      .mockResolvedValueOnce({ count: 1 }); // finishFromProcessing
+    prisma.webhookDelivery.findUnique.mockResolvedValue(null);
+
+    await (service as unknown as { tryClaimAndProcess: (id: string) => Promise<void> }).tryClaimAndProcess(
+      'wd_1',
+    );
+
+    expect(prisma.webhookDelivery.updateMany).toHaveBeenNthCalledWith(2, {
+      where: { id: 'wd_1', status: 'processing' },
+      data: expect.objectContaining({ status: 'failed', lastError: expect.stringContaining('missing') }),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('worker safety-net catch releases delivery when an unexpected error occurs after claim', async () => {
+    // Simula un error de BD inesperado en merchant.findUnique (la ruta no cubierta por try/catch interno).
+    prisma.webhookDelivery.updateMany
+      .mockResolvedValueOnce({ count: 1 }) // claim
+      .mockResolvedValueOnce({ count: 1 }); // scheduleRetryOrFail desde el catch externo
+    prisma.webhookDelivery.findUnique.mockResolvedValue({
+      id: 'wd_1', merchantId: 'm_1', eventType: 'payment.succeeded',
+      payload: {}, attempts: 1, status: 'processing',
+      createdAt: new Date(),
+    });
+    prisma.merchant.findUnique.mockRejectedValue(new Error('DB connection lost'));
+
+    await (service as unknown as { tryClaimAndProcess: (id: string) => Promise<void> }).tryClaimAndProcess(
+      'wd_1',
+    );
+
+    // El catch externo debe llamar a scheduleRetryOrFail con attempts + 1
+    expect(prisma.webhookDelivery.updateMany).toHaveBeenNthCalledWith(2,
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'wd_1', status: 'processing' }),
+        data: expect.objectContaining({ lastError: expect.stringContaining('Unexpected error') }),
+      }),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('worker logs cleanup failure when both processing and safety-net cleanup fail', async () => {
+    // El claim tiene éxito, findUnique explota, y scheduleRetryOrFail también falla.
+    prisma.webhookDelivery.updateMany.mockResolvedValueOnce({ count: 1 }); // claim
+    prisma.webhookDelivery.findUnique.mockRejectedValue(new Error('DB down'));
+    // scheduleRetryOrFail llama a updateMany → también falla
+    prisma.webhookDelivery.updateMany.mockRejectedValueOnce(new Error('DB still down'));
+
+    // No debe propagar: el catch externo absorbe el error de cleanup
+    await expect(
+      (service as unknown as { tryClaimAndProcess: (id: string) => Promise<void> }).tryClaimAndProcess('wd_1'),
+    ).resolves.toBeUndefined();
+  });
+
   // ── retryFailedDelivery ──────────────────────────────────────────────────
   it('throws NotFoundException when delivery not found', async () => {
     prisma.webhookDelivery.findUnique.mockResolvedValue(null);
@@ -242,5 +299,59 @@ describe('WebhooksService', () => {
       where: { id: 'wd_race', status: { in: ['failed', 'processing'] } },
       data: expect.any(Object),
     });
+  });
+
+  // ── processPendingDeliveries ─────────────────────────────────────────────
+  it('processPendingDeliveries invokes tryClaimAndProcess for each due delivery', async () => {
+    prisma.webhookDelivery.findMany.mockResolvedValue([
+      { id: 'wd_1' },
+      { id: 'wd_2' },
+      { id: 'wd_3' },
+    ]);
+    // claim falla → sin operaciones adicionales
+    prisma.webhookDelivery.updateMany.mockResolvedValue({ count: 0 });
+
+    await (service as unknown as { processPendingDeliveries: () => Promise<void> }).processPendingDeliveries();
+
+    expect(prisma.webhookDelivery.updateMany).toHaveBeenCalledTimes(3);
+  });
+
+  // ── runWithConcurrency ───────────────────────────────────────────────────
+  it('runWithConcurrency executes all tasks and respects the concurrency limit', async () => {
+    const LIMIT = 5;
+    const TOTAL = 20;
+    let active = 0;
+    let peak = 0;
+
+    const tasks = Array.from({ length: TOTAL }, () => async () => {
+      active++;
+      peak = Math.max(peak, active);
+      // cede el event loop para que otras tareas puedan arrancar
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      active--;
+    });
+
+    await (service as unknown as { runWithConcurrency: (t: typeof tasks, l: number) => Promise<void> })
+      .runWithConcurrency(tasks, LIMIT);
+
+    expect(peak).toBeLessThanOrEqual(LIMIT);
+    expect(active).toBe(0);
+  });
+
+  it('runWithConcurrency completes all tasks even when some reject', async () => {
+    let completed = 0;
+    const tasks = [
+      async () => { completed++; },
+      async () => { throw new Error('boom'); },
+      async () => { completed++; },
+    ];
+
+    // No debe lanzar; Promise.allSettled absorbe los rechazos
+    await expect(
+      (service as unknown as { runWithConcurrency: (t: typeof tasks, l: number) => Promise<void> })
+        .runWithConcurrency(tasks, 2),
+    ).resolves.toBeUndefined();
+
+    expect(completed).toBe(2);
   });
 });

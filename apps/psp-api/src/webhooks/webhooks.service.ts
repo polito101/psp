@@ -22,6 +22,8 @@ const MAX_ATTEMPTS = 3;
 const BACKOFF_BASE_MS = 2_000;
 const WORKER_INTERVAL_MS = 5_000;
 const FETCH_TIMEOUT_MS = 10_000;
+/** Máximo de fetch HTTP simultáneos por tick. Evita saturar conexiones en picos. */
+const WORKER_CONCURRENCY = 10;
 
 /** Estado transitorio: fila reclamada por un worker antes del `fetch` (evita entregas duplicadas). */
 const STATUS_PROCESSING = 'processing' as const;
@@ -140,12 +142,46 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
       select: { id: true },
     });
 
-    await Promise.allSettled(due.map((d) => this.tryClaimAndProcess(d.id)));
+    await this.runWithConcurrency(
+      due.map((d) => () => this.tryClaimAndProcess(d.id)),
+      WORKER_CONCURRENCY,
+    );
+  }
+
+  /**
+   * Ejecuta tareas con un límite de concurrencia usando ventana deslizante:
+   * en cuanto termina una tarea se inicia la siguiente sin esperar al bloque completo.
+   * Equivalente a `p-limit` sin dependencias externas.
+   *
+   * @param tasks Array de funciones que devuelven Promise (thunks).
+   * @param limit Número máximo de tareas simultáneas.
+   */
+  private async runWithConcurrency(
+    tasks: Array<() => Promise<void>>,
+    limit: number,
+  ): Promise<void> {
+    const executing = new Set<Promise<void>>();
+    for (const task of tasks) {
+      const p: Promise<void> = task().finally(() => executing.delete(p));
+      executing.add(p);
+      if (executing.size >= limit) {
+        await Promise.race(executing);
+      }
+    }
+    await Promise.allSettled(executing);
   }
 
   /**
    * Reclama la fila con `updateMany` atómico (`pending` → `processing`) y solo entonces hace el HTTP.
    * Otra instancia o el mismo tick en paralelo que pierda la carrera sale sin efecto.
+   *
+   * Una vez reclamada la fila somos responsables de llevarla a un estado terminal
+   * (`delivered`, `failed`) o de re-encolación (`pending`). El bloque try/catch externo
+   * actúa como red de seguridad: ante cualquier excepción no prevista (error de BD,
+   * bug introducido después, OOM parcial) llama a `scheduleRetryOrFail` para liberar
+   * la fila antes de propagar el silencio. Sin él, un error en `merchant.findUnique`,
+   * `buildWebhookEnvelope`, `signPayload` o en los propios helpers de transición dejaría
+   * la entrega en `processing` indefinidamente, invisible para el worker.
    */
   private async tryClaimAndProcess(deliveryId: string): Promise<void> {
     const now = new Date();
@@ -162,98 +198,141 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const delivery = await this.prisma.webhookDelivery.findUnique({
-      where: { id: deliveryId },
-      select: {
-        id: true,
-        merchantId: true,
-        eventType: true,
-        payload: true,
-        attempts: true,
-        status: true,
-        createdAt: true,
-      },
-    });
-
-    if (!delivery || delivery.status !== STATUS_PROCESSING) {
-      return;
-    }
-
-    const merchant = await this.prisma.merchant.findUnique({
-      where: { id: delivery.merchantId },
-      select: { webhookUrl: true, webhookSecretCiphertext: true },
-    });
-
-    if (!merchant?.webhookUrl) {
-      await this.finishFromProcessing(delivery.id, delivery.attempts + 1, {
-        status: 'failed',
-        lastError: 'Merchant webhook URL removed',
-      });
-      return;
-    }
-
-    let webhookSecret: string;
-    try {
-      webhookSecret = decryptUtf8(merchant.webhookSecretCiphertext);
-    } catch (e) {
-      const err = e instanceof Error ? e.message : String(e);
-      await this.finishFromProcessing(delivery.id, delivery.attempts + 1, {
-        status: 'failed',
-        lastError: `Decrypt error: ${err}`,
-      });
-      this.log.warn(
-        JSON.stringify({ event: 'webhook.delivery.decrypt_failed', deliveryId, error: err }),
-      );
-      return;
-    }
-
-    const body = this.buildWebhookEnvelope(
-      delivery.id,
-      delivery.createdAt,
-      delivery.eventType,
-      delivery.payload as Record<string, unknown>,
-    );
-    const timestamp = Math.floor(Date.now() / 1000).toString();
-    const signature = this.signPayload(webhookSecret, body, timestamp);
-    const newAttempts = delivery.attempts + 1;
+    // Número de intentos conocidos; se actualiza al cargar el delivery.
+    // Lo necesitamos en el catch de seguridad para poder llamar a scheduleRetryOrFail
+    // incluso si el findUnique falló antes de que pudiéramos leerlo.
+    let currentAttempts = 0;
 
     try {
-      const res = await fetch(merchant.webhookUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-PSP-Signature': `t=${timestamp},v1=${signature}`,
-          'X-PSP-Event': delivery.eventType,
-          'X-PSP-Delivery-Id': delivery.id,
+      const delivery = await this.prisma.webhookDelivery.findUnique({
+        where: { id: deliveryId },
+        select: {
+          id: true,
+          merchantId: true,
+          eventType: true,
+          payload: true,
+          attempts: true,
+          status: true,
+          createdAt: true,
         },
-        body,
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
 
-      if (res.ok) {
-        const updated = await this.finishFromProcessing(delivery.id, newAttempts, {
-          status: 'delivered',
-          lastError: null,
+      if (!delivery || delivery.status !== STATUS_PROCESSING) {
+        // No debería ocurrir tras un claim exitoso (la fila fue reclamada por nosotros),
+        // pero puede pasar si la fila fue borrada entre el claim y este findUnique, o
+        // en entornos con réplicas de lectura con retraso. Liberar como failed.
+        await this.finishFromProcessing(deliveryId, currentAttempts + 1, {
+          status: 'failed',
+          lastError: 'Delivery missing or status inconsistent after claim',
         });
-        if (updated) {
-          this.log.log(
-            JSON.stringify({
-              event: 'webhook.delivery.delivered',
-              deliveryId,
-              merchantId: delivery.merchantId,
-              eventType: delivery.eventType,
-              attempts: newAttempts,
-            }),
-          );
-        }
+        this.log.warn(
+          JSON.stringify({ event: 'webhook.delivery.inconsistent_after_claim', deliveryId }),
+        );
         return;
       }
 
-      const lastError = `HTTP ${res.status}`;
-      await this.scheduleRetryOrFail(delivery.id, newAttempts, lastError);
+      currentAttempts = delivery.attempts;
+
+      const merchant = await this.prisma.merchant.findUnique({
+        where: { id: delivery.merchantId },
+        select: { webhookUrl: true, webhookSecretCiphertext: true },
+      });
+
+      if (!merchant?.webhookUrl) {
+        await this.finishFromProcessing(delivery.id, currentAttempts + 1, {
+          status: 'failed',
+          lastError: 'Merchant webhook URL removed',
+        });
+        return;
+      }
+
+      let webhookSecret: string;
+      try {
+        webhookSecret = decryptUtf8(merchant.webhookSecretCiphertext);
+      } catch (e) {
+        const err = e instanceof Error ? e.message : String(e);
+        await this.finishFromProcessing(delivery.id, currentAttempts + 1, {
+          status: 'failed',
+          lastError: `Decrypt error: ${err}`,
+        });
+        this.log.warn(
+          JSON.stringify({ event: 'webhook.delivery.decrypt_failed', deliveryId, error: err }),
+        );
+        return;
+      }
+
+      const body = this.buildWebhookEnvelope(
+        delivery.id,
+        delivery.createdAt,
+        delivery.eventType,
+        delivery.payload as Record<string, unknown>,
+      );
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const signature = this.signPayload(webhookSecret, body, timestamp);
+      const newAttempts = currentAttempts + 1;
+
+      try {
+        const res = await fetch(merchant.webhookUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-PSP-Signature': `t=${timestamp},v1=${signature}`,
+            'X-PSP-Event': delivery.eventType,
+            'X-PSP-Delivery-Id': delivery.id,
+          },
+          body,
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        });
+
+        if (res.ok) {
+          const updated = await this.finishFromProcessing(delivery.id, newAttempts, {
+            status: 'delivered',
+            lastError: null,
+          });
+          if (updated) {
+            this.log.log(
+              JSON.stringify({
+                event: 'webhook.delivery.delivered',
+                deliveryId,
+                merchantId: delivery.merchantId,
+                eventType: delivery.eventType,
+                attempts: newAttempts,
+              }),
+            );
+          }
+          return;
+        }
+
+        const lastError = `HTTP ${res.status}`;
+        await this.scheduleRetryOrFail(delivery.id, newAttempts, lastError);
+      } catch (e) {
+        const lastError = e instanceof Error ? e.message : String(e);
+        await this.scheduleRetryOrFail(delivery.id, newAttempts, lastError);
+      }
     } catch (e) {
+      // Red de seguridad: excepción inesperada tras el claim (error de BD, bug, etc.).
+      // Intentar liberar la fila para que no quede en `processing` indefinidamente.
       const lastError = e instanceof Error ? e.message : String(e);
-      await this.scheduleRetryOrFail(delivery.id, newAttempts, lastError);
+      this.log.error(
+        JSON.stringify({
+          event: 'webhook.delivery.unexpected_error',
+          deliveryId,
+          error: lastError,
+        }),
+      );
+      try {
+        await this.scheduleRetryOrFail(deliveryId, currentAttempts + 1, `Unexpected error: ${lastError}`);
+      } catch (cleanupError) {
+        // Si el propio cleanup falla (BD caída), loguear y no propagar.
+        // La fila quedará en `processing` hasta una recuperación manual o el admin retry.
+        this.log.error(
+          JSON.stringify({
+            event: 'webhook.delivery.cleanup_failed',
+            deliveryId,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          }),
+        );
+      }
     }
   }
 
