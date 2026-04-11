@@ -1,0 +1,46 @@
+name: PSP API CI
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'apps/psp-api/**'
+      - '.github/workflows/psp-api-ci.yml'
+  pull_request:
+    paths:
+      - 'apps/psp-api/**'
+      - '.github/workflows/psp-api-ci.yml'
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    env:
+      # Requerido para cargar prisma.config.ts y prisma generate (sin conexión real en CI).
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci?schema=public
+    defaults:
+      run:
+        working-directory: apps/psp-api
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/psp-api/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prisma generate
+        run: npx prisma generate
+
+      - name: Lint
+        run: npm run -s lint
+
+      - name: Unit tests
+        run: npm test --silent
+

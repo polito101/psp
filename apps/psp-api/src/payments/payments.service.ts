@@ -2,9 +2,11 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { randomBytes } from 'crypto';
+import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
@@ -13,6 +15,8 @@ import { PaymentLinksService } from '../payment-links/payment-links.service';
 
 @Injectable()
 export class PaymentsService {
+  private readonly log = new Logger(PaymentsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly ledger: LedgerService,
@@ -20,6 +24,37 @@ export class PaymentsService {
     private readonly redis: RedisService,
     private readonly links: PaymentLinksService,
   ) {}
+
+  /**
+   * En reintentos idempotentes, la misma key debe referenciar exactamente
+   * la misma intención de pago para evitar colisiones silenciosas.
+   */
+  private assertIdempotencyPayloadMatch(
+    existing: {
+      amountMinor: number;
+      currency: string;
+      paymentLinkId: string | null;
+      rail: string;
+    },
+    incoming: {
+      amountMinor: number;
+      currency: string;
+      paymentLinkId?: string;
+      rail?: string;
+    },
+  ): void {
+    const incomingPaymentLinkId = incoming.paymentLinkId ?? null;
+    const incomingRail = incoming.rail ?? 'fiat';
+    const isSameIntent =
+      existing.amountMinor === incoming.amountMinor &&
+      existing.currency === incoming.currency &&
+      existing.paymentLinkId === incomingPaymentLinkId &&
+      existing.rail === incomingRail;
+
+    if (!isSameIntent) {
+      throw new ConflictException('Idempotency-Key already used with different payload');
+    }
+  }
 
   async create(
     merchantId: string,
@@ -31,6 +66,17 @@ export class PaymentsService {
       idempotencyKey?: string;
     },
   ) {
+    this.log.log(
+      JSON.stringify({
+        event: 'payment.create.requested',
+        merchantId,
+        amountMinor: dto.amountMinor,
+        currency: dto.currency,
+        hasPaymentLinkId: Boolean(dto.paymentLinkId),
+        hasIdempotencyKey: Boolean(dto.idempotencyKey),
+      }),
+    );
+
     if (dto.idempotencyKey) {
       const cached = await this.redis.getIdempotency(
         `pay:${merchantId}:${dto.idempotencyKey}`,
@@ -45,6 +91,14 @@ export class PaymentsService {
           },
         });
         if (existing) {
+          this.assertIdempotencyPayloadMatch(existing, dto);
+          this.log.log(
+            JSON.stringify({
+              event: 'payment.create.idempotent_hit',
+              merchantId,
+              paymentId: existing.id,
+            }),
+          );
           return existing;
         }
       }
@@ -79,6 +133,14 @@ export class PaymentsService {
         );
       }
 
+      this.log.log(
+        JSON.stringify({
+          event: 'payment.create.created',
+          merchantId,
+          paymentId: payment.id,
+          status: payment.status,
+        }),
+      );
       return payment;
     } catch (e: unknown) {
       const code = e && typeof e === 'object' && 'code' in e ? (e as { code: string }).code : '';
@@ -92,9 +154,25 @@ export class PaymentsService {
           },
         });
         if (existing) {
+          this.assertIdempotencyPayloadMatch(existing, dto);
+          this.log.log(
+            JSON.stringify({
+              event: 'payment.create.idempotent_race',
+              merchantId,
+              paymentId: existing.id,
+            }),
+          );
           return existing;
         }
       }
+      this.log.error(
+        JSON.stringify({
+          event: 'payment.create.error',
+          merchantId,
+          code,
+          message: e instanceof Error ? e.message : String(e),
+        }),
+      );
       throw e;
     }
   }
@@ -132,6 +210,13 @@ export class PaymentsService {
   }
 
   async capture(merchantId: string, paymentId: string) {
+    this.log.log(
+      JSON.stringify({
+        event: 'payment.capture.requested',
+        merchantId,
+        paymentId,
+      }),
+    );
     const payment = await this.findOne(merchantId, paymentId);
     if (payment.status === 'succeeded') {
       return payment;
@@ -145,7 +230,7 @@ export class PaymentsService {
       select: { feeBps: true },
     });
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const p = await tx.payment.update({
         where: { id: paymentId },
         data: {
@@ -179,6 +264,13 @@ export class PaymentsService {
       status: updated.status,
     });
 
+    this.log.log(
+      JSON.stringify({
+        event: 'payment.capture.succeeded',
+        merchantId,
+        paymentId: updated.id,
+      }),
+    );
     return updated;
   }
 }

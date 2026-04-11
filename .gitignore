@@ -1,5 +1,6 @@
 node_modules/
 dist/
+apps/psp-api/src/generated/
 .env
 .env.local
 *.log

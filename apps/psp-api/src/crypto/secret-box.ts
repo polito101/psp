@@ -5,6 +5,12 @@ const IV_LEN = 12;
 const TAG_LEN = 16;
 const SALT = 'psp-webhook-v1';
 
+/**
+ * Deriva una clave de 32 bytes a partir de `APP_ENCRYPTION_KEY` usando scrypt (salt fija interna).
+ *
+ * @returns {Buffer} Clave binaria lista para AES-256-GCM.
+ * @throws {Error} Si la variable de entorno no está definida o tiene menos de 32 caracteres.
+ */
 function getKey(): Buffer {
   const raw = process.env.APP_ENCRYPTION_KEY;
   if (!raw || raw.length < 32) {
