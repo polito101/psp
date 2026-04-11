@@ -176,16 +176,18 @@ Si no usas los endpoints anteriores, en entornos de prueba puedes crear otro mer
 - `409 Idempotency-Key already used with different payload`: genera una nueva key para una nueva intención de cobro.
 - `429 Too Many Requests`: espera a la ventana de rate limit o reduce ráfagas de requests.
 - Errores de TypeScript del tipo *Cannot find module* hacia `generated/prisma`: ejecuta `npx prisma generate` desde `apps/psp-api` con `DATABASE_URL` definida (p. ej. en `.env`).
+- Filas `webhook_deliveries` atascadas en **`processing`** tras un corte brusco del proceso (kill -9, OOM): situación rara; recupéralas con el mismo endpoint operativo que los fallidos: `POST /api/v1/webhooks/deliveries/{id}/retry` con `X-Internal-Secret` (reencola como **`pending`** y reinicia intentos).
 
 ## Webhooks
 
 - En `capture`, el evento `payment.succeeded` se encola y un **worker en segundo plano** (intervalo aprox. **5 s**, hasta **50** entregas por tick) hace el `POST` al `webhookUrl` del merchant; **no bloquea** la respuesta HTTP del API.
 - Cuando hay URL configurada, el alta en cola devuelve estado **`pending`**; la entrega real y los reintentos ocurren en el worker.
+- Entre `pending` y `delivered`/`failed` puede verse **`processing`**: es un estado transitorio mientras el worker tiene reclamada la fila (evita entregas duplicadas con varias instancias o ticks solapados). El ciclo del worker **no se solapa**: tras cada barrido programa el siguiente tras esperar el intervalo.
 - Cuerpo JSON: `id` es el **id estable** de la fila `webhook_deliveries` (mismo valor en todos los reintentos de esa entrega); `created_at` es la marca de creación de esa fila (también estable). `data` lleva el payload del evento (p. ej. datos del pago). `type` es el nombre del evento (p. ej. `payment.succeeded`).
 - Cabecera `X-PSP-Delivery-Id`: mismo id que `id` en el body, útil para deduplicar sin parsear JSON.
 - La firma va en `X-PSP-Signature` con formato `t=<unix>,v1=<hmac_sha256>`. El `t` es **nuevo en cada intento** (anti-replay); el body firmado es idéntico entre reintentos salvo que cambies datos en servidor.
 - Reintentos automáticos con backoff hasta 3 intentos antes de `failed` en `webhook_deliveries`.
-- Operación interna: `POST /api/v1/webhooks/deliveries/{id}/retry` con `X-Internal-Secret` **solo reencola** la fila (`pending` de nuevo); **no** ejecuta el `fetch` en la misma petición HTTP del cliente: lo procesará el worker.
+- Operación interna: `POST /api/v1/webhooks/deliveries/{id}/retry` con `X-Internal-Secret` **solo reencola** la fila (`pending` de nuevo); aplica a entregas **`failed`** o **`processing`** (atascadas); **no** ejecuta el `fetch` en la misma petición HTTP del cliente: lo procesará el worker.
 
 ### Verificación de firma + anti-replay (receptor)
 

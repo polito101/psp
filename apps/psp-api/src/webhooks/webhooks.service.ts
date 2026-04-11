@@ -23,10 +23,14 @@ const BACKOFF_BASE_MS = 2_000;
 const WORKER_INTERVAL_MS = 5_000;
 const FETCH_TIMEOUT_MS = 10_000;
 
+/** Estado transitorio: fila reclamada por un worker antes del `fetch` (evita entregas duplicadas). */
+const STATUS_PROCESSING = 'processing' as const;
+
 @Injectable()
 export class WebhooksService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger(WebhooksService.name);
   private workerTimer: NodeJS.Timeout | null = null;
+  private workerStopped = false;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -100,36 +104,64 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
   // ──────────────────────────────────────────────────────────────────────────
 
   private startWorker() {
-    this.workerTimer = setInterval(() => {
-      this.processPendingDeliveries().catch((err: unknown) => {
+    this.workerStopped = false;
+    const runTick = async () => {
+      if (this.workerStopped) return;
+      try {
+        await this.processPendingDeliveries();
+      } catch (err: unknown) {
         this.log.error(
           JSON.stringify({
             event: 'webhook.worker.error',
             error: err instanceof Error ? err.message : String(err),
           }),
         );
-      });
-    }, WORKER_INTERVAL_MS);
+      }
+      if (this.workerStopped) return;
+      this.workerTimer = setTimeout(() => void runTick(), WORKER_INTERVAL_MS);
+    };
+    void runTick();
   }
 
   private stopWorker() {
+    this.workerStopped = true;
     if (this.workerTimer) {
-      clearInterval(this.workerTimer);
+      clearTimeout(this.workerTimer);
       this.workerTimer = null;
     }
   }
 
   private async processPendingDeliveries(): Promise<void> {
+    const now = new Date();
     const due = await this.prisma.webhookDelivery.findMany({
-      where: { status: 'pending', scheduledAt: { lte: new Date() } },
+      where: { status: 'pending', scheduledAt: { lte: now } },
       take: 50,
       orderBy: { scheduledAt: 'asc' },
+      select: { id: true },
     });
 
-    await Promise.allSettled(due.map((d) => this.processOne(d.id)));
+    await Promise.allSettled(due.map((d) => this.tryClaimAndProcess(d.id)));
   }
 
-  private async processOne(deliveryId: string): Promise<void> {
+  /**
+   * Reclama la fila con `updateMany` atómico (`pending` → `processing`) y solo entonces hace el HTTP.
+   * Otra instancia o el mismo tick en paralelo que pierda la carrera sale sin efecto.
+   */
+  private async tryClaimAndProcess(deliveryId: string): Promise<void> {
+    const now = new Date();
+    const claimed = await this.prisma.webhookDelivery.updateMany({
+      where: {
+        id: deliveryId,
+        status: 'pending',
+        scheduledAt: { lte: now },
+      },
+      data: { status: STATUS_PROCESSING },
+    });
+
+    if (claimed.count === 0) {
+      return;
+    }
+
     const delivery = await this.prisma.webhookDelivery.findUnique({
       where: { id: deliveryId },
       select: {
@@ -143,7 +175,9 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    if (!delivery || delivery.status !== 'pending') return;
+    if (!delivery || delivery.status !== STATUS_PROCESSING) {
+      return;
+    }
 
     const merchant = await this.prisma.merchant.findUnique({
       where: { id: delivery.merchantId },
@@ -151,9 +185,9 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
     });
 
     if (!merchant?.webhookUrl) {
-      await this.prisma.webhookDelivery.update({
-        where: { id: delivery.id },
-        data: { status: 'failed', lastError: 'Merchant webhook URL removed', attempts: delivery.attempts + 1 },
+      await this.finishFromProcessing(delivery.id, delivery.attempts + 1, {
+        status: 'failed',
+        lastError: 'Merchant webhook URL removed',
       });
       return;
     }
@@ -163,9 +197,9 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
       webhookSecret = decryptUtf8(merchant.webhookSecretCiphertext);
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
-      await this.prisma.webhookDelivery.update({
-        where: { id: delivery.id },
-        data: { status: 'failed', lastError: `Decrypt error: ${err}`, attempts: delivery.attempts + 1 },
+      await this.finishFromProcessing(delivery.id, delivery.attempts + 1, {
+        status: 'failed',
+        lastError: `Decrypt error: ${err}`,
       });
       this.log.warn(
         JSON.stringify({ event: 'webhook.delivery.decrypt_failed', deliveryId, error: err }),
@@ -197,19 +231,21 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
       });
 
       if (res.ok) {
-        await this.prisma.webhookDelivery.update({
-          where: { id: delivery.id },
-          data: { status: 'delivered', attempts: newAttempts, lastError: null },
+        const updated = await this.finishFromProcessing(delivery.id, newAttempts, {
+          status: 'delivered',
+          lastError: null,
         });
-        this.log.log(
-          JSON.stringify({
-            event: 'webhook.delivery.delivered',
-            deliveryId,
-            merchantId: delivery.merchantId,
-            eventType: delivery.eventType,
-            attempts: newAttempts,
-          }),
-        );
+        if (updated) {
+          this.log.log(
+            JSON.stringify({
+              event: 'webhook.delivery.delivered',
+              deliveryId,
+              merchantId: delivery.merchantId,
+              eventType: delivery.eventType,
+              attempts: newAttempts,
+            }),
+          );
+        }
         return;
       }
 
@@ -221,14 +257,30 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /** Solo transición desde `processing` para no pisar estado ajeno. */
+  private async finishFromProcessing(
+    deliveryId: string,
+    attempts: number,
+    data: { status: 'delivered' | 'failed'; lastError: string | null },
+  ): Promise<boolean> {
+    const result = await this.prisma.webhookDelivery.updateMany({
+      where: { id: deliveryId, status: STATUS_PROCESSING },
+      data: { status: data.status, attempts, lastError: data.lastError },
+    });
+    return result.count === 1;
+  }
+
   private async scheduleRetryOrFail(deliveryId: string, attempts: number, lastError: string) {
     if (attempts < MAX_ATTEMPTS) {
       const backoffMs = BACKOFF_BASE_MS * Math.pow(2, attempts - 1);
       const scheduledAt = new Date(Date.now() + backoffMs);
-      await this.prisma.webhookDelivery.update({
-        where: { id: deliveryId },
+      const result = await this.prisma.webhookDelivery.updateMany({
+        where: { id: deliveryId, status: STATUS_PROCESSING },
         data: { attempts, lastError, scheduledAt, status: 'pending' },
       });
+      if (result.count === 0) {
+        return;
+      }
       this.log.warn(
         JSON.stringify({
           event: 'webhook.delivery.retry_scheduled',
@@ -239,10 +291,13 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
         }),
       );
     } else {
-      await this.prisma.webhookDelivery.update({
-        where: { id: deliveryId },
+      const result = await this.prisma.webhookDelivery.updateMany({
+        where: { id: deliveryId, status: STATUS_PROCESSING },
         data: { attempts, lastError, status: 'failed' },
       });
+      if (result.count === 0) {
+        return;
+      }
       this.log.error(
         JSON.stringify({
           event: 'webhook.delivery.failed',
@@ -259,8 +314,14 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
   // ──────────────────────────────────────────────────────────────────────────
 
   /**
-   * Reencola un `WebhookDelivery` fallido para procesarse en el próximo tick del worker.
-   * Solo actúa sobre entregas con `status = failed`.
+   * Reencola una entrega para el próximo tick del worker.
+   * Acepta `failed` o `processing` (p. ej. fila atascada tras caída del proceso durante el HTTP).
+   *
+   * El `updateMany` condicional es la parte crítica: garantiza que solo se transiciona
+   * si la fila sigue en `failed` o `processing` en el momento de la escritura. Si el worker
+   * finalizó la entrega y la pasó a `delivered` entre el `findUnique` de validación y esta
+   * escritura, `count === 0` y se lanza `ConflictException` en lugar de sobreescribir
+   * `delivered → pending`, evitando así una entrega duplicada al merchant.
    */
   async retryFailedDelivery(deliveryId: string): Promise<{
     deliveryId: string;
@@ -275,17 +336,33 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
     if (!delivery) {
       throw new NotFoundException('Webhook delivery not found');
     }
-    if (delivery.status !== 'failed') {
-      throw new ConflictException('Only failed deliveries can be retried');
+    const allowed = delivery.status === 'failed' || delivery.status === STATUS_PROCESSING;
+    if (!allowed) {
+      throw new ConflictException(
+        'Only failed or processing (stuck) deliveries can be requeued',
+      );
     }
 
-    await this.prisma.webhookDelivery.update({
-      where: { id: deliveryId },
+    const result = await this.prisma.webhookDelivery.updateMany({
+      where: {
+        id: deliveryId,
+        status: { in: ['failed', STATUS_PROCESSING] },
+      },
       data: { status: 'pending', scheduledAt: new Date(), attempts: 0, lastError: null },
     });
 
+    if (result.count === 0) {
+      throw new ConflictException(
+        'Delivery status changed concurrently; check its current status before retrying',
+      );
+    }
+
     this.log.log(
-      JSON.stringify({ event: 'webhook.delivery.retry_requested', deliveryId }),
+      JSON.stringify({
+        event: 'webhook.delivery.retry_requested',
+        deliveryId,
+        previousStatus: delivery.status,
+      }),
     );
 
     return {

@@ -3,6 +3,8 @@ import { ApiKeyGuard, MERCHANT_KEY } from './api-key.guard';
 
 jest.mock('bcryptjs', () => ({
   compare: jest.fn(),
+  // hashSync es llamado a nivel de módulo para generar DUMMY_HASH al importar el guard.
+  hashSync: jest.fn().mockReturnValue('$2b$12$dummy_hash_for_tests'),
 }));
 import { compare } from 'bcryptjs';
 
@@ -45,12 +47,17 @@ describe('ApiKeyGuard', () => {
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
-  it('returns Unauthorized when merchant does not exist', async () => {
+  it('returns Unauthorized when merchant does not exist and still calls compare for timing', async () => {
     prisma.merchant.findUnique.mockResolvedValue(null);
+    (compare as jest.Mock).mockResolvedValue(false);
 
     await expect(
       guard.canActivate(makeContext({ 'x-api-key': 'psp.m_1.secret' })),
     ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    // bcrypt.compare debe invocarse aunque el merchant no exista (anti-timing).
+    expect(compare).toHaveBeenCalledTimes(1);
+    expect(compare).toHaveBeenCalledWith('psp.m_1.secret', '$2b$12$dummy_hash_for_tests');
   });
 
   it('returns Unauthorized when api key hash comparison fails', async () => {
@@ -67,28 +74,38 @@ describe('ApiKeyGuard', () => {
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
-  it('returns Unauthorized when api key is revoked', async () => {
+  it('returns Unauthorized when api key is revoked, even if hash matches', async () => {
     prisma.merchant.findUnique.mockResolvedValue({
       id: 'm_1',
       apiKeyHash: 'hash',
       apiKeyRevokedAt: new Date('2026-01-01'),
       apiKeyExpiresAt: null,
     });
+    // compare devuelve true: se verifica que revocación tiene precedencia y se rechaza igualmente.
+    (compare as jest.Mock).mockResolvedValue(true);
+
     await expect(
       guard.canActivate(makeContext({ 'x-api-key': 'psp.m_1.secret' })),
     ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    expect(compare).toHaveBeenCalledTimes(1);
   });
 
-  it('returns Unauthorized when api key is expired', async () => {
+  it('returns Unauthorized when api key is expired, even if hash matches', async () => {
     prisma.merchant.findUnique.mockResolvedValue({
       id: 'm_1',
       apiKeyHash: 'hash',
       apiKeyRevokedAt: null,
       apiKeyExpiresAt: new Date(Date.now() - 1000),
     });
+    // compare devuelve true: se verifica que expiración tiene precedencia y se rechaza igualmente.
+    (compare as jest.Mock).mockResolvedValue(true);
+
     await expect(
       guard.canActivate(makeContext({ 'x-api-key': 'psp.m_1.secret' })),
     ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    expect(compare).toHaveBeenCalledTimes(1);
   });
 
   it('sets only minimal merchant context when api key is valid', async () => {

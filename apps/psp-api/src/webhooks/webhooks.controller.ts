@@ -11,7 +11,10 @@ export class WebhooksController {
   constructor(private readonly webhooks: WebhooksService) {}
 
   @Post('deliveries/:id/retry')
-  @ApiOperation({ summary: 'Reintentar una entrega de webhook fallida (operación interna)' })
+  @ApiOperation({
+    summary:
+      'Reencolar entrega fallida o atascada en processing (operación interna, X-Internal-Secret)',
+  })
   retryFailed(@Param('id') id: string) {
     return this.webhooks.retryFailedDelivery(id);
   }

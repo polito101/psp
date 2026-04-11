@@ -13,6 +13,7 @@ describe('WebhooksService', () => {
       findUnique: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
   };
 
@@ -63,11 +64,14 @@ describe('WebhooksService', () => {
 
   const createdAtFixture = new Date('2026-04-10T12:00:00.000Z');
 
-  // ── worker: processOne ───────────────────────────────────────────────────
+  // ── worker: tryClaimAndProcess ───────────────────────────────────────────
   it('worker delivers successfully on first attempt', async () => {
+    prisma.webhookDelivery.updateMany
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 });
     prisma.webhookDelivery.findUnique.mockResolvedValue({
       id: 'wd_1', merchantId: 'm_1', eventType: 'payment.succeeded',
-      payload: { payment_id: 'p_1' }, attempts: 0, status: 'pending',
+      payload: { payment_id: 'p_1' }, attempts: 0, status: 'processing',
       createdAt: createdAtFixture,
     });
     prisma.merchant.findUnique.mockResolvedValue({
@@ -76,8 +80,18 @@ describe('WebhooksService', () => {
     });
     fetchMock.mockResolvedValue({ ok: true, status: 200 });
 
-    await (service as unknown as { processOne: (id: string) => Promise<void> }).processOne('wd_1');
+    await (service as unknown as { tryClaimAndProcess: (id: string) => Promise<void> }).tryClaimAndProcess(
+      'wd_1',
+    );
 
+    expect(prisma.webhookDelivery.updateMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        id: 'wd_1',
+        status: 'pending',
+        scheduledAt: { lte: expect.any(Date) },
+      },
+      data: { status: 'processing' },
+    });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const fetchOpts = fetchMock.mock.calls[0][1] as RequestInit;
     expect(fetchOpts.headers).toMatchObject(
@@ -87,16 +101,17 @@ describe('WebhooksService', () => {
     expect(parsed.id).toBe('wd_1');
     expect(parsed.created_at).toBe(createdAtFixture.toISOString());
     expect(parsed.data).toEqual({ payment_id: 'p_1' });
-    expect(prisma.webhookDelivery.update).toHaveBeenCalledWith({
-      where: { id: 'wd_1' },
+    expect(prisma.webhookDelivery.updateMany).toHaveBeenNthCalledWith(2, {
+      where: { id: 'wd_1', status: 'processing' },
       data: expect.objectContaining({ status: 'delivered', attempts: 1, lastError: null }),
     });
   });
 
   it('worker schedules retry with backoff on transient failure', async () => {
+    prisma.webhookDelivery.updateMany.mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 1 });
     prisma.webhookDelivery.findUnique.mockResolvedValue({
       id: 'wd_1', merchantId: 'm_1', eventType: 'payment.succeeded',
-      payload: {}, attempts: 0, status: 'pending',
+      payload: {}, attempts: 0, status: 'processing',
       createdAt: createdAtFixture,
     });
     prisma.merchant.findUnique.mockResolvedValue({
@@ -105,18 +120,21 @@ describe('WebhooksService', () => {
     });
     fetchMock.mockResolvedValue({ ok: false, status: 500 });
 
-    await (service as unknown as { processOne: (id: string) => Promise<void> }).processOne('wd_1');
+    await (service as unknown as { tryClaimAndProcess: (id: string) => Promise<void> }).tryClaimAndProcess(
+      'wd_1',
+    );
 
-    expect(prisma.webhookDelivery.update).toHaveBeenCalledWith({
-      where: { id: 'wd_1' },
+    expect(prisma.webhookDelivery.updateMany).toHaveBeenLastCalledWith({
+      where: { id: 'wd_1', status: 'processing' },
       data: expect.objectContaining({ status: 'pending', attempts: 1, lastError: 'HTTP 500' }),
     });
   });
 
   it('worker marks failed after max attempts', async () => {
+    prisma.webhookDelivery.updateMany.mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 1 });
     prisma.webhookDelivery.findUnique.mockResolvedValue({
       id: 'wd_1', merchantId: 'm_1', eventType: 'payment.succeeded',
-      payload: {}, attempts: 2, status: 'pending',
+      payload: {}, attempts: 2, status: 'processing',
       createdAt: createdAtFixture,
     });
     prisma.merchant.findUnique.mockResolvedValue({
@@ -125,28 +143,44 @@ describe('WebhooksService', () => {
     });
     fetchMock.mockRejectedValue(new Error('network timeout'));
 
-    await (service as unknown as { processOne: (id: string) => Promise<void> }).processOne('wd_1');
+    await (service as unknown as { tryClaimAndProcess: (id: string) => Promise<void> }).tryClaimAndProcess(
+      'wd_1',
+    );
 
-    expect(prisma.webhookDelivery.update).toHaveBeenCalledWith({
-      where: { id: 'wd_1' },
+    expect(prisma.webhookDelivery.updateMany).toHaveBeenLastCalledWith({
+      where: { id: 'wd_1', status: 'processing' },
       data: expect.objectContaining({ status: 'failed', attempts: 3, lastError: 'network timeout' }),
     });
   });
 
   it('worker marks failed when webhookUrl removed during processing', async () => {
+    prisma.webhookDelivery.updateMany.mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 1 });
     prisma.webhookDelivery.findUnique.mockResolvedValue({
       id: 'wd_1', merchantId: 'm_1', eventType: 'payment.succeeded',
-      payload: {}, attempts: 0, status: 'pending',
+      payload: {}, attempts: 0, status: 'processing',
       createdAt: createdAtFixture,
     });
     prisma.merchant.findUnique.mockResolvedValue({ webhookUrl: null });
 
-    await (service as unknown as { processOne: (id: string) => Promise<void> }).processOne('wd_1');
+    await (service as unknown as { tryClaimAndProcess: (id: string) => Promise<void> }).tryClaimAndProcess(
+      'wd_1',
+    );
 
-    expect(prisma.webhookDelivery.update).toHaveBeenCalledWith({
-      where: { id: 'wd_1' },
+    expect(prisma.webhookDelivery.updateMany).toHaveBeenLastCalledWith({
+      where: { id: 'wd_1', status: 'processing' },
       data: expect.objectContaining({ status: 'failed' }),
     });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('worker skips fetch when atomic claim loses the race', async () => {
+    prisma.webhookDelivery.updateMany.mockResolvedValue({ count: 0 });
+
+    await (service as unknown as { tryClaimAndProcess: (id: string) => Promise<void> }).tryClaimAndProcess(
+      'wd_1',
+    );
+
+    expect(prisma.webhookDelivery.findUnique).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -156,22 +190,57 @@ describe('WebhooksService', () => {
     await expect(service.retryFailedDelivery('wd_missing')).rejects.toBeInstanceOf(NotFoundException);
   });
 
-  it('throws ConflictException when delivery is not failed', async () => {
+  it('throws ConflictException when delivery is not failed or processing', async () => {
     prisma.webhookDelivery.findUnique.mockResolvedValue({ id: 'wd_1', status: 'delivered' });
     await expect(service.retryFailedDelivery('wd_1')).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('resets failed delivery to pending', async () => {
+  it('throws ConflictException when delivery is still pending', async () => {
+    prisma.webhookDelivery.findUnique.mockResolvedValue({ id: 'wd_1', status: 'pending' });
+    await expect(service.retryFailedDelivery('wd_1')).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('resets failed delivery to pending using conditional updateMany', async () => {
     prisma.webhookDelivery.findUnique.mockResolvedValue({ id: 'wd_failed', status: 'failed' });
-    prisma.webhookDelivery.update.mockResolvedValue({ id: 'wd_failed' });
+    prisma.webhookDelivery.updateMany.mockResolvedValue({ count: 1 });
 
     const result = await service.retryFailedDelivery('wd_failed');
 
-    expect(prisma.webhookDelivery.update).toHaveBeenCalledWith({
-      where: { id: 'wd_failed' },
+    expect(prisma.webhookDelivery.updateMany).toHaveBeenCalledWith({
+      where: { id: 'wd_failed', status: { in: ['failed', 'processing'] } },
       data: expect.objectContaining({ status: 'pending', attempts: 0, lastError: null }),
     });
+    expect(prisma.webhookDelivery.update).not.toHaveBeenCalled();
     expect(result.status).toBe('pending');
     expect(result.deliveryId).toBe('wd_failed');
+  });
+
+  it('resets stuck processing delivery to pending using conditional updateMany', async () => {
+    prisma.webhookDelivery.findUnique.mockResolvedValue({ id: 'wd_stuck', status: 'processing' });
+    prisma.webhookDelivery.updateMany.mockResolvedValue({ count: 1 });
+
+    const result = await service.retryFailedDelivery('wd_stuck');
+
+    expect(prisma.webhookDelivery.updateMany).toHaveBeenCalledWith({
+      where: { id: 'wd_stuck', status: { in: ['failed', 'processing'] } },
+      data: expect.objectContaining({ status: 'pending', attempts: 0, lastError: null }),
+    });
+    expect(prisma.webhookDelivery.update).not.toHaveBeenCalled();
+    expect(result.status).toBe('pending');
+    expect(result.deliveryId).toBe('wd_stuck');
+  });
+
+  it('throws ConflictException when status changed concurrently before the updateMany (race condition)', async () => {
+    // Simula la carrera: findUnique ve 'processing', pero el worker termina y pasa a
+    // 'delivered' antes de que llegue el updateMany → count === 0 → no se sobreescribe.
+    prisma.webhookDelivery.findUnique.mockResolvedValue({ id: 'wd_race', status: 'processing' });
+    prisma.webhookDelivery.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(service.retryFailedDelivery('wd_race')).rejects.toBeInstanceOf(ConflictException);
+
+    expect(prisma.webhookDelivery.updateMany).toHaveBeenCalledWith({
+      where: { id: 'wd_race', status: { in: ['failed', 'processing'] } },
+      data: expect.any(Object),
+    });
   });
 });
