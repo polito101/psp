@@ -180,7 +180,9 @@ Si no usas los endpoints anteriores, en entornos de prueba puedes crear otro mer
 
 ## Webhooks
 
-- En `capture`, el evento `payment.succeeded` se encola y un **worker en segundo plano** (intervalo aprox. **5 s**, hasta **50** entregas por tick) hace el `POST` al `webhookUrl` del merchant; **no bloquea** la respuesta HTTP del API.
+- En `capture`, el evento `payment.succeeded` se encola y un **worker en segundo plano** hace el `POST` al `webhookUrl` del merchant; **no bloquea** la respuesta HTTP del API.
+- El worker arranca con un intervalo base de **5 s** y aplica **backoff en idle**: cuando no hay entregas pendientes dobla el intervalo (hasta un techo de 30 s); al encontrar trabajo vuelve al intervalo base. Esto reduce la carga base en BD cuando no hay actividad.
+- El worker está activo por defecto. Para separar API de worker en despliegues con múltiples réplicas, configurar `WEBHOOK_WORKER_ENABLED=false` en las réplicas de API puras y dejarlo activo (o no setearlo) en el deployment dedicado al worker.
 - Cuando hay URL configurada, el alta en cola devuelve estado **`pending`**; la entrega real y los reintentos ocurren en el worker.
 - Entre `pending` y `delivered`/`failed` puede verse **`processing`**: es un estado transitorio mientras el worker tiene reclamada la fila (evita entregas duplicadas con varias instancias o ticks solapados). El ciclo del worker **no se solapa**: tras cada barrido programa el siguiente tras esperar el intervalo.
 - Cuerpo JSON: `id` es el **id estable** de la fila `webhook_deliveries` (mismo valor en todos los reintentos de esa entrega); `created_at` es la marca de creación de esa fila (también estable). `data` lleva el payload del evento (p. ej. datos del pago). `type` es el nombre del evento (p. ej. `payment.succeeded`).

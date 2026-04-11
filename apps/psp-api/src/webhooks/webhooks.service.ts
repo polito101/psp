@@ -20,7 +20,15 @@ type DeliveryResult = {
 const MAX_ATTEMPTS = 3;
 /** Backoff base en ms. Intento n espera base * 2^(n-1): 2s, 4s, 8s */
 const BACKOFF_BASE_MS = 2_000;
+/** Intervalo base del worker cuando hay entregas pendientes. */
 const WORKER_INTERVAL_MS = 5_000;
+/**
+ * Intervalo máximo de polling en idle.
+ * Cuando no hay entregas pendientes el worker dobla el intervalo cada tick
+ * hasta alcanzar este techo, reduciendo la carga base en BD en reposo.
+ * Al encontrar trabajo (o ante cualquier error) vuelve a WORKER_INTERVAL_MS.
+ */
+const WORKER_MAX_IDLE_MS = 30_000;
 const FETCH_TIMEOUT_MS = 10_000;
 /** Máximo de fetch HTTP simultáneos por tick. Evita saturar conexiones en picos. */
 const WORKER_CONCURRENCY = 10;
@@ -34,10 +42,27 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
   private workerTimer: NodeJS.Timeout | null = null;
   private workerStopped = false;
 
-  constructor(private readonly prisma: PrismaService) {}
+  /**
+   * Controlado por la variable de entorno `WEBHOOK_WORKER_ENABLED`.
+   * - Omitida o `'true'` → worker activo (comportamiento por defecto).
+   * - `'false'` → worker desactivado; la instancia solo sirve la API.
+   *
+   * Útil al escalar horizontalmente: réplicas de API puras ponen
+   * `WEBHOOK_WORKER_ENABLED=false`; un deployment dedicado lo deja activo.
+   */
+  private readonly workerEnabled: boolean;
+
+  constructor(private readonly prisma: PrismaService) {
+    this.workerEnabled = process.env.WEBHOOK_WORKER_ENABLED !== 'false';
+  }
 
   onModuleInit() {
-    this.startWorker();
+    if (this.workerEnabled) {
+      this.startWorker();
+      this.log.log(JSON.stringify({ event: 'webhook.worker.started', intervalMs: WORKER_INTERVAL_MS }));
+    } else {
+      this.log.log(JSON.stringify({ event: 'webhook.worker.disabled', reason: 'WEBHOOK_WORKER_ENABLED=false' }));
+    }
   }
 
   onModuleDestroy() {
@@ -107,11 +132,27 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
 
   private startWorker() {
     this.workerStopped = false;
+    // Intervalo dinámico: crece en idle, se resetea al encontrar trabajo o ante errores.
+    let currentIntervalMs = WORKER_INTERVAL_MS;
+
     const runTick = async () => {
       if (this.workerStopped) return;
       try {
-        await this.processPendingDeliveries();
+        const processed = await this.processPendingDeliveries();
+        if (processed === 0) {
+          const next = Math.min(currentIntervalMs * 2, WORKER_MAX_IDLE_MS);
+          if (next !== currentIntervalMs) {
+            this.log.debug(
+              JSON.stringify({ event: 'webhook.worker.idle_backoff', nextIntervalMs: next }),
+            );
+          }
+          currentIntervalMs = next;
+        } else {
+          currentIntervalMs = WORKER_INTERVAL_MS;
+        }
       } catch (err: unknown) {
+        // Ante error, volver al intervalo base para detectar la recuperación rápido.
+        currentIntervalMs = WORKER_INTERVAL_MS;
         this.log.error(
           JSON.stringify({
             event: 'webhook.worker.error',
@@ -120,7 +161,7 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
         );
       }
       if (this.workerStopped) return;
-      this.workerTimer = setTimeout(() => void runTick(), WORKER_INTERVAL_MS);
+      this.workerTimer = setTimeout(() => void runTick(), currentIntervalMs);
     };
     void runTick();
   }
@@ -133,7 +174,12 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async processPendingDeliveries(): Promise<void> {
+  /**
+   * Busca entregas pendientes y las procesa con límite de concurrencia.
+   * Retorna el número de entregas encontradas (no necesariamente procesadas con éxito)
+   * para que el llamador pueda aplicar backoff en idle.
+   */
+  private async processPendingDeliveries(): Promise<number> {
     const now = new Date();
     const due = await this.prisma.webhookDelivery.findMany({
       where: { status: 'pending', scheduledAt: { lte: now } },
@@ -146,6 +192,8 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
       due.map((d) => () => this.tryClaimAndProcess(d.id)),
       WORKER_CONCURRENCY,
     );
+
+    return due.length;
   }
 
   /**

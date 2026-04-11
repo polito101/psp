@@ -1,7 +1,7 @@
 import { Controller, Get, Logger } from '@nestjs/common';
 import { VERSION_NEUTRAL } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { SkipThrottle } from '@nestjs/throttler';
+import { Throttle } from '@nestjs/throttler';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 
@@ -25,11 +25,37 @@ type HealthCheck = {
   details?: string;
 };
 
+type HealthResult = {
+  status: 'ok' | 'degraded';
+  timestamp: string;
+  checks: {
+    app: { status: 'ok' };
+    db: HealthCheck;
+    redis: HealthCheck;
+  };
+};
+
+/**
+ * Throttle específico para `/health`: 60 req/min por IP.
+ *
+ * Más permisivo que el global (120/min para APIs de negocio) para acomodar
+ * probes de K8s/ELB/monitoring que pueden correr desde múltiples nodos,
+ * pero no ilimitado: un flood seguiría recibiendo 429 antes de saturar DB/Redis.
+ *
+ * El caché de CACHE_TTL_MS refuerza esta protección: incluso dentro del límite,
+ * las queries reales a DB/Redis solo ocurren una vez por ventana de caché.
+ */
 @ApiTags('health')
-@SkipThrottle()
+@Throttle({ default: { limit: 60, ttl: 60_000 } })
 @Controller({ path: 'health', version: VERSION_NEUTRAL })
 export class HealthController {
+  /** TTL del caché en memoria. Múltiples hits dentro de esta ventana devuelven el mismo resultado sin tocar DB/Redis. */
+  static readonly CACHE_TTL_MS = 5_000;
+
   private readonly log = new Logger(HealthController.name);
+
+  /** Caché de la última respuesta con su instante de expiración. */
+  private cachedResult: { data: HealthResult; expiresAt: number } | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -38,7 +64,13 @@ export class HealthController {
 
   @Get()
   @ApiOperation({ summary: 'Health check básico (app/db/redis)' })
-  async getHealth() {
+  async getHealth(): Promise<HealthResult> {
+    const now = Date.now();
+
+    if (this.cachedResult && now < this.cachedResult.expiresAt) {
+      return this.cachedResult.data;
+    }
+
     const db: HealthCheck = { status: 'ok' };
     const redisCheck: HealthCheck = { status: 'ok' };
 
@@ -63,16 +95,18 @@ export class HealthController {
       this.log.error(`Health redis check failed: ${sanitizeErrorForLog(e)}`);
     }
 
-    const status = db.status === 'ok' && redisCheck.status === 'ok' ? 'ok' : 'degraded';
-    return {
-      status,
-      timestamp: new Date().toISOString(),
+    const result: HealthResult = {
+      status: db.status === 'ok' && redisCheck.status === 'ok' ? 'ok' : 'degraded',
+      timestamp: new Date(now).toISOString(),
       checks: {
-        app: { status: 'ok' as const },
+        app: { status: 'ok' },
         db,
         redis: redisCheck,
       },
     };
+
+    this.cachedResult = { data: result, expiresAt: now + HealthController.CACHE_TTL_MS };
+    return result;
   }
 }
 

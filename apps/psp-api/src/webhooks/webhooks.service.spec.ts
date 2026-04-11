@@ -311,9 +311,91 @@ describe('WebhooksService', () => {
     // claim falla → sin operaciones adicionales
     prisma.webhookDelivery.updateMany.mockResolvedValue({ count: 0 });
 
-    await (service as unknown as { processPendingDeliveries: () => Promise<void> }).processPendingDeliveries();
+    const count = await (service as unknown as { processPendingDeliveries: () => Promise<number> }).processPendingDeliveries();
 
     expect(prisma.webhookDelivery.updateMany).toHaveBeenCalledTimes(3);
+    expect(count).toBe(3);
+  });
+
+  it('processPendingDeliveries returns 0 when no due deliveries (signals idle to worker)', async () => {
+    prisma.webhookDelivery.findMany.mockResolvedValue([]);
+
+    const count = await (service as unknown as { processPendingDeliveries: () => Promise<number> }).processPendingDeliveries();
+
+    expect(count).toBe(0);
+    expect(prisma.webhookDelivery.updateMany).not.toHaveBeenCalled();
+  });
+
+  // ── feature flag & idle backoff ──────────────────────────────────────────
+  describe('WEBHOOK_WORKER_ENABLED feature flag', () => {
+    afterEach(() => {
+      delete process.env.WEBHOOK_WORKER_ENABLED;
+    });
+
+    it('starts the worker when WEBHOOK_WORKER_ENABLED is not set (default on)', () => {
+      delete process.env.WEBHOOK_WORKER_ENABLED;
+      const svc = new WebhooksService(prisma as never);
+      const startSpy = jest.spyOn(svc as unknown as { startWorker: () => void }, 'startWorker');
+      svc.onModuleInit();
+      expect(startSpy).toHaveBeenCalledTimes(1);
+      svc.onModuleDestroy();
+    });
+
+    it('starts the worker when WEBHOOK_WORKER_ENABLED=true', () => {
+      process.env.WEBHOOK_WORKER_ENABLED = 'true';
+      const svc = new WebhooksService(prisma as never);
+      const startSpy = jest.spyOn(svc as unknown as { startWorker: () => void }, 'startWorker');
+      svc.onModuleInit();
+      expect(startSpy).toHaveBeenCalledTimes(1);
+      svc.onModuleDestroy();
+    });
+
+    it('does NOT start the worker when WEBHOOK_WORKER_ENABLED=false', () => {
+      process.env.WEBHOOK_WORKER_ENABLED = 'false';
+      const svc = new WebhooksService(prisma as never);
+      const startSpy = jest.spyOn(svc as unknown as { startWorker: () => void }, 'startWorker');
+      svc.onModuleInit();
+      expect(startSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('idle backoff', () => {
+    it('processPendingDeliveries returns 0 for an empty queue (foundation for backoff logic)', async () => {
+      prisma.webhookDelivery.findMany.mockResolvedValue([]);
+
+      const count = await (service as unknown as { processPendingDeliveries: () => Promise<number> })
+        .processPendingDeliveries();
+
+      expect(count).toBe(0);
+    });
+
+    it('processPendingDeliveries returns the number of due deliveries found', async () => {
+      prisma.webhookDelivery.findMany.mockResolvedValue([{ id: 'a' }, { id: 'b' }]);
+      prisma.webhookDelivery.updateMany.mockResolvedValue({ count: 0 });
+
+      const count = await (service as unknown as { processPendingDeliveries: () => Promise<number> })
+        .processPendingDeliveries();
+
+      expect(count).toBe(2);
+    });
+
+    it('worker stops rescheduling after stopWorker is called', async () => {
+      prisma.webhookDelivery.findMany.mockResolvedValue([]);
+
+      const svc = service as unknown as {
+        startWorker: () => void;
+        stopWorker: () => void;
+        workerTimer: NodeJS.Timeout | null;
+      };
+
+      svc.startWorker();
+      // Esperar a que el primer tick (asíncrono) termine
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      svc.stopWorker();
+
+      expect(svc.workerTimer).toBeNull();
+    });
   });
 
   // ── runWithConcurrency ───────────────────────────────────────────────────

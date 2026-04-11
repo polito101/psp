@@ -14,12 +14,14 @@ describe('HealthController', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    jest.useRealTimers();
     controller = new HealthController(prisma as never, redis as never);
     logErrorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
   });
 
   afterEach(() => {
     logErrorSpy.mockRestore();
+    jest.useRealTimers();
   });
 
   it('returns ok when DB and Redis checks pass', async () => {
@@ -82,6 +84,67 @@ describe('HealthController', () => {
     expect(result.checks.redis.status).toBe('error');
   });
 
+  // ── in-memory cache ──────────────────────────────────────────────────────
+  describe('in-memory cache', () => {
+    it('returns cached result on second call within TTL without re-querying DB/Redis', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      redis.getClient.mockReturnValue({ ping: jest.fn().mockResolvedValue('PONG') });
+
+      const first = await controller.getHealth();
+      const second = await controller.getHealth();
+
+      // El resultado debe ser el mismo objeto (referencia)
+      expect(second).toBe(first);
+      // DB y Redis solo consultados una vez
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-queries DB/Redis after cache TTL expires', async () => {
+      jest.useFakeTimers();
+
+      prisma.$queryRaw.mockResolvedValue([]);
+      redis.getClient.mockReturnValue({ ping: jest.fn().mockResolvedValue('PONG') });
+
+      await controller.getHealth();
+
+      // Avanzar el tiempo más allá del TTL
+      jest.advanceTimersByTime(HealthController.CACHE_TTL_MS + 1);
+
+      await controller.getHealth();
+
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    });
+
+    it('caches degraded results too (avoids hammering DB when it is down)', async () => {
+      prisma.$queryRaw.mockRejectedValue(new Error('db down'));
+      redis.getClient.mockReturnValue(null);
+
+      const first = await controller.getHealth();
+      const second = await controller.getHealth();
+
+      expect(first.status).toBe('degraded');
+      expect(second).toBe(first);
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    });
+
+    it('cache timestamp reflects when the check was performed, not when the cache was hit', async () => {
+      jest.useFakeTimers();
+      const t0 = Date.now();
+
+      prisma.$queryRaw.mockResolvedValue([]);
+      redis.getClient.mockReturnValue({ ping: jest.fn().mockResolvedValue('PONG') });
+
+      const first = await controller.getHealth();
+      jest.advanceTimersByTime(1_000);
+      const second = await controller.getHealth();
+
+      // Ambas llamadas devuelven la misma marca temporal (la del check real)
+      expect(second.timestamp).toBe(first.timestamp);
+      expect(new Date(first.timestamp).getTime()).toBe(t0);
+    });
+  });
+
+  // ── log sanitization ──────────────────────────────────────────────────────
   describe('log sanitization', () => {
     it('redacts connection URLs with credentials from DB error log', async () => {
       prisma.$queryRaw.mockRejectedValue(
