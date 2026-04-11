@@ -3,10 +3,11 @@ import { ApiKeyGuard, MERCHANT_KEY } from './api-key.guard';
 
 jest.mock('bcryptjs', () => ({
   compare: jest.fn(),
-  // hashSync es llamado a nivel de módulo para generar DUMMY_HASH al importar el guard.
-  hashSync: jest.fn().mockReturnValue('$2b$12$dummy_hash_for_tests'),
 }));
 import { compare } from 'bcryptjs';
+
+// El DUMMY_HASH ya no se calcula en tiempo de módulo; es el literal precomputado del guard.
+const DUMMY_HASH = '$2b$12$mNdNhOlp1G8aJ3nwPInclOPq9ClQCn/Lxt0XHVeaXiy0Kq1D3A5WW';
 
 describe('ApiKeyGuard', () => {
   const prisma = {
@@ -57,7 +58,7 @@ describe('ApiKeyGuard', () => {
 
     // bcrypt.compare debe invocarse aunque el merchant no exista (anti-timing).
     expect(compare).toHaveBeenCalledTimes(1);
-    expect(compare).toHaveBeenCalledWith('psp.m_1.secret', '$2b$12$dummy_hash_for_tests');
+    expect(compare).toHaveBeenCalledWith('psp.m_1.secret', DUMMY_HASH);
   });
 
   it('returns Unauthorized when api key hash comparison fails', async () => {

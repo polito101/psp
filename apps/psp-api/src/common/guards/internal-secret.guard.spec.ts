@@ -1,6 +1,20 @@
 import { ExecutionContext, UnauthorizedException } from '@nestjs/common';
 import { InternalSecretGuard } from './internal-secret.guard';
 
+// Wrapping timingSafeEqual en jest.fn() delegando a la implementación real.
+// Permite verificar que se invoca siempre, incluso cuando las longitudes difieren.
+// jest.mock se iza antes de los imports, por lo que el guard recibe el mock.
+jest.mock('crypto', () => {
+  const actual = jest.requireActual<typeof import('crypto')>('crypto');
+  return {
+    ...actual,
+    timingSafeEqual: jest.fn().mockImplementation(
+      (a: Uint8Array, b: Uint8Array) => actual.timingSafeEqual(a, b),
+    ),
+  };
+});
+import { timingSafeEqual } from 'crypto';
+
 const makeContext = (
   headers: Record<string, string | string[] | undefined>,
 ): ExecutionContext =>
@@ -63,10 +77,27 @@ describe('InternalSecretGuard', () => {
     ).toThrow(UnauthorizedException);
   });
 
-  it('throws Unauthorized when provided secret has different length (no timing shortcut)', () => {
+  it('throws Unauthorized when provided secret has different length', () => {
     const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
     expect(() =>
       guard.canActivate(makeContext({ 'x-internal-secret': 'short' })),
     ).toThrow(UnauthorizedException);
+  });
+
+  it('calls timingSafeEqual even when lengths differ (no short-circuit)', () => {
+    // Verifica que timingSafeEqual se invoca siempre, independientemente de si la
+    // longitud del secreto proporcionado coincide con la esperada. Sin esta garantía,
+    // un atacante podría inferir la longitud del secreto configurado midiendo el tiempo
+    // de respuesta: las requests con longitud incorrecta devolverían 401 más rápido
+    // porque el cortocircuito de `sameLength && timingSafeEqual(...)` evitaría la
+    // comparación de tiempo constante.
+    (timingSafeEqual as jest.Mock).mockClear();
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+
+    expect(() =>
+      guard.canActivate(makeContext({ 'x-internal-secret': 'short' })),
+    ).toThrow(UnauthorizedException);
+
+    expect(timingSafeEqual).toHaveBeenCalledTimes(1);
   });
 });

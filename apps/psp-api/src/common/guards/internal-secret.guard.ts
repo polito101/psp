@@ -36,11 +36,14 @@ export class InternalSecretGuard implements CanActivate {
     const providedBuf = Buffer.from(provided);
     const sameLength = expectedBuf.length === providedBuf.length;
 
-    // Comparar siempre buffers del mismo tamaño: si las longitudes difieren usamos
-    // un buffer dummy para que timingSafeEqual se ejecute igualmente y no haya
-    // diferencia de tiempo observable basada en la longitud del secreto enviado.
+    // `cmpBuf` tiene siempre la misma longitud que `expectedBuf`: cuando las longitudes
+    // difieren se usa un buffer de ceros para poder llamar a `timingSafeEqual` igualmente.
+    // IMPORTANTE: `timingSafeEqual` debe evaluarse primero, sin cortocircuito, para que
+    // el tiempo de respuesta sea constante independientemente de si las longitudes coinciden.
+    // `sameLength && isEqual` (y no `sameLength && timingSafeEqual(...)`) garantiza esto.
     const cmpBuf = sameLength ? providedBuf : Buffer.alloc(expectedBuf.length);
-    const isMatch = sameLength && timingSafeEqual(expectedBuf, cmpBuf);
+    const isEqual = timingSafeEqual(expectedBuf, cmpBuf);
+    const isMatch = sameLength && isEqual;
 
     if (!isMatch) {
       throw new UnauthorizedException(UNAUTHORIZED_MESSAGE);

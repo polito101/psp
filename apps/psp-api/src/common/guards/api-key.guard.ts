@@ -11,19 +11,20 @@ export const MERCHANT_KEY = 'merchant';
 const UNAUTHORIZED_MESSAGE = 'Unauthorized';
 
 /**
- * Mismo coste que en merchants.service.ts (12 rounds).
- * Mantenerlo sincronizado garantiza que el tiempo de bcrypt.compare
- * sea idéntico en todas las rutas de rechazo.
+ * Hash precomputado de `'__psp_guard_timing_dummy__'` con coste bcrypt 12.
+ *
+ * Se usa cuando el merchant no existe para que `bcrypt.compare` se ejecute
+ * igualmente y el tiempo de respuesta sea indistinguible del caso en que sí
+ * existe, evitando inferencia por timing sobre la existencia de un merchantId.
+ *
+ * Usar un literal en lugar de `bcrypt.hashSync(...)` al nivel del módulo evita
+ * bloquear el event loop ~300 ms en cada arranque del proceso.
+ *
+ * Para regenerar (offline):
+ *   node -e "const b=require('bcryptjs'); console.log(b.hashSync('__psp_guard_timing_dummy__',12))"
  */
-const BCRYPT_COST = 12;
-
-/**
- * Hash dummy calculado una vez al arrancar el módulo.
- * Se usa cuando el merchant no existe para forzar la llamada a bcrypt.compare
- * y así igualar el tiempo de respuesta con rutas que sí tienen merchant,
- * evitando inferencia por timing sobre la existencia de un merchantId.
- */
-const DUMMY_HASH: string = bcrypt.hashSync('__psp_guard_timing_dummy__', BCRYPT_COST);
+const DUMMY_HASH =
+  '$2b$12$mNdNhOlp1G8aJ3nwPInclOPq9ClQCn/Lxt0XHVeaXiy0Kq1D3A5WW';
 
 @Injectable()
 export class ApiKeyGuard implements CanActivate {

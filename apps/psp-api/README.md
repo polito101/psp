@@ -9,11 +9,11 @@ Servicio NestJS: Single API REST v1, ledger, webhooks y checkout Pay-by-link.
 
 ## Base de datos y Prisma ORM 7
 
-Este proyecto usa **Prisma ORM 7** con cliente generado en `src/generated/prisma` (carpeta **ignorada por git**).
+Este proyecto usa **Prisma ORM 7**. El cliente se genera en `src/generated/prisma/` (TypeScript, compilado por `nest build` → `dist/generated/prisma/`). El directorio `src/generated/` está en `.gitignore`; se crea ejecutando `prisma generate`.
 
 - **`prisma.config.ts`** (junto a `package.json` de este app): define `schema`, ruta de migraciones y `DATABASE_URL` para la CLI. Carga `.env` con `dotenv` (la CLI de Prisma 7 **no** inyecta variables por defecto).
-- **Runtime:** `PrismaService` usa el adaptador **`@prisma/adapter-pg`** y `pg` (TCP directo a PostgreSQL). Hace falta **`DATABASE_URL`** válida en `.env` al arrancar la API.
-- Tras **`npm ci`** o un clone limpio, ejecuta siempre **`npx prisma generate`** (o los scripts npm que lo encadenan) antes de `npm run build`, `npm run lint` o `npm run start:dev`, o TypeScript no encontrará el cliente.
+- **Runtime:** `PrismaService` importa `PrismaClient` de `../generated/prisma/client` y usa el adaptador **`@prisma/adapter-pg`** / `pg` (TCP directo a PostgreSQL). Hace falta **`DATABASE_URL`** válida en `.env` al arrancar la API.
+- Tras **`npm ci`** o un clone limpio, ejecuta siempre **`npx prisma generate`** antes de `npm run build`, `npm run lint` o `npm run start:dev`.
 - Los scripts **`npm run prisma:migrate`** y **`npm run prisma:migrate:deploy`** ejecutan la migración y luego **`prisma generate`**, porque en v7 `migrate` **no** genera el cliente automáticamente.
 - En **Windows**, si `prisma generate` falla con error de bloqueo de archivo (p. ej. EPERM), cierra procesos Node que estén usando la API y vuelve a intentar.
 
@@ -175,7 +175,7 @@ Si no usas los endpoints anteriores, en entornos de prueba puedes crear otro mer
 - `400 Expected property name...`: JSON mal formado en body (evita escapados manuales complejos y usa `ConvertTo-Json`).
 - `409 Idempotency-Key already used with different payload`: genera una nueva key para una nueva intención de cobro.
 - `429 Too Many Requests`: espera a la ventana de rate limit o reduce ráfagas de requests.
-- Errores de TypeScript del tipo *Cannot find module* hacia `generated/prisma`: ejecuta `npx prisma generate` desde `apps/psp-api` con `DATABASE_URL` definida (p. ej. en `.env`).
+- Errores de TypeScript del tipo *Cannot find module* hacia `../generated/prisma/client`: ejecuta `npx prisma generate` desde `apps/psp-api` con `DATABASE_URL` definida (p. ej. en `.env`). El directorio `src/generated/` se crea en ese momento.
 - Filas `webhook_deliveries` atascadas en **`processing`** tras un corte brusco del proceso (kill -9, OOM): situación rara; recupéralas con el mismo endpoint operativo que los fallidos: `POST /api/v1/webhooks/deliveries/{id}/retry` con `X-Internal-Secret` (reencola como **`pending`** y reinicia intentos).
 
 ## Webhooks
