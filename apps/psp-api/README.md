@@ -4,8 +4,18 @@ Servicio NestJS: Single API REST v1, ledger, webhooks y checkout Pay-by-link.
 
 ## Requisitos
 
-- Node.js 20+
+- **Node.js 22** (recomendado) o **≥ 20.19** (mínimo soportado por Prisma ORM 7)
 - Docker (PostgreSQL + Redis) o credenciales propias
+
+## Base de datos y Prisma ORM 7
+
+Este proyecto usa **Prisma ORM 7** con cliente generado en `src/generated/prisma` (carpeta **ignorada por git**).
+
+- **`prisma.config.ts`** (junto a `package.json` de este app): define `schema`, ruta de migraciones y `DATABASE_URL` para la CLI. Carga `.env` con `dotenv` (la CLI de Prisma 7 **no** inyecta variables por defecto).
+- **Runtime:** `PrismaService` usa el adaptador **`@prisma/adapter-pg`** y `pg` (TCP directo a PostgreSQL). Hace falta **`DATABASE_URL`** válida en `.env` al arrancar la API.
+- Tras **`npm ci`** o un clone limpio, ejecuta siempre **`npx prisma generate`** (o los scripts npm que lo encadenan) antes de `npm run build`, `npm run lint` o `npm run start:dev`, o TypeScript no encontrará el cliente.
+- Los scripts **`npm run prisma:migrate`** y **`npm run prisma:migrate:deploy`** ejecutan la migración y luego **`prisma generate`**, porque en v7 `migrate` **no** genera el cliente automáticamente.
+- En **Windows**, si `prisma generate` falla con error de bloqueo de archivo (p. ej. EPERM), cierra procesos Node que estén usando la API y vuelve a intentar.
 
 ## Arranque local
 
@@ -15,6 +25,15 @@ docker compose up -d
 
 cd apps/psp-api
 cp .env.example .env
+# Ajusta DATABASE_URL, INTERNAL_API_SECRET y APP_ENCRYPTION_KEY en .env
+
+npm run prisma:migrate:deploy
+npm run start:dev
+```
+
+Equivalente manual (misma idea que `prisma:migrate:deploy`):
+
+```bash
 npx prisma migrate deploy
 npx prisma generate
 npm run start:dev
@@ -30,9 +49,18 @@ En Windows, se recomienda PowerShell. Nota: en PowerShell `curl` puede ser un al
 PowerShell:
 
 ```powershell
+# Sustituye SECRET por el valor de INTERNAL_API_SECRET de tu .env
 Invoke-RestMethod -Method Post "http://localhost:3000/api/v1/merchants" `
-  -Headers @{ "Content-Type"="application/json"; "X-Internal-Secret"="change-me-in-production" } `
+  -Headers @{ "Content-Type"="application/json"; "X-Internal-Secret"="SECRET" } `
   -Body '{"name":"Demo"}'
+```
+
+Opcional: caducidad de la API key al crear el comercio (`keyTtlDays`, entre 1 y 3650; sin campo, la key no expira por fecha):
+
+```powershell
+Invoke-RestMethod -Method Post "http://localhost:3000/api/v1/merchants" `
+  -Headers @{ "Content-Type"="application/json"; "X-Internal-Secret"="SECRET" } `
+  -Body '{"name":"Demo","keyTtlDays":90}'
 ```
 
 Git Bash / WSL / macOS / Linux:
@@ -40,7 +68,7 @@ Git Bash / WSL / macOS / Linux:
 ```bash
 curl -s -X POST http://localhost:3000/api/v1/merchants \
   -H "Content-Type: application/json" \
-  -H "X-Internal-Secret: change-me-in-production" \
+  -H "X-Internal-Secret: SECRET" \
   -d "{\"name\":\"Demo\"}"
 ```
 
@@ -103,16 +131,40 @@ Invoke-RestMethod -Method Post "http://localhost:3000/api/v1/payments" `
 ## API keys (seguridad MVP)
 
 - Formato esperado: `psp.<merchantId>.<secret>`.
-- Para un merchant comprometido, revoca/rota creando nueva credencial y dejando de usar la anterior.
 - Nunca compartas `X-API-Key` por chat, capturas ni logs.
 - El backend responde `401 Unauthorized` de forma uniforme para evitar filtrado de pistas.
+- **TTL al crear:** el body de `POST /api/v1/merchants` puede incluir `keyTtlDays` (1–3650). Sin el campo, la key no tiene fecha de caducidad.
+- Tras **revocación** o **caducidad**, hace falta **`rotate-key`** para obtener una key nueva en claro (una sola vez en la respuesta).
 
-### Rotación manual (demo)
+### Revocar y rotar (endpoints internos)
 
-1. Crea un merchant nuevo con `POST /api/v1/merchants` y guarda su nueva `apiKey`.
-2. Actualiza consumidores para usar la nueva key.
-3. Deja de usar la key previa en scripts y Swagger.
-4. Si compartiste una key por error, rota inmediatamente.
+Ambos usan la cabecera **`X-Internal-Secret`** (mismo secreto que en el alta de merchant).
+
+**Revocar** la key actual (bloquea el comercio hasta rotar; no devuelve key nueva):
+
+```powershell
+$mid = "PEGAR_MERCHANT_ID"
+Invoke-RestMethod -Method Post "http://localhost:3000/api/v1/merchants/$mid/revoke-key" `
+  -Headers @{ "X-Internal-Secret"="SECRET" }
+```
+
+**Rotar** y obtener una `apiKey` nueva (opcional: `keyTtlDays` en el body para la nueva key):
+
+```powershell
+$mid = "PEGAR_MERCHANT_ID"
+Invoke-RestMethod -Method Post "http://localhost:3000/api/v1/merchants/$mid/rotate-key" `
+  -Headers @{ "Content-Type"="application/json"; "X-Internal-Secret"="SECRET" } `
+  -Body '{}'
+
+# Con TTL de 180 días para la nueva key:
+Invoke-RestMethod -Method Post "http://localhost:3000/api/v1/merchants/$mid/rotate-key" `
+  -Headers @{ "Content-Type"="application/json"; "X-Internal-Secret"="SECRET" } `
+  -Body '{"keyTtlDays":180}'
+```
+
+### Rotación manual (solo demo)
+
+Si no usas los endpoints anteriores, en entornos de prueba puedes crear otro merchant y migrar integraciones a su nueva `apiKey`.
 
 ## Troubleshooting rápido (PowerShell + Swagger)
 
@@ -123,15 +175,17 @@ Invoke-RestMethod -Method Post "http://localhost:3000/api/v1/payments" `
 - `400 Expected property name...`: JSON mal formado en body (evita escapados manuales complejos y usa `ConvertTo-Json`).
 - `409 Idempotency-Key already used with different payload`: genera una nueva key para una nueva intención de cobro.
 - `429 Too Many Requests`: espera a la ventana de rate limit o reduce ráfagas de requests.
+- Errores de TypeScript del tipo *Cannot find module* hacia `generated/prisma`: ejecuta `npx prisma generate` desde `apps/psp-api` con `DATABASE_URL` definida (p. ej. en `.env`).
 
 ## Webhooks
 
-- En `capture`, el evento `payment.succeeded` se encola y un worker en segundo plano hace el `POST` al `webhookUrl` del merchant (no bloquea la respuesta del API).
+- En `capture`, el evento `payment.succeeded` se encola y un **worker en segundo plano** (intervalo aprox. **5 s**, hasta **50** entregas por tick) hace el `POST` al `webhookUrl` del merchant; **no bloquea** la respuesta HTTP del API.
+- Cuando hay URL configurada, el alta en cola devuelve estado **`pending`**; la entrega real y los reintentos ocurren en el worker.
 - Cuerpo JSON: `id` es el **id estable** de la fila `webhook_deliveries` (mismo valor en todos los reintentos de esa entrega); `created_at` es la marca de creación de esa fila (también estable). `data` lleva el payload del evento (p. ej. datos del pago). `type` es el nombre del evento (p. ej. `payment.succeeded`).
 - Cabecera `X-PSP-Delivery-Id`: mismo id que `id` en el body, útil para deduplicar sin parsear JSON.
 - La firma va en `X-PSP-Signature` con formato `t=<unix>,v1=<hmac_sha256>`. El `t` es **nuevo en cada intento** (anti-replay); el body firmado es idéntico entre reintentos salvo que cambies datos en servidor.
 - Reintentos automáticos con backoff hasta 3 intentos antes de `failed` en `webhook_deliveries`.
-- Operación interna: `POST /api/v1/webhooks/deliveries/{id}/retry` con `X-Internal-Secret` reencola una entrega fallida (mismo `id`/`created_at` de evento que antes).
+- Operación interna: `POST /api/v1/webhooks/deliveries/{id}/retry` con `X-Internal-Secret` **solo reencola** la fila (`pending` de nuevo); **no** ejecuta el `fetch` en la misma petición HTTP del cliente: lo procesará el worker.
 
 ### Verificación de firma + anti-replay (receptor)
 
@@ -217,11 +271,13 @@ Opcional con base URL distinta:
 Workflow dedicado para este servicio:
 
 - `.github/workflows/psp-api-ci.yml`
-- ejecuta `npm run -s lint` y `npm test --silent` cuando cambian archivos de `apps/psp-api`
+- Dispara en cambios bajo `apps/psp-api/` o en el propio workflow.
+- **Node 22**, variable `DATABASE_URL` de placeholder (solo para cargar `prisma.config.ts` y **`npx prisma generate`**).
+- Pasos: `npm ci` → **`npx prisma generate`** → `npm run -s lint` → `npm test --silent`.
 
 ## Variables
 
-Ver [.env.example](./.env.example). `APP_ENCRYPTION_KEY` debe tener al menos 32 caracteres.
+Ver [.env.example](./.env.example). `APP_ENCRYPTION_KEY` debe tener al menos 32 caracteres. **`DATABASE_URL`** debe apuntar a PostgreSQL y es obligatoria para la CLI de Prisma y para el arranque de la API (adaptador `pg`).
 
 ## Tests
 
