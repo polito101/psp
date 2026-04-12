@@ -53,7 +53,8 @@ const REDACT_AFTER_PREFIXES: readonly string[] = [
  *
  * Comportamiento por `HTTP_LOG_MODE` (por defecto: `all` fuera de producción;
  * en `production` solo `errors` para limitar ruido y coste bajo carga alta).
- * Rutas de alto QPS pueden excluirse con `HTTP_LOG_SKIP_PATH_PREFIXES`.
+ * Rutas de alto QPS pueden reducir ruido con `HTTP_LOG_SKIP_PATH_PREFIXES`: no se emite
+ * línea para respuestas exitosas (status menor que 400) en esos prefijos; 4xx/5xx se loguean siempre.
  * En `sandbox` y `production` se fusiona por defecto el prefijo `/api/v1/pay`
  * (además de los configurados).
  */
@@ -86,16 +87,15 @@ export class HttpLoggingInterceptor implements NestInterceptor {
     const http = context.switchToHttp();
     const req = http.getRequest<HttpLoggableRequest>();
     const rawPath = (req.originalUrl ?? req.url ?? '').split('?')[0] ?? '';
+    const isSkipped = pathMatchesSkipList(rawPath, this.skipPrefixes);
 
     if (req.method === 'GET' && rawPath === '/health') {
       return next.handle();
     }
 
-    if (pathMatchesSkipList(rawPath, this.skipPrefixes)) {
-      return next.handle();
-    }
-
-    if (this.mode === 'sample' && Math.random() >= this.sampleRate) {
+    // Rutas en skip list siguen pasando por `finalize` para poder loguear 4xx/5xx;
+    // el muestreo aleatorio no debe descartar por completo esas peticiones.
+    if (this.mode === 'sample' && !isSkipped && Math.random() >= this.sampleRate) {
       return next.handle();
     }
 
@@ -104,6 +104,9 @@ export class HttpLoggingInterceptor implements NestInterceptor {
       finalize(() => {
         const res = http.getResponse<{ statusCode?: number }>();
         const statusCode = res.statusCode ?? 0;
+        if (isSkipped && statusCode < 400) {
+          return;
+        }
         if (this.mode === 'errors' && statusCode < 400) {
           return;
         }
@@ -268,8 +271,8 @@ export function redactSensitivePath(path: string): string {
 }
 
 /**
- * En `sandbox` y `production`, añade prefijos omitidos por defecto (`/api/v1/pay`)
- * además de los definidos en env.
+ * En `sandbox` y `production`, añade prefijos con skip de éxitos por defecto (`/api/v1/pay`)
+ * además de los definidos en env (4xx/5xx no se omiten).
  */
 export function mergeSkipPrefixes(parsed: string[], nodeEnv: string): string[] {
   const defaults =
