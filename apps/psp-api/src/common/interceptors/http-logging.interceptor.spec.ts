@@ -26,7 +26,7 @@ describe('HttpLoggingInterceptor path helpers', () => {
     it('strips trailing slashes except for root', () => {
       expect(parseSkipPrefixes('/api/v1/webhooks/')).toEqual(['/api/v1/webhooks']);
       expect(parseSkipPrefixes('/api/v1/webhooks///')).toEqual(['/api/v1/webhooks']);
-      expect(parseSkipPrefixes('/')).toEqual(['/']);
+      expect(parseSkipPrefixes('/')).toEqual([]);
     });
   });
 
@@ -43,6 +43,11 @@ describe('HttpLoggingInterceptor path helpers', () => {
       const prefixesWithSlash = ['/api/v1/webhooks/'];
       expect(pathMatchesSkipList('/api/v1/webhooks/inbound', prefixesWithSlash)).toBe(true);
       expect(pathMatchesSkipList('/api/v1/webhooks', prefixesWithSlash)).toBe(true);
+    });
+
+    it('ignores root prefix / to avoid accidental skip-all', () => {
+      expect(pathMatchesSkipList('/api/v1/pay', ['/'])).toBe(false);
+      expect(pathMatchesSkipList('/', ['/'])).toBe(false);
     });
   });
 

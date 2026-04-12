@@ -108,6 +108,89 @@ describe('PaymentsService', () => {
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
+  it('creates payment when Redis getIdempotency fails and no row exists yet', async () => {
+    redis.getIdempotency.mockRejectedValue(new Error('ECONNREFUSED'));
+    prisma.payment.findUnique.mockResolvedValue(null);
+    const created = {
+      id: 'pay_new',
+      amountMinor: 1999,
+      currency: 'EUR',
+      paymentLinkId: null,
+      rail: 'fiat',
+      status: 'pending',
+    };
+    prisma.payment.create.mockResolvedValue(created);
+    redis.setIdempotency.mockResolvedValue(true);
+
+    const result = await service.create('m_1', {
+      amountMinor: 1999,
+      currency: 'EUR',
+      rail: 'fiat',
+      idempotencyKey: 'idem-redis-down',
+    });
+
+    expect(result).toBe(created);
+    expect(prisma.payment.findUnique).toHaveBeenCalledWith({
+      where: {
+        merchantId_idempotencyKey: {
+          merchantId: 'm_1',
+          idempotencyKey: 'idem-redis-down',
+        },
+      },
+    });
+    expect(prisma.payment.create).toHaveBeenCalled();
+    expect(redis.setIdempotency).toHaveBeenCalledWith(
+      'pay:m_1:idem-redis-down',
+      'pay_new',
+      24 * 3600,
+    );
+  });
+
+  it('returns existing payment when Redis getIdempotency fails but row exists', async () => {
+    redis.getIdempotency.mockRejectedValue(new Error('ECONNREFUSED'));
+    const existing = {
+      id: 'pay_1',
+      amountMinor: 1999,
+      currency: 'EUR',
+      paymentLinkId: null,
+      rail: 'fiat',
+    };
+    prisma.payment.findUnique.mockResolvedValue(existing);
+
+    const result = await service.create('m_1', {
+      amountMinor: 1999,
+      currency: 'EUR',
+      rail: 'fiat',
+      idempotencyKey: 'idem-redis-down',
+    });
+
+    expect(result).toBe(existing);
+    expect(prisma.payment.create).not.toHaveBeenCalled();
+  });
+
+  it('returns created payment when Redis setIdempotency fails after create', async () => {
+    redis.getIdempotency.mockResolvedValue(null);
+    const created = {
+      id: 'pay_new',
+      amountMinor: 1999,
+      currency: 'EUR',
+      paymentLinkId: null,
+      rail: 'fiat',
+      status: 'pending',
+    };
+    prisma.payment.create.mockResolvedValue(created);
+    redis.setIdempotency.mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const result = await service.create('m_1', {
+      amountMinor: 1999,
+      currency: 'EUR',
+      rail: 'fiat',
+      idempotencyKey: 'idem-set-fail',
+    });
+
+    expect(result).toBe(created);
+  });
+
   it('returns existing payment after P2002 race when payload matches', async () => {
     redis.getIdempotency.mockResolvedValue(null);
     prisma.payment.create.mockRejectedValue({ code: 'P2002' });

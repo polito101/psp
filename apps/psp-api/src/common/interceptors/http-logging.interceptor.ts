@@ -70,9 +70,15 @@ export class HttpLoggingInterceptor implements NestInterceptor {
   constructor(private readonly config: ConfigService) {
     this.mode = this.config.get<HttpLogMode>('HTTP_LOG_MODE') ?? 'all';
     this.sampleRate = Number(this.config.get<string>('HTTP_LOG_SAMPLE_RATE') ?? '0.1');
-    const parsed = parseSkipPrefixes(this.config.get<string>('HTTP_LOG_SKIP_PATH_PREFIXES') ?? '');
+    const rawSkipPrefixes = this.config.get<string>('HTTP_LOG_SKIP_PATH_PREFIXES') ?? '';
+    const parsed = parseSkipPrefixes(rawSkipPrefixes);
     const nodeEnv = this.config.get<string>('NODE_ENV') ?? 'development';
     this.skipPrefixes = mergeSkipPrefixes(parsed, nodeEnv);
+    if (rawContainsRootSkipPrefix(rawSkipPrefixes)) {
+      this.log.warn(
+        `Ignoring '/' in HTTP_LOG_SKIP_PATH_PREFIXES to avoid disabling all 2xx logs. Received: "${rawSkipPrefixes}"`,
+      );
+    }
   }
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
@@ -314,16 +320,33 @@ export function parseSkipPrefixes(raw: string): string[] {
     .map((p) => p.trim())
     .filter((p) => p.length > 0)
     .map((p) => (p.startsWith('/') ? p : `/${p}`))
-    .map((p) => normalizeSkipPathPrefix(p));
+    .map((p) => normalizeSkipPathPrefix(p))
+    .filter((p) => p !== '/');
 }
 
 /** Exportado para pruebas unitarias de reglas de exclusión por prefijo. */
 export function pathMatchesSkipList(path: string, prefixes: string[]): boolean {
   for (const prefix of prefixes) {
     const normalized = normalizeSkipPathPrefix(prefix);
+    if (normalized === '/') {
+      continue;
+    }
     if (path === normalized || path.startsWith(`${normalized}/`)) {
       return true;
     }
   }
   return false;
+}
+
+function rawContainsRootSkipPrefix(raw: string): boolean {
+  if (!raw.trim()) {
+    return false;
+  }
+  return raw
+    .split(',')
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0)
+    .map((p) => (p.startsWith('/') ? p : `/${p}`))
+    .map((p) => normalizeSkipPathPrefix(p))
+    .some((p) => p === '/');
 }
