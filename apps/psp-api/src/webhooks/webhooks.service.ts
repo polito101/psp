@@ -251,6 +251,10 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
    * Reclama la fila con `updateMany` atómico (`pending` → `processing`) y solo entonces hace el HTTP.
    * Otra instancia o el mismo tick en paralelo que pierda la carrera sale sin efecto.
    *
+   * Justo antes del `fetch`, se revalida que la fila siga en `processing`: un reintento
+   * manual puede haberla pasado a `pending` mientras preparábamos el payload; en ese
+   * caso se aborta el HTTP para no duplicar el POST (otro worker reclamará la fila).
+   *
    * Una vez reclamada la fila somos responsables de llevarla a un estado terminal
    * (`delivered`, `failed`) o de re-encolación (`pending`). El bloque try/catch externo
    * actúa como red de seguridad: ante cualquier excepción no prevista (error de BD,
@@ -346,6 +350,20 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
       const timestamp = Math.floor(Date.now() / 1000).toString();
       const signature = this.signPayload(webhookSecret, body, timestamp);
       const newAttempts = currentAttempts + 1;
+
+      const stillProcessing = await this.prisma.webhookDelivery.findFirst({
+        where: { id: delivery.id, status: STATUS_PROCESSING },
+        select: { id: true },
+      });
+      if (!stillProcessing) {
+        this.log.log(
+          JSON.stringify({
+            event: 'webhook.delivery.aborted_not_processing',
+            deliveryId: delivery.id,
+          }),
+        );
+        return;
+      }
 
       try {
         const res = await fetch(merchant.webhookUrl, {

@@ -11,6 +11,7 @@ describe('WebhooksService', () => {
     webhookDelivery: {
       create: jest.fn(),
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
       updateMany: jest.fn(),
@@ -25,6 +26,13 @@ describe('WebhooksService', () => {
     service = new WebhooksService(prisma as never);
     fetchMock = jest.fn();
     global.fetch = fetchMock as unknown as typeof fetch;
+    prisma.webhookDelivery.findFirst.mockImplementation(({ where }: { where: { id: string } }) =>
+      Promise.resolve({ id: where.id }),
+    );
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
   // ── signPayload ──────────────────────────────────────────────────────────
@@ -151,6 +159,27 @@ describe('WebhooksService', () => {
       where: { id: 'wd_1', status: 'processing' },
       data: expect.objectContaining({ status: 'failed', attempts: 3, lastError: 'network timeout' }),
     });
+  });
+
+  it('worker skips fetch when delivery left processing before HTTP (e.g. manual requeue)', async () => {
+    prisma.webhookDelivery.updateMany.mockResolvedValueOnce({ count: 1 });
+    prisma.webhookDelivery.findUnique.mockResolvedValue({
+      id: 'wd_1', merchantId: 'm_1', eventType: 'payment.succeeded',
+      payload: {}, attempts: 0, status: 'processing',
+      createdAt: createdAtFixture,
+    });
+    prisma.merchant.findUnique.mockResolvedValue({
+      webhookUrl: 'https://example.com/hook',
+      webhookSecretCiphertext: 'cipher',
+    });
+    prisma.webhookDelivery.findFirst.mockResolvedValueOnce(null);
+
+    await (service as unknown as { tryClaimAndProcess: (id: string) => Promise<void> }).tryClaimAndProcess(
+      'wd_1',
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(prisma.webhookDelivery.updateMany).toHaveBeenCalledTimes(1);
   });
 
   it('worker marks failed when webhookUrl removed during processing', async () => {
@@ -302,7 +331,6 @@ describe('WebhooksService', () => {
     expect(prisma.webhookDelivery.update).not.toHaveBeenCalled();
     expect(result.status).toBe('pending');
     expect(result.deliveryId).toBe('wd_stuck');
-    jest.useRealTimers();
   });
 
   it('rejects retry on active processing (simula fetch en curso: no reencolar → evita POST duplicado)', async () => {
@@ -317,7 +345,6 @@ describe('WebhooksService', () => {
     await expect(service.retryFailedDelivery('wd_active')).rejects.toBeInstanceOf(ConflictException);
 
     expect(prisma.webhookDelivery.updateMany).not.toHaveBeenCalled();
-    jest.useRealTimers();
   });
 
   it('throws ConflictException when status changed concurrently before the updateMany (race condition)', async () => {
@@ -341,7 +368,6 @@ describe('WebhooksService', () => {
       },
       data: expect.any(Object),
     });
-    jest.useRealTimers();
   });
 
   // ── processPendingDeliveries ─────────────────────────────────────────────
