@@ -1,6 +1,19 @@
 type EnvInput = Record<string, unknown>;
 
 /**
+ * Parsea `CORS_ALLOWED_ORIGINS` (lista separada por comas); ignora entradas vacías.
+ *
+ * @param raw Valor crudo de la variable (puede ser cadena vacía).
+ * @returns Orígenes listos para `enableCors`.
+ */
+export function parseCorsAllowedOrigins(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+}
+
+/**
  * Normaliza y valida variables de entorno críticas para evitar fallos tardíos.
  *
  * @param input Variables de entorno crudas.
@@ -39,6 +52,12 @@ export function validateEnv(input: EnvInput): EnvInput {
 
   const corsAllowedOrigins = getString(env.CORS_ALLOWED_ORIGINS) ?? '';
   env.CORS_ALLOWED_ORIGINS = corsAllowedOrigins;
+
+  if (nodeEnv === 'production' && parseCorsAllowedOrigins(corsAllowedOrigins).length === 0) {
+    throw new Error(
+      'CORS_ALLOWED_ORIGINS is required in production: set a comma-separated list of allowed origins (e.g. https://app.example.com,https://admin.example.com)',
+    );
+  }
 
   const httpLogMode = parseHttpLogMode(getString(env.HTTP_LOG_MODE), nodeEnv);
   env.HTTP_LOG_MODE = httpLogMode;
