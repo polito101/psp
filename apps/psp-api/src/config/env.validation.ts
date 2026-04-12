@@ -40,6 +40,15 @@ export function validateEnv(input: EnvInput): EnvInput {
   const corsAllowedOrigins = getString(env.CORS_ALLOWED_ORIGINS) ?? '';
   env.CORS_ALLOWED_ORIGINS = corsAllowedOrigins;
 
+  const httpLogMode = parseHttpLogMode(getString(env.HTTP_LOG_MODE), nodeEnv);
+  env.HTTP_LOG_MODE = httpLogMode;
+
+  const httpLogSampleRate = parseHttpLogSampleRate(getString(env.HTTP_LOG_SAMPLE_RATE));
+  env.HTTP_LOG_SAMPLE_RATE = String(httpLogSampleRate);
+
+  const httpLogSkipPrefixes = getString(env.HTTP_LOG_SKIP_PATH_PREFIXES) ?? '';
+  env.HTTP_LOG_SKIP_PATH_PREFIXES = httpLogSkipPrefixes;
+
   if (nodeEnv === 'sandbox') {
     const redisUrl = getString(env.REDIS_URL);
     if (!redisUrl) {
@@ -62,4 +71,31 @@ function parseBoolean(value: string | undefined, defaultValue: boolean): boolean
   if (value === 'true') return true;
   if (value === 'false') return false;
   throw new Error('ENABLE_SWAGGER must be "true" or "false"');
+}
+
+type HttpLogMode = 'off' | 'all' | 'errors' | 'sample';
+
+/**
+ * Modo de log por petición HTTP.
+ * Por defecto: `all` fuera de producción; en `production` solo `errors` (4xx/5xx) para reducir ruido y coste.
+ */
+function parseHttpLogMode(value: string | undefined, nodeEnv: string): HttpLogMode {
+  if (value === 'off' || value === 'all' || value === 'errors' || value === 'sample') {
+    return value;
+  }
+  if (value !== undefined && value.trim() !== '') {
+    throw new Error('HTTP_LOG_MODE must be one of: off, all, errors, sample');
+  }
+  return nodeEnv === 'production' ? 'errors' : 'all';
+}
+
+function parseHttpLogSampleRate(value: string | undefined): number {
+  if (value === undefined || value.trim() === '') {
+    return 0.1;
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > 1) {
+    throw new Error('HTTP_LOG_SAMPLE_RATE must be a number between 0 and 1');
+  }
+  return n;
 }

@@ -3,12 +3,10 @@ import { RequestMethod, ValidationPipe, VersioningType } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
-import { HttpLoggingInterceptor } from './common/interceptors/http-logging.interceptor';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  app.useGlobalInterceptors(new HttpLoggingInterceptor());
   app.use(helmet({ contentSecurityPolicy: false }));
   const corsAllowList = (process.env.CORS_ALLOWED_ORIGINS ?? '')
     .split(',')
