@@ -79,11 +79,13 @@ export class PaymentsService {
 
     if (dto.idempotencyKey) {
       let cached: string | null = null;
+      let idempotencyCacheGetFailed = false;
       try {
         cached = await this.redis.getIdempotency(
           `pay:${merchantId}:${dto.idempotencyKey}`,
         );
       } catch (e: unknown) {
+        idempotencyCacheGetFailed = true;
         this.log.warn(
           JSON.stringify({
             event: 'payment.create.idempotency_cache_get_failed',
@@ -92,20 +94,38 @@ export class PaymentsService {
           }),
         );
       }
-      if (cached) {
-        const existing = await this.prisma.payment.findUnique({
+
+      const idempotencyKey = dto.idempotencyKey;
+      const resolveIdempotentExisting = async () =>
+        this.prisma.payment.findUnique({
           where: {
             merchantId_idempotencyKey: {
               merchantId,
-              idempotencyKey: dto.idempotencyKey,
+              idempotencyKey,
             },
           },
         });
+
+      if (cached) {
+        const existing = await resolveIdempotentExisting();
         if (existing) {
           this.assertIdempotencyPayloadMatch(existing, dto);
           this.log.log(
             JSON.stringify({
               event: 'payment.create.idempotent_hit',
+              merchantId,
+              paymentId: existing.id,
+            }),
+          );
+          return existing;
+        }
+      } else if (idempotencyCacheGetFailed) {
+        const existing = await resolveIdempotentExisting();
+        if (existing) {
+          this.assertIdempotencyPayloadMatch(existing, dto);
+          this.log.log(
+            JSON.stringify({
+              event: 'payment.create.idempotent_hit_redis_unavailable',
               merchantId,
               paymentId: existing.id,
             }),

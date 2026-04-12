@@ -108,8 +108,9 @@ describe('PaymentsService', () => {
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('creates payment when Redis getIdempotency fails (treated as cache miss)', async () => {
+  it('creates payment when Redis getIdempotency fails and no row exists yet', async () => {
     redis.getIdempotency.mockRejectedValue(new Error('ECONNREFUSED'));
+    prisma.payment.findUnique.mockResolvedValue(null);
     const created = {
       id: 'pay_new',
       amountMinor: 1999,
@@ -129,12 +130,42 @@ describe('PaymentsService', () => {
     });
 
     expect(result).toBe(created);
+    expect(prisma.payment.findUnique).toHaveBeenCalledWith({
+      where: {
+        merchantId_idempotencyKey: {
+          merchantId: 'm_1',
+          idempotencyKey: 'idem-redis-down',
+        },
+      },
+    });
     expect(prisma.payment.create).toHaveBeenCalled();
     expect(redis.setIdempotency).toHaveBeenCalledWith(
       'pay:m_1:idem-redis-down',
       'pay_new',
       24 * 3600,
     );
+  });
+
+  it('returns existing payment when Redis getIdempotency fails but row exists', async () => {
+    redis.getIdempotency.mockRejectedValue(new Error('ECONNREFUSED'));
+    const existing = {
+      id: 'pay_1',
+      amountMinor: 1999,
+      currency: 'EUR',
+      paymentLinkId: null,
+      rail: 'fiat',
+    };
+    prisma.payment.findUnique.mockResolvedValue(existing);
+
+    const result = await service.create('m_1', {
+      amountMinor: 1999,
+      currency: 'EUR',
+      rail: 'fiat',
+      idempotencyKey: 'idem-redis-down',
+    });
+
+    expect(result).toBe(existing);
+    expect(prisma.payment.create).not.toHaveBeenCalled();
   });
 
   it('returns created payment when Redis setIdempotency fails after create', async () => {
