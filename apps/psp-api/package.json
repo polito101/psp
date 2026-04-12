@@ -9,6 +9,7 @@
     "start:prod": "node dist/main",
     "lint": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.spec.json --noEmit",
     "test": "jest",
+    "test:smoke:sandbox": "jest --config jest.smoke.config.js --runInBand",
     "test:watch": "jest --watch",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev && prisma generate",
