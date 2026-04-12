@@ -63,6 +63,8 @@ export class HttpLoggingInterceptor implements NestInterceptor {
   private readonly mode: HttpLogMode;
   private readonly sampleRate: number;
   private readonly skipPrefixes: string[];
+  /** Cache por handler: `buildNestRouteTemplate` usa `Reflect.getMetadata` varias veces. */
+  private readonly nestRouteTemplateByHandler = new WeakMap<object, string | undefined>();
 
   constructor(private readonly config: ConfigService) {
     this.mode = this.config.get<HttpLogMode>('HTTP_LOG_MODE') ?? 'all';
@@ -97,8 +99,6 @@ export class HttpLoggingInterceptor implements NestInterceptor {
       return next.handle();
     }
 
-    const nestRouteTemplate = buildNestRouteTemplate(context);
-
     const start = Date.now();
     return next.handle().pipe(
       finalize(() => {
@@ -108,6 +108,7 @@ export class HttpLoggingInterceptor implements NestInterceptor {
           return;
         }
 
+        const nestRouteTemplate = this.getNestRouteTemplate(context);
         const ms = Date.now() - start;
         const path = resolveLoggablePath(req, nestRouteTemplate);
         const line = JSON.stringify({
@@ -120,6 +121,14 @@ export class HttpLoggingInterceptor implements NestInterceptor {
         this.log.log(line);
       }),
     );
+  }
+
+  private getNestRouteTemplate(context: ExecutionContext): string | undefined {
+    const handler = context.getHandler();
+    if (!this.nestRouteTemplateByHandler.has(handler)) {
+      this.nestRouteTemplateByHandler.set(handler, buildNestRouteTemplate(context));
+    }
+    return this.nestRouteTemplateByHandler.get(handler);
   }
 }
 
