@@ -90,7 +90,7 @@ describe('WebhooksService', () => {
         status: 'pending',
         scheduledAt: { lte: expect.any(Date) },
       },
-      data: { status: 'processing' },
+      data: { status: 'processing', scheduledAt: expect.any(Date) },
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const fetchOpts = fetchMock.mock.calls[0][1] as RequestInit;
@@ -247,7 +247,7 @@ describe('WebhooksService', () => {
     await expect(service.retryFailedDelivery('wd_missing')).rejects.toBeInstanceOf(NotFoundException);
   });
 
-  it('throws ConflictException when delivery is not failed or processing', async () => {
+  it('throws ConflictException when delivery is not failed or stuck processing', async () => {
     prisma.webhookDelivery.findUnique.mockResolvedValue({ id: 'wd_1', status: 'delivered' });
     await expect(service.retryFailedDelivery('wd_1')).rejects.toBeInstanceOf(ConflictException);
   });
@@ -258,13 +258,20 @@ describe('WebhooksService', () => {
   });
 
   it('resets failed delivery to pending using conditional updateMany', async () => {
-    prisma.webhookDelivery.findUnique.mockResolvedValue({ id: 'wd_failed', status: 'failed' });
+    prisma.webhookDelivery.findUnique.mockResolvedValue({
+      id: 'wd_failed',
+      status: 'failed',
+      scheduledAt: new Date('2020-01-01T00:00:00.000Z'),
+    });
     prisma.webhookDelivery.updateMany.mockResolvedValue({ count: 1 });
 
     const result = await service.retryFailedDelivery('wd_failed');
 
     expect(prisma.webhookDelivery.updateMany).toHaveBeenCalledWith({
-      where: { id: 'wd_failed', status: { in: ['failed', 'processing'] } },
+      where: {
+        id: 'wd_failed',
+        OR: [{ status: 'failed' }, { status: 'processing', scheduledAt: { lte: expect.any(Date) } }],
+      },
       data: expect.objectContaining({ status: 'pending', attempts: 0, lastError: null }),
     });
     expect(prisma.webhookDelivery.update).not.toHaveBeenCalled();
@@ -273,32 +280,68 @@ describe('WebhooksService', () => {
   });
 
   it('resets stuck processing delivery to pending using conditional updateMany', async () => {
-    prisma.webhookDelivery.findUnique.mockResolvedValue({ id: 'wd_stuck', status: 'processing' });
+    const now = new Date('2026-04-12T12:00:00.000Z');
+    jest.useFakeTimers({ now: now.getTime() });
+    const stuckBefore = new Date(now.getTime() - 15_000);
+    prisma.webhookDelivery.findUnique.mockResolvedValue({
+      id: 'wd_stuck',
+      status: 'processing',
+      scheduledAt: new Date(now.getTime() - 20_000),
+    });
     prisma.webhookDelivery.updateMany.mockResolvedValue({ count: 1 });
 
     const result = await service.retryFailedDelivery('wd_stuck');
 
     expect(prisma.webhookDelivery.updateMany).toHaveBeenCalledWith({
-      where: { id: 'wd_stuck', status: { in: ['failed', 'processing'] } },
+      where: {
+        id: 'wd_stuck',
+        OR: [{ status: 'failed' }, { status: 'processing', scheduledAt: { lte: stuckBefore } }],
+      },
       data: expect.objectContaining({ status: 'pending', attempts: 0, lastError: null }),
     });
     expect(prisma.webhookDelivery.update).not.toHaveBeenCalled();
     expect(result.status).toBe('pending');
     expect(result.deliveryId).toBe('wd_stuck');
+    jest.useRealTimers();
+  });
+
+  it('rejects retry on active processing (simula fetch en curso: no reencolar → evita POST duplicado)', async () => {
+    const now = new Date('2026-04-12T12:00:00.000Z');
+    jest.useFakeTimers({ now: now.getTime() });
+    prisma.webhookDelivery.findUnique.mockResolvedValue({
+      id: 'wd_active',
+      status: 'processing',
+      scheduledAt: new Date(now.getTime() - 2_000),
+    });
+
+    await expect(service.retryFailedDelivery('wd_active')).rejects.toBeInstanceOf(ConflictException);
+
+    expect(prisma.webhookDelivery.updateMany).not.toHaveBeenCalled();
+    jest.useRealTimers();
   });
 
   it('throws ConflictException when status changed concurrently before the updateMany (race condition)', async () => {
-    // Simula la carrera: findUnique ve 'processing', pero el worker termina y pasa a
+    // Simula la carrera: findUnique ve 'processing' atascado, pero el worker termina y pasa a
     // 'delivered' antes de que llegue el updateMany → count === 0 → no se sobreescribe.
-    prisma.webhookDelivery.findUnique.mockResolvedValue({ id: 'wd_race', status: 'processing' });
+    const now = new Date('2026-04-12T12:00:00.000Z');
+    jest.useFakeTimers({ now: now.getTime() });
+    prisma.webhookDelivery.findUnique.mockResolvedValue({
+      id: 'wd_race',
+      status: 'processing',
+      scheduledAt: new Date(now.getTime() - 20_000),
+    });
     prisma.webhookDelivery.updateMany.mockResolvedValue({ count: 0 });
 
     await expect(service.retryFailedDelivery('wd_race')).rejects.toBeInstanceOf(ConflictException);
 
     expect(prisma.webhookDelivery.updateMany).toHaveBeenCalledWith({
-      where: { id: 'wd_race', status: { in: ['failed', 'processing'] } },
+      where: {
+        id: 'wd_race',
+        OR: [{ status: 'failed' }, { status: 'processing', scheduledAt: { lte: expect.any(Date) } }],
+      },
       data: expect.any(Object),
     });
+    jest.useRealTimers();
   });
 
   // ── processPendingDeliveries ─────────────────────────────────────────────

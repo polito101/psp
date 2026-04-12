@@ -13,7 +13,7 @@ export class WebhooksController {
   @Post('deliveries/:id/retry')
   @ApiOperation({
     summary:
-      'Reencolar entrega fallida o atascada en processing (operación interna, X-Internal-Secret)',
+      'Reencolar entrega failed o processing atascada (más antigua que timeout HTTP + 5s). Operación interna, X-Internal-Secret.',
   })
   retryFailed(@Param('id') id: string) {
     return this.webhooks.retryFailedDelivery(id);

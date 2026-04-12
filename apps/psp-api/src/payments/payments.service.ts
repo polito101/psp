@@ -78,9 +78,20 @@ export class PaymentsService {
     );
 
     if (dto.idempotencyKey) {
-      const cached = await this.redis.getIdempotency(
-        `pay:${merchantId}:${dto.idempotencyKey}`,
-      );
+      let cached: string | null = null;
+      try {
+        cached = await this.redis.getIdempotency(
+          `pay:${merchantId}:${dto.idempotencyKey}`,
+        );
+      } catch (e: unknown) {
+        this.log.warn(
+          JSON.stringify({
+            event: 'payment.create.idempotency_cache_get_failed',
+            merchantId,
+            message: e instanceof Error ? e.message : String(e),
+          }),
+        );
+      }
       if (cached) {
         const existing = await this.prisma.payment.findUnique({
           where: {
@@ -126,11 +137,22 @@ export class PaymentsService {
       });
 
       if (dto.idempotencyKey) {
-        await this.redis.setIdempotency(
-          `pay:${merchantId}:${dto.idempotencyKey}`,
-          payment.id,
-          24 * 3600,
-        );
+        try {
+          await this.redis.setIdempotency(
+            `pay:${merchantId}:${dto.idempotencyKey}`,
+            payment.id,
+            24 * 3600,
+          );
+        } catch (e: unknown) {
+          this.log.warn(
+            JSON.stringify({
+              event: 'payment.create.idempotency_cache_set_failed',
+              merchantId,
+              paymentId: payment.id,
+              message: e instanceof Error ? e.message : String(e),
+            }),
+          );
+        }
       }
 
       this.log.log(

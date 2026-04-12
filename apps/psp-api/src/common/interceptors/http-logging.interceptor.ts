@@ -321,6 +321,12 @@ export function parseSkipPrefixes(raw: string): string[] {
 export function pathMatchesSkipList(path: string, prefixes: string[]): boolean {
   for (const prefix of prefixes) {
     const normalized = normalizeSkipPathPrefix(prefix);
+    if (normalized === '/') {
+      if (path.startsWith('/')) {
+        return true;
+      }
+      continue;
+    }
     if (path === normalized || path.startsWith(`${normalized}/`)) {
       return true;
     }

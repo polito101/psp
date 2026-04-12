@@ -44,6 +44,11 @@ describe('HttpLoggingInterceptor path helpers', () => {
       expect(pathMatchesSkipList('/api/v1/webhooks/inbound', prefixesWithSlash)).toBe(true);
       expect(pathMatchesSkipList('/api/v1/webhooks', prefixesWithSlash)).toBe(true);
     });
+
+    it('treats root prefix / as skip-all for absolute paths', () => {
+      expect(pathMatchesSkipList('/api/v1/pay', ['/'])).toBe(true);
+      expect(pathMatchesSkipList('/', ['/'])).toBe(true);
+    });
   });
 
   describe('redactSensitivePath', () => {

@@ -30,6 +30,13 @@ const WORKER_INTERVAL_MS = 5_000;
  */
 const WORKER_MAX_IDLE_MS = 30_000;
 const FETCH_TIMEOUT_MS = 10_000;
+/**
+ * Tras reclamar `pending → processing`, `scheduledAt` pasa a representar el inicio del procesamiento.
+ * Un reintento manual sobre `processing` solo se permite si esa marca es anterior a este umbral
+ * (timeout HTTP + margen), evitando reencolar durante un `fetch` activo y duplicar POSTs.
+ */
+const PROCESSING_STUCK_MARGIN_MS = 5_000;
+const PROCESSING_STUCK_AFTER_MS = FETCH_TIMEOUT_MS + PROCESSING_STUCK_MARGIN_MS;
 /** Máximo de fetch HTTP simultáneos por tick. Evita saturar conexiones en picos. */
 const WORKER_CONCURRENCY = 10;
 
@@ -260,7 +267,7 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
         status: 'pending',
         scheduledAt: { lte: now },
       },
-      data: { status: STATUS_PROCESSING },
+      data: { status: STATUS_PROCESSING, scheduledAt: now },
     });
 
     if (claimed.count === 0) {
@@ -463,38 +470,46 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Reencola una entrega para el próximo tick del worker.
-   * Acepta `failed` o `processing` (p. ej. fila atascada tras caída del proceso durante el HTTP).
+   * - `failed`: siempre permitido.
+   * - `processing`: solo si está “atascada” (inicio de procesamiento anterior al umbral
+   *   `FETCH_TIMEOUT_MS + margen`), no durante un `fetch` normal.
    *
-   * El `updateMany` condicional es la parte crítica: garantiza que solo se transiciona
-   * si la fila sigue en `failed` o `processing` en el momento de la escritura. Si el worker
-   * finalizó la entrega y la pasó a `delivered` entre el `findUnique` de validación y esta
-   * escritura, `count === 0` y se lanza `ConflictException` en lugar de sobreescribir
-   * `delivered → pending`, evitando así una entrega duplicada al merchant.
+   * El `updateMany` con `OR` condicional es la parte crítica: `failed` sin más condiciones;
+   * `processing` solo si `scheduledAt` (inicio de claim) sigue siendo lo suficientemente antiguo.
+   * Si el worker terminó (`delivered`) o aún procesa sin estar atascado, `count === 0` y
+   * se lanza `ConflictException`.
    */
   async retryFailedDelivery(deliveryId: string): Promise<{
     deliveryId: string;
     status: string;
     message: string;
   }> {
+    const stuckBefore = new Date(Date.now() - PROCESSING_STUCK_AFTER_MS);
+
     const delivery = await this.prisma.webhookDelivery.findUnique({
       where: { id: deliveryId },
-      select: { id: true, status: true },
+      select: { id: true, status: true, scheduledAt: true },
     });
 
     if (!delivery) {
       throw new NotFoundException('Webhook delivery not found');
     }
-    const allowed = delivery.status === 'failed' || delivery.status === STATUS_PROCESSING;
-    if (!allowed) {
+
+    if (delivery.status === STATUS_PROCESSING && delivery.scheduledAt > stuckBefore) {
       throw new ConflictException(
-        'Only failed or processing (stuck) deliveries can be requeued',
+        'Processing delivery is not stuck yet; wait for the worker or try again later',
+      );
+    }
+    if (delivery.status !== 'failed' && delivery.status !== STATUS_PROCESSING) {
+      throw new ConflictException(
+        'Only failed or stuck processing deliveries can be requeued',
       );
     }
 
     const result = await this.prisma.webhookDelivery.updateMany({
       where: {
         id: deliveryId,
-        status: { in: ['failed', STATUS_PROCESSING] },
+        OR: [{ status: 'failed' }, { status: STATUS_PROCESSING, scheduledAt: { lte: stuckBefore } }],
       },
       data: { status: 'pending', scheduledAt: new Date(), attempts: 0, lastError: null },
     });
