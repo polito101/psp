@@ -50,8 +50,11 @@ docker build -t psp-api:sandbox .
 
 Run local de la imagen (con variables reales):
 
+La imagen define `NODE_ENV=production` en el Dockerfile; para comportamiento de **sandbox** hay que sobrescribirlo en runtime.
+
 ```bash
 docker run --rm -p 3000:3000 \
+  -e NODE_ENV=sandbox \
   -e DATABASE_URL="postgresql://psp:psp_dev_password@host.docker.internal:5433/psp?schema=public" \
   -e REDIS_URL="redis://host.docker.internal:6379" \
   -e INTERNAL_API_SECRET="replace-with-random-long-secret" \
@@ -60,6 +63,8 @@ docker run --rm -p 3000:3000 \
   -e CORS_ALLOWED_ORIGINS="http://localhost:3000" \
   psp-api:sandbox
 ```
+
+**Equivalente en pipeline / hosting:** en el servicio que ejecuta la API (p. ej. variables de entorno del Web Service en Render, grupo de variables del entorno `sandbox` en el proveedor, o `env:` en un manifiesto de despliegue) definir `NODE_ENV=sandbox`. El job `sandbox-deploy` de GitHub Actions usa `environment: sandbox` para secretos; la app que sirve tráfico debe llevar esta variable en su runtime (ver `docs/sandbox-env.md`).
 
 En `sandbox` recomendado: ejecutar `prisma migrate deploy` en pipeline antes de promover la nueva revisión de la API.
 
@@ -300,12 +305,13 @@ Workflow único del repo:
 
 - `.github/workflows/ci.yml`
 - Job `api-ci`: `npm ci` -> `prisma generate` -> `prisma migrate deploy` -> `lint` -> `test` -> `build`.
-- Job `sandbox-deploy` (solo branch `sandbox`): migración sobre sandbox, trigger de deploy hook, health check y smoke tests.
+- Job `sandbox-deploy` (solo branch `sandbox`): build de imagen, migración sobre sandbox, trigger de deploy hook, health check y smoke tests. No inyecta `NODE_ENV` en el contenedor remoto: debe configurarse en el hosting como `NODE_ENV=sandbox` (equivalente al `-e` de Docker).
 
 ## Variables
 
 Ver [.env.example](./.env.example). `APP_ENCRYPTION_KEY` debe tener al menos 32 caracteres. **`DATABASE_URL`** debe apuntar a PostgreSQL y es obligatoria para la CLI de Prisma y para el arranque de la API (adaptador `pg`). Para sandbox interno, usar además:
 
+- `NODE_ENV=sandbox` (obligatorio en runtime de sandbox; ver sección Docker y `docs/sandbox-env.md`)
 - `ENABLE_SWAGGER=true|false`
 - `CORS_ALLOWED_ORIGINS` (lista separada por comas)
 - `SMOKE_BASE_URL` (en CI para suite de smoke)
