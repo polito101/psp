@@ -7,10 +7,8 @@ FROM node:22-alpine AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# Prisma v7 requiere DATABASE_URL en tiempo de generate.
-ARG DATABASE_URL="postgresql://docker:docker@localhost:5432/docker?schema=public"
-ENV DATABASE_URL=${DATABASE_URL}
-RUN npx prisma generate
+# Dummy solo para este RUN: Prisma v7 lo exige en generate; no usar ARG/ENV (evita filtrar secretos de CI en la imagen).
+RUN DATABASE_URL="postgresql://docker:docker@localhost:5432/docker?schema=public" npx prisma generate
 RUN npm run build
 
 FROM node:22-alpine AS runtime
