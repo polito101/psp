@@ -8,7 +8,11 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   app.use(helmet({ contentSecurityPolicy: false }));
-  app.enableCors({ origin: true });
+  const corsAllowList = (process.env.CORS_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+  app.enableCors({ origin: corsAllowList.length > 0 ? corsAllowList : false });
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -24,16 +28,18 @@ async function bootstrap() {
     defaultVersion: '1',
   });
 
-  const config = new DocumentBuilder()
-    .setTitle('PSP Gateway API')
-    .setDescription('Single API REST para comercios: payment links, pagos, ledger y webhooks.')
-    .setVersion('1.0')
-    .addApiKey({ type: 'apiKey', name: 'X-API-Key', in: 'header' }, 'ApiKey')
-    .addApiKey({ type: 'apiKey', name: 'X-Internal-Secret', in: 'header' }, 'InternalSecret')
-    .build();
+  if (process.env.ENABLE_SWAGGER === 'true') {
+    const config = new DocumentBuilder()
+      .setTitle('PSP Gateway API')
+      .setDescription('Single API REST para comercios: payment links, pagos, ledger y webhooks.')
+      .setVersion('1.0')
+      .addApiKey({ type: 'apiKey', name: 'X-API-Key', in: 'header' }, 'ApiKey')
+      .addApiKey({ type: 'apiKey', name: 'X-Internal-Secret', in: 'header' }, 'InternalSecret')
+      .build();
 
-  const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api/docs', app, document);
+    const document = SwaggerModule.createDocument(app, config);
+    SwaggerModule.setup('api/docs', app, document);
+  }
 
   const port = process.env.PORT ?? 3000;
   await app.listen(port);
