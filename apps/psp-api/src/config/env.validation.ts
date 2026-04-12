@@ -1,16 +1,59 @@
 type EnvInput = Record<string, unknown>;
 
 /**
- * Parsea `CORS_ALLOWED_ORIGINS` (lista separada por comas); ignora entradas vacías.
+ * Parsea `CORS_ALLOWED_ORIGINS` (lista separada por comas): normaliza cada entrada al
+ * origen WHATWG (`scheme://host[:port]`) y deduplica.
+ *
+ * Rechaza URLs con ruta distinta de `/`, query, hash, userinfo o esquema distinto de http(s).
  *
  * @param raw Valor crudo de la variable (puede ser cadena vacía).
  * @returns Orígenes listos para `enableCors`.
+ * @throws {Error} Si alguna entrada no es un origen HTTP(S) válido.
  */
 export function parseCorsAllowedOrigins(raw: string): string[] {
-  return raw
+  const segments = raw
     .split(',')
-    .map((origin) => origin.trim())
-    .filter((origin) => origin.length > 0);
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const segment of segments) {
+    const origin = normalizeCorsOriginEntry(segment);
+    if (!seen.has(origin)) {
+      seen.add(origin);
+      result.push(origin);
+    }
+  }
+  return result;
+}
+
+/**
+ * Convierte un segmento de lista CORS al string de origen que envía el navegador.
+ *
+ * @param segment Entrada tras trim (no vacía).
+ */
+function normalizeCorsOriginEntry(segment: string): string {
+  let url: URL;
+  try {
+    url = new URL(segment);
+  } catch {
+    throw new Error(`Invalid CORS_ALLOWED_ORIGINS entry (not a valid URL): ${segment}`);
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(
+      `CORS_ALLOWED_ORIGINS entry must use http or https scheme: ${segment}`,
+    );
+  }
+  if (url.username !== '' || url.password !== '') {
+    throw new Error(`CORS_ALLOWED_ORIGINS entry must not include userinfo: ${segment}`);
+  }
+  if (url.search !== '' || url.hash !== '') {
+    throw new Error(`CORS_ALLOWED_ORIGINS entry must not include query or hash: ${segment}`);
+  }
+  if (url.pathname !== '/') {
+    throw new Error(`CORS_ALLOWED_ORIGINS entry must not include a path: ${segment}`);
+  }
+  return url.origin;
 }
 
 /**

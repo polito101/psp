@@ -5,11 +5,19 @@ import {
   Logger,
   NestInterceptor,
 } from '@nestjs/common';
+import { VERSION_NEUTRAL } from '@nestjs/common';
+import { PATH_METADATA, VERSION_METADATA } from '@nestjs/common/constants';
 import { ConfigService } from '@nestjs/config';
 import { Observable } from 'rxjs';
 import { finalize } from 'rxjs/operators';
 
 type HttpLogMode = 'off' | 'all' | 'errors' | 'sample';
+
+/** Alineado con `setGlobalPrefix('api')` en main.ts */
+const GLOBAL_API_PREFIX = 'api';
+
+/** Alineado con `enableVersioning({ defaultVersion: '1' })` */
+const DEFAULT_URI_VERSION = '1';
 
 /**
  * Petición Express mínima para resolver path de plantilla (`baseUrl` + `route.path`)
@@ -23,8 +31,17 @@ export type HttpLoggableRequest = {
   route?: { path: string };
 };
 
-/** Prefijos bajo los que todo lo que sigue se sustituye por `[redacted]` si no hay plantilla. */
-const REDACT_AFTER_PREFIXES: readonly string[] = ['/api/v1/pay/'];
+/**
+ * Prefijos (con `/` final) bajo los que el resto del path se sustituye por `[redacted]`
+ * si no hay plantilla Express/Nest. Orden: más específicos primero.
+ */
+const REDACT_AFTER_PREFIXES: readonly string[] = [
+  '/api/v1/payment-links/',
+  '/api/v1/payments/',
+  '/api/v1/pay/',
+  '/api/v1/merchants/',
+  '/api/v1/webhooks/',
+];
 
 /**
  * Emite una línea de log JSON por petición HTTP (método, path, status, duración).
@@ -80,6 +97,8 @@ export class HttpLoggingInterceptor implements NestInterceptor {
       return next.handle();
     }
 
+    const nestRouteTemplate = buildNestRouteTemplate(context);
+
     const start = Date.now();
     return next.handle().pipe(
       finalize(() => {
@@ -90,7 +109,7 @@ export class HttpLoggingInterceptor implements NestInterceptor {
         }
 
         const ms = Date.now() - start;
-        const path = resolveLoggablePath(req);
+        const path = resolveLoggablePath(req, nestRouteTemplate);
         const line = JSON.stringify({
           event: 'http.request',
           method: req.method ?? 'UNKNOWN',
@@ -117,21 +136,113 @@ export function joinBaseAndRoute(baseUrl: string | undefined, routePath: string)
 }
 
 /**
- * Devuelve path seguro para logs: plantilla `baseUrl` + `req.route.path` si existe;
- * si no, aplica {@link redactSensitivePath} sobre el path sin query string.
+ * Devuelve path seguro para logs:
+ * 1. Plantilla Express (`baseUrl` + `req.route.path`) si existe tras el enrutado.
+ * 2. Plantilla Nest (metadata de ruta) si se pasó desde el interceptor.
+ * 3. {@link redactSensitivePath} sobre el path sin query string.
  *
  * @param req Petición HTTP (Express).
+ * @param nestRouteTemplate Plantilla desde metadata Nest (p. ej. `/api/v1/payments/:id`).
  */
-export function resolveLoggablePath(req: HttpLoggableRequest): string {
-  const rawPath = (req.originalUrl ?? req.url ?? '').split('?')[0] ?? '';
-  const routePath = req.route?.path;
-  if (typeof routePath === 'string' && routePath.length > 0) {
-    const template = joinBaseAndRoute(req.baseUrl, routePath);
-    if (template.length > 0) {
-      return template;
-    }
+export function resolveLoggablePath(req: HttpLoggableRequest, nestRouteTemplate?: string): string {
+  const expressTemplate = tryExpressRouteTemplate(req);
+  if (expressTemplate) {
+    return expressTemplate;
   }
-  return redactSensitivePath(rawPath);
+  if (nestRouteTemplate) {
+    return nestRouteTemplate;
+  }
+  return redactSensitivePath(getRawPathWithoutQuery(req));
+}
+
+function getRawPathWithoutQuery(req: HttpLoggableRequest): string {
+  return (req.originalUrl ?? req.url ?? '').split('?')[0] ?? '';
+}
+
+/**
+ * Plantilla de ruta según Express una vez resuelto el handler (si está disponible).
+ */
+export function tryExpressRouteTemplate(req: HttpLoggableRequest): string | undefined {
+  const routePath = req.route?.path;
+  if (typeof routePath !== 'string' || routePath.length === 0) {
+    return undefined;
+  }
+  const template = joinBaseAndRoute(req.baseUrl, routePath);
+  return template.length > 0 ? template : undefined;
+}
+
+/**
+ * Construye la ruta tipo plantilla desde metadata Nest (`@Controller` / método).
+ * Cubre casos donde `req.route` aún no refleja la ruta con parámetros de forma fiable.
+ *
+ * @returns `undefined` si no hay metadata de ruta (p. ej. middleware sin handler Nest).
+ */
+export function buildNestRouteTemplate(context: ExecutionContext): string | undefined {
+  try {
+    const controllerClass = context.getClass();
+    const handler = context.getHandler();
+    const controllerPath = Reflect.getMetadata(PATH_METADATA, controllerClass) as string | undefined;
+    const methodPathRaw = Reflect.getMetadata(PATH_METADATA, handler) as string | undefined;
+    const versionMeta = Reflect.getMetadata(VERSION_METADATA, controllerClass);
+
+    if (controllerPath === undefined && methodPathRaw === undefined) {
+      return undefined;
+    }
+
+    const controllerSegment = typeof controllerPath === 'string' ? controllerPath : '';
+    const methodTail = normalizeMethodRouteSegment(
+      typeof methodPathRaw === 'string' ? methodPathRaw : '/',
+    );
+
+    const req = context.switchToHttp().getRequest<{ method?: string }>();
+    const httpMethod = req.method?.toUpperCase();
+
+    const isHealthExcludedFromApiPrefix =
+      controllerSegment === 'health' &&
+      versionMeta === VERSION_NEUTRAL &&
+      httpMethod === 'GET';
+
+    if (isHealthExcludedFromApiPrefix) {
+      const base = `/${controllerSegment}`;
+      return methodTail ? joinPathSegments(base, methodTail) : base;
+    }
+
+    const versionSegment = resolveVersionUriSegment(versionMeta);
+    const parts: string[] = [GLOBAL_API_PREFIX];
+    if (versionSegment) {
+      parts.push(versionSegment);
+    }
+    if (controllerSegment) {
+      parts.push(controllerSegment);
+    }
+    const basePath = `/${parts.join('/')}`;
+    return methodTail ? joinPathSegments(basePath, methodTail) : basePath;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveVersionUriSegment(versionMeta: unknown): string | null {
+  if (versionMeta === VERSION_NEUTRAL) {
+    return null;
+  }
+  if (versionMeta === undefined || versionMeta === null) {
+    return `v${DEFAULT_URI_VERSION}`;
+  }
+  return `v${String(versionMeta)}`;
+}
+
+function normalizeMethodRouteSegment(methodPathRaw: string): string {
+  if (!methodPathRaw || methodPathRaw === '/') {
+    return '';
+  }
+  return methodPathRaw.startsWith('/') ? methodPathRaw.slice(1) : methodPathRaw;
+}
+
+function joinPathSegments(base: string, tail: string): string {
+  const b = base.endsWith('/') ? base.slice(0, -1) : base;
+  const t = tail.startsWith('/') ? tail.slice(1) : tail;
+  return `${b}/${t}`.replace(/\/{2,}/g, '/');
 }
 
 /**
@@ -169,6 +280,18 @@ function dedupePrefixList(prefixes: string[]): string[] {
   return out;
 }
 
+/**
+ * Quita barras finales para alinear con el header/path (sin `//` al concatenar `prefix + '/'`).
+ * El prefijo raíz `/` se conserva.
+ */
+function normalizeSkipPathPrefix(prefix: string): string {
+  if (prefix === '/') {
+    return '/';
+  }
+  const withoutTrailing = prefix.replace(/\/+$/, '');
+  return withoutTrailing.length > 0 ? withoutTrailing : '/';
+}
+
 /** Exportado para pruebas unitarias de reglas de exclusión por prefijo. */
 export function parseSkipPrefixes(raw: string): string[] {
   if (!raw.trim()) {
@@ -178,13 +301,15 @@ export function parseSkipPrefixes(raw: string): string[] {
     .split(',')
     .map((p) => p.trim())
     .filter((p) => p.length > 0)
-    .map((p) => (p.startsWith('/') ? p : `/${p}`));
+    .map((p) => (p.startsWith('/') ? p : `/${p}`))
+    .map((p) => normalizeSkipPathPrefix(p));
 }
 
 /** Exportado para pruebas unitarias de reglas de exclusión por prefijo. */
 export function pathMatchesSkipList(path: string, prefixes: string[]): boolean {
   for (const prefix of prefixes) {
-    if (path === prefix || path.startsWith(`${prefix}/`)) {
+    const normalized = normalizeSkipPathPrefix(prefix);
+    if (path === normalized || path.startsWith(`${normalized}/`)) {
       return true;
     }
   }
