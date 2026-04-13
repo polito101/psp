@@ -2,17 +2,16 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, sandbox]
   pull_request:
-    branches: [main, master]
+    branches: [main, master, sandbox]
 
 jobs:
-  lint-test-api:
+  api-ci:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: apps/psp-api
-
     services:
       postgres:
         image: postgres:16-alpine
@@ -27,7 +26,6 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-
       redis:
         image: redis:7-alpine
         ports:
@@ -37,36 +35,30 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
-
+    env:
+      DATABASE_URL: postgresql://psp:psp_test@localhost:5432/psp_test?schema=public
+      REDIS_URL: redis://localhost:6379
+      INTERNAL_API_SECRET: test-internal-secret
+      APP_ENCRYPTION_KEY: test-encryption-key-32-characters!!
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: apps/psp-api/package-lock.json
-
       - name: Install dependencies
         run: npm ci
-
       - name: Generate Prisma client
         run: npx prisma generate
-
-      - name: Migrate (test DB)
-        env:
-          DATABASE_URL: postgresql://psp:psp_test@localhost:5432/psp_test?schema=public
+      - name: Run migrations on test DB
         run: npx prisma migrate deploy
-
       - name: Lint
         run: npm run lint
-
       - name: Unit tests
-        env:
-          DATABASE_URL: postgresql://psp:psp_test@localhost:5432/psp_test?schema=public
-          REDIS_URL: redis://localhost:6379
-          INTERNAL_API_SECRET: test-internal-secret
         run: npm run test
+      - name: Build
+        run: npm run build
 
   terraform-validate:
     runs-on: ubuntu-latest
@@ -84,3 +76,58 @@ jobs:
       - name: Terraform validate
         working-directory: infra/terraform
         run: terraform validate
+
+  sandbox-deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/sandbox'
+    needs: [api-ci]
+    runs-on: ubuntu-latest
+    environment: sandbox
+    defaults:
+      run:
+        working-directory: apps/psp-api
+    env:
+      DATABASE_URL: ${{ secrets.SANDBOX_DATABASE_URL }}
+      REDIS_URL: ${{ secrets.SANDBOX_REDIS_URL }}
+      INTERNAL_API_SECRET: ${{ secrets.SANDBOX_INTERNAL_API_SECRET }}
+      APP_ENCRYPTION_KEY: ${{ secrets.SANDBOX_APP_ENCRYPTION_KEY }}
+      SMOKE_BASE_URL: ${{ vars.SANDBOX_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/psp-api/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Build Docker image (sandbox)
+        run: docker build -t psp-api:sandbox .
+      - name: Prisma generate
+        run: npx prisma generate
+      - name: Trigger sandbox deploy hook
+        env:
+          SANDBOX_DEPLOY_HOOK_URL: ${{ secrets.SANDBOX_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$SANDBOX_DEPLOY_HOOK_URL" ]; then
+            echo "Missing SANDBOX_DEPLOY_HOOK_URL secret"
+            exit 1
+          fi
+          curl -fsSL -X POST "$SANDBOX_DEPLOY_HOOK_URL"
+      - name: Prisma migrate deploy
+        run: npx prisma migrate deploy
+      - name: Wait for sandbox health endpoint
+        run: |
+          if [ -z "$SMOKE_BASE_URL" ]; then
+            echo "Missing SANDBOX_BASE_URL environment variable"
+            exit 1
+          fi
+          for i in {1..30}; do
+            if curl -fsSL "${SMOKE_BASE_URL}/health" >/dev/null; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Sandbox health check timed out"
+          exit 1
+      - name: Run smoke tests against sandbox
+        run: npm run test:smoke:sandbox

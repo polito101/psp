@@ -13,6 +13,7 @@ import { RedisModule } from './redis/redis.module';
 import { HealthModule } from './health/health.module';
 import { validateEnv } from './config/env.validation';
 import { HttpLoggingInterceptor } from './common/interceptors/http-logging.interceptor';
+import { PaymentsV2Module } from './payments-v2/payments-v2.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { HttpLoggingInterceptor } from './common/interceptors/http-logging.inter
     WebhooksModule,
     CheckoutModule,
     HealthModule,
+    PaymentsV2Module,
   ],
   providers: [
     {

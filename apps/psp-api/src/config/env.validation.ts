@@ -111,6 +111,27 @@ export function validateEnv(input: EnvInput): EnvInput {
   const httpLogSkipPrefixes = getString(env.HTTP_LOG_SKIP_PATH_PREFIXES) ?? '';
   env.HTTP_LOG_SKIP_PATH_PREFIXES = httpLogSkipPrefixes;
 
+  env.PAYMENTS_V2_ENABLED_MERCHANTS = getString(env.PAYMENTS_V2_ENABLED_MERCHANTS) ?? '';
+  env.PAYMENTS_PROVIDER_ORDER = getString(env.PAYMENTS_PROVIDER_ORDER) ?? 'stripe,mock';
+  env.STRIPE_SECRET_KEY = getString(env.STRIPE_SECRET_KEY) ?? '';
+  env.STRIPE_API_BASE_URL = getString(env.STRIPE_API_BASE_URL) ?? 'https://api.stripe.com/v1';
+  env.PAYMENTS_PROVIDER_TIMEOUT_MS = String(
+    parsePositiveInt(getString(env.PAYMENTS_PROVIDER_TIMEOUT_MS), 8_000, 'PAYMENTS_PROVIDER_TIMEOUT_MS'),
+  );
+  env.PAYMENTS_PROVIDER_MAX_RETRIES = String(
+    parseIntegerRange(getString(env.PAYMENTS_PROVIDER_MAX_RETRIES), 2, 0, 5, 'PAYMENTS_PROVIDER_MAX_RETRIES'),
+  );
+  env.PAYMENTS_PROVIDER_CB_FAILURES = String(
+    parseIntegerRange(getString(env.PAYMENTS_PROVIDER_CB_FAILURES), 3, 1, 20, 'PAYMENTS_PROVIDER_CB_FAILURES'),
+  );
+  env.PAYMENTS_PROVIDER_CB_COOLDOWN_MS = String(
+    parsePositiveInt(
+      getString(env.PAYMENTS_PROVIDER_CB_COOLDOWN_MS),
+      60_000,
+      'PAYMENTS_PROVIDER_CB_COOLDOWN_MS',
+    ),
+  );
+
   if (nodeEnv === 'sandbox') {
     const redisUrl = getString(env.REDIS_URL);
     if (!redisUrl) {
@@ -160,4 +181,28 @@ function parseHttpLogSampleRate(value: string | undefined): number {
     throw new Error('HTTP_LOG_SAMPLE_RATE must be a number between 0 and 1');
   }
   return n;
+}
+
+function parsePositiveInt(value: string | undefined, defaultValue: number, envName: string): number {
+  if (value === undefined || value.trim() === '') return defaultValue;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${envName} must be a positive integer`);
+  }
+  return parsed;
+}
+
+function parseIntegerRange(
+  value: string | undefined,
+  defaultValue: number,
+  min: number,
+  max: number,
+  envName: string,
+): number {
+  if (value === undefined || value.trim() === '') return defaultValue;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${envName} must be an integer between ${min} and ${max}`);
+  }
+  return parsed;
 }
