@@ -174,6 +174,10 @@ Invoke-RestMethod -Method Post "http://localhost:3000/api/v1/payments" `
   - timeout por request (`PAYMENTS_PROVIDER_TIMEOUT_MS`)
   - retries acotados (`PAYMENTS_PROVIDER_MAX_RETRIES`)
   - circuit breaker (`PAYMENTS_PROVIDER_CB_FAILURES`, `PAYMENTS_PROVIDER_CB_COOLDOWN_MS`)
+- **Stripe — confirmación y captura:**
+  - Body opcional `stripePaymentMethodId` (`pm_...`): confirmación en servidor; opcional `stripeReturnUrl` si el método exige redirect (p. ej. 3DS redirect).
+  - Sin PM: la respuesta de `POST /api/v2/payments` incluye `nextAction.clientSecret` y `nextAction.type` (`confirm_with_stripe_js`, `redirect`, `3ds`, etc.) para completar el pago con **Stripe.js** hasta que el pago quede `authorized`.
+  - `POST .../capture` solo acepta pagos en estado **`authorized`** (el PI debe estar en `requires_capture` en Stripe).
 
 ## API keys (seguridad MVP)
 

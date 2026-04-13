@@ -24,6 +24,7 @@ import {
 import { PaymentsV2ObservabilityService } from './payments-v2-observability.service';
 import { ProviderRegistryService } from './providers/provider-registry.service';
 import { ProviderContext, ProviderResult } from './providers/payment-provider.interface';
+import { StripeProviderAdapter } from './providers/stripe-provider.adapter';
 
 type OperationResult = {
   payment: {
@@ -67,6 +68,7 @@ export class PaymentsV2Service {
     private readonly webhooks: WebhooksService,
     private readonly registry: ProviderRegistryService,
     private readonly observability: PaymentsV2ObservabilityService,
+    private readonly stripeAdapter: StripeProviderAdapter,
   ) {
     this.maxRetries = this.getNumber('PAYMENTS_PROVIDER_MAX_RETRIES', 2);
     this.cbFailures = this.getNumber('PAYMENTS_PROVIDER_CB_FAILURES', 3);
@@ -111,7 +113,8 @@ export class PaymentsV2Service {
     if (idempotencyKey) {
       const existing = await this.resolveIdempotentPayment(merchantId, idempotencyKey, dto);
       if (existing) {
-        return { payment: existing, nextAction: this.nextActionFromPersistedPayment(existing) };
+        const nextAction = await this.resolveCreateNextActionForExisting(existing);
+        return { payment: existing, nextAction };
       }
     }
 
@@ -155,7 +158,8 @@ export class PaymentsV2Service {
               paymentId: existing.id,
             }),
           );
-          return { payment: existing, nextAction: this.nextActionFromPersistedPayment(existing) };
+          const nextAction = await this.resolveCreateNextActionForExisting(existing);
+          return { payment: existing, nextAction };
         }
       }
       throw error;
@@ -165,7 +169,10 @@ export class PaymentsV2Service {
       await this.safeSetIdempotency(merchantId, idempotencyKey, payment.id);
     }
 
-    return this.executeProviderOperation(payment, 'create', dto.amountMinor, providerOrder);
+    return this.executeProviderOperation(payment, 'create', dto.amountMinor, providerOrder, {
+      stripePaymentMethodId: dto.stripePaymentMethodId,
+      stripeReturnUrl: dto.stripeReturnUrl,
+    });
   }
 
   async getPayment(merchantId: string, paymentId: string) {
@@ -221,12 +228,10 @@ export class PaymentsV2Service {
       if (payment.status === PAYMENT_V2_STATUS.SUCCEEDED) {
         return { payment, nextAction: null };
       }
-      if (
-        payment.status !== PAYMENT_V2_STATUS.AUTHORIZED &&
-        payment.status !== PAYMENT_V2_STATUS.REQUIRES_ACTION &&
-        payment.status !== PAYMENT_V2_STATUS.PENDING
-      ) {
-        throw new ConflictException('Payment is not capturable in current state');
+      if (payment.status !== PAYMENT_V2_STATUS.AUTHORIZED) {
+        throw new ConflictException(
+          'Payment is not capturable: status must be authorized (Stripe requires_capture). Complete payment confirmation or 3DS first.',
+        );
       }
       const providerOrder = this.registry.orderedProviders(this.toProviderName(payment.selectedProvider));
       return await this.executeProviderOperation(payment, 'capture', payment.amountMinor, providerOrder);
@@ -342,6 +347,7 @@ export class PaymentsV2Service {
     operation: PaymentOperation,
     amountMinor: number,
     providerOrder: PaymentProviderName[],
+    createExtras?: Pick<ProviderContext, 'stripePaymentMethodId' | 'stripeReturnUrl'>,
   ): Promise<OperationResult> {
     let lastProviderAttempted: PaymentProviderName | null = null;
     for (let providerIndex = 0; providerIndex < providerOrder.length; providerIndex += 1) {
@@ -356,7 +362,7 @@ export class PaymentsV2Service {
         }, 0);
         continue;
       }
-      const result = await this.runWithRetry(providerName, operation, payment, amountMinor);
+      const result = await this.runWithRetry(providerName, operation, payment, amountMinor, createExtras);
       const shouldFallbackToNextProvider =
         result.status === PAYMENT_V2_STATUS.FAILED &&
         result.reasonCode === 'provider_unavailable' &&
@@ -401,6 +407,7 @@ export class PaymentsV2Service {
     operation: PaymentOperation,
     payment: OperationResult['payment'],
     amountMinor: number,
+    createExtras?: Pick<ProviderContext, 'stripePaymentMethodId' | 'stripeReturnUrl'>,
   ): Promise<ProviderResult> {
     let retries = 0;
     let finalResult: ProviderResult = {
@@ -420,6 +427,12 @@ export class PaymentsV2Service {
           amountMinor,
           currency: payment.currency,
           providerPaymentId: payment.providerRef,
+          ...(operation === 'create' && createExtras
+            ? {
+                stripePaymentMethodId: createExtras.stripePaymentMethodId,
+                stripeReturnUrl: createExtras.stripeReturnUrl,
+              }
+            : {}),
         };
         result = await adapter.run(operation, context);
       } catch (caught) {
@@ -801,7 +814,7 @@ export class PaymentsV2Service {
       const cas = await tx.payment.updateMany({
         where: {
           id: payment.id,
-          status: { in: [PAYMENT_V2_STATUS.AUTHORIZED, PAYMENT_V2_STATUS.REQUIRES_ACTION, PAYMENT_V2_STATUS.PENDING] },
+          status: PAYMENT_V2_STATUS.AUTHORIZED,
         },
         data: {
           status: PAYMENT_V2_STATUS.SUCCEEDED,
@@ -1042,7 +1055,31 @@ export class PaymentsV2Service {
     if (payment.status === PAYMENT_V2_STATUS.REQUIRES_ACTION) {
       return { type: '3ds' };
     }
+    if (payment.status === PAYMENT_V2_STATUS.PENDING) {
+      return { type: 'confirm_with_stripe_js' };
+    }
     return null;
+  }
+
+  /**
+   * En repetición idempotente de `create`, enriquece `nextAction` para Stripe (p. ej. `client_secret`) vía GET al PaymentIntent.
+   */
+  private async resolveCreateNextActionForExisting(
+    payment: OperationResult['payment'],
+  ): Promise<ProviderResult['nextAction'] | null> {
+    const fallback = this.nextActionFromPersistedPayment(payment);
+    if (
+      payment.selectedProvider !== 'stripe' ||
+      !payment.providerRef ||
+      (payment.status !== PAYMENT_V2_STATUS.PENDING && payment.status !== PAYMENT_V2_STATUS.REQUIRES_ACTION)
+    ) {
+      return fallback;
+    }
+    const retrieved = await this.stripeAdapter.retrievePaymentIntent(payment.providerRef);
+    if (retrieved.status === PAYMENT_V2_STATUS.FAILED) {
+      return fallback;
+    }
+    return retrieved.nextAction ?? fallback;
   }
 
   private assertIdempotencyPayloadMatch(

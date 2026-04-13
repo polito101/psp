@@ -50,9 +50,43 @@ export class StripeProviderAdapter implements PaymentProvider {
     params.set('amount', String(context.amountMinor));
     params.set('currency', context.currency.toLowerCase());
     params.set('capture_method', 'manual');
-    params.set('confirm', 'false');
 
-    const response = await this.requestStripe('/payment_intents', params);
+    const pmId = context.stripePaymentMethodId?.trim();
+    if (pmId) {
+      params.set('payment_method', pmId);
+      params.set('confirm', 'true');
+      const returnUrl = context.stripeReturnUrl?.trim();
+      if (returnUrl) {
+        params.set('return_url', returnUrl);
+      }
+    } else {
+      params.set('automatic_payment_methods[enabled]', 'true');
+    }
+
+    const response = await this.requestStripe('POST', '/payment_intents', params);
+    return this.paymentIntentResponseToResult(response);
+  }
+
+  /**
+   * Lee un PaymentIntent en Stripe (p. ej. repetición idempotente de create para devolver `client_secret` actual).
+   */
+  async retrievePaymentIntent(intentId: string): Promise<ProviderResult> {
+    if (!this.secretKey) {
+      return {
+        status: PAYMENT_V2_STATUS.FAILED,
+        reasonCode: 'provider_unavailable',
+        reasonMessage: 'Stripe secret key is not configured',
+      };
+    }
+    const safeId = encodeURIComponent(intentId.trim());
+    const response = await this.requestStripe('GET', `/payment_intents/${safeId}`);
+    return this.paymentIntentResponseToResult(response);
+  }
+
+  private paymentIntentResponseToResult(response: {
+    ok: boolean;
+    body: Record<string, unknown>;
+  }): ProviderResult {
     if (!response.ok) {
       return this.mapFailure(response.body);
     }
@@ -70,7 +104,7 @@ export class StripeProviderAdapter implements PaymentProvider {
       status,
       providerPaymentId,
       raw: response.body,
-      nextAction: this.mapNextAction(status, response.body),
+      nextAction: this.buildStripeNextAction(status, response.body),
     };
   }
 
@@ -82,7 +116,10 @@ export class StripeProviderAdapter implements PaymentProvider {
         reasonMessage: 'Missing provider payment id for capture',
       };
     }
-    const response = await this.requestStripe(`/payment_intents/${context.providerPaymentId}/capture`);
+    const response = await this.requestStripe(
+      'POST',
+      `/payment_intents/${context.providerPaymentId}/capture`,
+    );
     if (!response.ok) {
       return this.mapFailure(response.body);
     }
@@ -110,7 +147,10 @@ export class StripeProviderAdapter implements PaymentProvider {
         reasonMessage: 'Missing provider payment id for cancel',
       };
     }
-    const response = await this.requestStripe(`/payment_intents/${context.providerPaymentId}/cancel`);
+    const response = await this.requestStripe(
+      'POST',
+      `/payment_intents/${context.providerPaymentId}/cancel`,
+    );
     if (!response.ok) {
       return this.mapFailure(response.body);
     }
@@ -141,7 +181,7 @@ export class StripeProviderAdapter implements PaymentProvider {
     const params = new URLSearchParams();
     params.set('payment_intent', context.providerPaymentId);
     params.set('amount', String(context.amountMinor));
-    const response = await this.requestStripe('/refunds', params);
+    const response = await this.requestStripe('POST', '/refunds', params);
     if (!response.ok) {
       return this.mapFailure(response.body);
     }
@@ -153,18 +193,22 @@ export class StripeProviderAdapter implements PaymentProvider {
   }
 
   private async requestStripe(
+    method: 'GET' | 'POST',
     path: string,
     body?: URLSearchParams,
   ): Promise<{ ok: boolean; body: Record<string, unknown> }> {
     try {
       const safePath = path.startsWith('/') ? path : `/${path}`;
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${this.secretKey}`,
+      };
+      if (method === 'POST' && body) {
+        headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      }
       const res = await fetch(`${this.apiBaseUrl}${safePath}`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.secretKey}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body,
+        method,
+        headers,
+        body: method === 'POST' ? body : undefined,
         signal: AbortSignal.timeout(this.timeoutMs),
       });
       const parsed = (await res.json()) as Record<string, unknown>;
@@ -201,16 +245,51 @@ export class StripeProviderAdapter implements PaymentProvider {
     return PAYMENT_V2_STATUS.PROCESSING;
   }
 
-  private mapNextAction(status: ProviderResult['status'], body: Record<string, unknown>) {
-    if (status !== PAYMENT_V2_STATUS.REQUIRES_ACTION) return { type: 'none' as const };
-    const nextAction = this.getObject(body.next_action);
-    const type = this.getString(nextAction?.type);
-    if (type === 'redirect_to_url') {
-      const redirect = this.getObject(nextAction?.redirect_to_url);
-      const url = this.getString(redirect?.url);
-      if (url) return { type: 'redirect' as const, url };
+  /**
+   * Expone `client_secret` y datos de `next_action` para Stripe.js o redirects, según el estado del PaymentIntent.
+   */
+  private buildStripeNextAction(status: ProviderResult['status'], body: Record<string, unknown>) {
+    const clientSecret = this.getString(body.client_secret);
+    const nextActionObj = this.getObject(body.next_action);
+    const stripeNextType = this.getString(nextActionObj?.type);
+
+    if (status === PAYMENT_V2_STATUS.PENDING) {
+      if (clientSecret) {
+        return {
+          type: 'confirm_with_stripe_js' as const,
+          clientSecret,
+          stripeNextActionType: stripeNextType,
+        };
+      }
+      return { type: 'none' as const };
     }
-    return { type: '3ds' as const };
+
+    if (status === PAYMENT_V2_STATUS.REQUIRES_ACTION) {
+      if (stripeNextType === 'redirect_to_url') {
+        const redirect = this.getObject(nextActionObj?.redirect_to_url);
+        const url = this.getString(redirect?.url);
+        return {
+          type: 'redirect' as const,
+          url,
+          clientSecret,
+          stripeNextActionType: stripeNextType,
+        };
+      }
+      if (stripeNextType === 'use_stripe_sdk') {
+        return {
+          type: 'confirm_with_stripe_js' as const,
+          clientSecret,
+          stripeNextActionType: stripeNextType,
+        };
+      }
+      return {
+        type: '3ds' as const,
+        clientSecret,
+        stripeNextActionType: stripeNextType ?? 'unknown',
+      };
+    }
+
+    return { type: 'none' as const };
   }
 
   private mapFailure(body: Record<string, unknown>): ProviderResult {

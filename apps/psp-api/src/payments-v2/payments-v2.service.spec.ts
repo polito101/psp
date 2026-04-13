@@ -64,6 +64,10 @@ describe('PaymentsV2Service', () => {
     snapshot: jest.fn(),
   };
 
+  const stripeAdapter = {
+    retrievePaymentIntent: jest.fn(),
+  };
+
   let service: PaymentsV2Service;
 
   const buildService = () =>
@@ -76,6 +80,7 @@ describe('PaymentsV2Service', () => {
       webhooks as never,
       registry as never,
       observability as never,
+      stripeAdapter as never,
     );
 
   beforeEach(() => {
@@ -95,6 +100,12 @@ describe('PaymentsV2Service', () => {
     prisma.paymentOperation.create.mockResolvedValue(undefined);
     prisma.paymentOperation.update.mockResolvedValue(undefined);
     prisma.paymentOperation.updateMany.mockResolvedValue({ count: 1 });
+    stripeAdapter.retrievePaymentIntent.mockReset();
+    stripeAdapter.retrievePaymentIntent.mockResolvedValue({
+      status: PAYMENT_V2_STATUS.FAILED,
+      reasonCode: 'provider_error',
+      reasonMessage: 'retrieve stub',
+    });
   });
 
   it('rechaza merchant no habilitado para rollout v2', async () => {
@@ -251,6 +262,15 @@ describe('PaymentsV2Service', () => {
       statusReason: null,
       paymentLinkId: null,
     });
+    stripeAdapter.retrievePaymentIntent.mockResolvedValue({
+      status: PAYMENT_V2_STATUS.REQUIRES_ACTION,
+      providerPaymentId: 'pi_123',
+      nextAction: {
+        type: '3ds',
+        clientSecret: 'pi_123_secret_test',
+        stripeNextActionType: 'use_stripe_sdk',
+      },
+    });
 
     const result = await service.createIntent(
       'm_1',
@@ -260,7 +280,12 @@ describe('PaymentsV2Service', () => {
 
     expect(result.payment.id).toBe('pay_action');
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.REQUIRES_ACTION);
-    expect(result.nextAction).toEqual({ type: '3ds' });
+    expect(result.nextAction).toEqual({
+      type: '3ds',
+      clientSecret: 'pi_123_secret_test',
+      stripeNextActionType: 'use_stripe_sdk',
+    });
+    expect(stripeAdapter.retrievePaymentIntent).toHaveBeenCalledWith('pi_123');
     expect(prisma.payment.create).not.toHaveBeenCalled();
     expect(stripeProvider.run).not.toHaveBeenCalled();
     expect(mockProvider.run).not.toHaveBeenCalled();
