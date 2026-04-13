@@ -6,6 +6,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'crypto';
 import { Prisma } from '../generated/prisma/client';
 import { LedgerService } from '../ledger/ledger.service';
@@ -48,17 +49,17 @@ type CircuitBreakerState = {
 export class PaymentsV2Service {
   private readonly log = new Logger(PaymentsV2Service.name);
   private readonly cbState = new Map<PaymentProviderName, CircuitBreakerState>();
-  private readonly maxRetries = Number(process.env.PAYMENTS_PROVIDER_MAX_RETRIES ?? 2);
-  private readonly cbFailures = Number(process.env.PAYMENTS_PROVIDER_CB_FAILURES ?? 3);
-  private readonly cbCooldownMs = Number(process.env.PAYMENTS_PROVIDER_CB_COOLDOWN_MS ?? 60_000);
+  private readonly maxRetries: number;
+  private readonly cbFailures: number;
+  private readonly cbCooldownMs: number;
   private readonly attemptWriteMaxRetries = 5;
   private readonly operationLockStaleMs: number;
-  private readonly persistAttemptPayload =
-    (process.env.PAYMENTS_V2_PERSIST_PROVIDER_RAW ?? 'true').toLowerCase() === 'true';
-  private readonly tolerateAttemptPersistFailure =
-    (process.env.PAYMENTS_V2_TOLERATE_ATTEMPT_PERSIST_FAILURE ?? 'true').toLowerCase() === 'true';
+  private readonly persistAttemptPayload: boolean;
+  private readonly tolerateAttemptPersistFailure: boolean;
+  private readonly paymentsV2EnabledMerchantsRaw: string;
 
   constructor(
+    private readonly config: ConfigService,
     private readonly prisma: PrismaService,
     private readonly links: PaymentLinksService,
     private readonly redis: RedisService,
@@ -67,7 +68,16 @@ export class PaymentsV2Service {
     private readonly registry: ProviderRegistryService,
     private readonly observability: PaymentsV2ObservabilityService,
   ) {
-    const raw = process.env.PAYMENTS_V2_OPERATION_LOCK_STALE_MS;
+    this.maxRetries = this.getNumber('PAYMENTS_PROVIDER_MAX_RETRIES', 2);
+    this.cbFailures = this.getNumber('PAYMENTS_PROVIDER_CB_FAILURES', 3);
+    this.cbCooldownMs = this.getNumber('PAYMENTS_PROVIDER_CB_COOLDOWN_MS', 60_000);
+    this.persistAttemptPayload =
+      (this.config.get<string>('PAYMENTS_V2_PERSIST_PROVIDER_RAW') ?? 'true').toLowerCase() === 'true';
+    this.tolerateAttemptPersistFailure =
+      (this.config.get<string>('PAYMENTS_V2_TOLERATE_ATTEMPT_PERSIST_FAILURE') ?? 'true').toLowerCase() === 'true';
+    this.paymentsV2EnabledMerchantsRaw = this.config.get<string>('PAYMENTS_V2_ENABLED_MERCHANTS') ?? '';
+
+    const raw = this.config.get<string>('PAYMENTS_V2_OPERATION_LOCK_STALE_MS');
     const parsed = raw === undefined || raw.trim() === '' ? 30_000 : Number(raw);
     if (!Number.isFinite(parsed) || parsed <= 0) {
       this.operationLockStaleMs = 30_000;
@@ -81,6 +91,13 @@ export class PaymentsV2Service {
     } else {
       this.operationLockStaleMs = parsed;
     }
+  }
+
+  private getNumber(key: string, defaultValue: number): number {
+    const raw = this.config.get<string>(key);
+    if (raw === undefined || raw.trim() === '') return defaultValue;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : defaultValue;
   }
 
   async createIntent(
@@ -1028,8 +1045,7 @@ export class PaymentsV2Service {
   }
 
   private assertMerchantEnabled(merchantId: string) {
-    const allowListRaw = process.env.PAYMENTS_V2_ENABLED_MERCHANTS ?? '';
-    const entries = allowListRaw
+    const entries = this.paymentsV2EnabledMerchantsRaw
       .split(',')
       .map((entry) => entry.trim())
       .filter((entry) => entry.length > 0);

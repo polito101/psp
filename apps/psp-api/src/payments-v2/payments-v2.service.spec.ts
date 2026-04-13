@@ -4,6 +4,10 @@ import { PAYMENT_V2_STATUS } from './domain/payment-status';
 import { ProviderResult } from './providers/payment-provider.interface';
 
 describe('PaymentsV2Service', () => {
+  const config = {
+    get: jest.fn((key: string) => process.env[key]),
+  };
+
   const prisma = {
     payment: {
       create: jest.fn(),
@@ -62,14 +66,9 @@ describe('PaymentsV2Service', () => {
 
   let service: PaymentsV2Service;
 
-  beforeEach(() => {
-    jest.clearAllMocks();
-    process.env.PAYMENTS_V2_ENABLED_MERCHANTS = '*';
-    process.env.PAYMENTS_PROVIDER_MAX_RETRIES = '1';
-    process.env.PAYMENTS_PROVIDER_CB_FAILURES = '3';
-    process.env.PAYMENTS_PROVIDER_CB_COOLDOWN_MS = '60000';
-    process.env.PAYMENTS_V2_TOLERATE_ATTEMPT_PERSIST_FAILURE = 'true';
-    service = new PaymentsV2Service(
+  const buildService = () =>
+    new PaymentsV2Service(
+      config as never,
       prisma as never,
       links as never,
       redis as never,
@@ -78,6 +77,15 @@ describe('PaymentsV2Service', () => {
       registry as never,
       observability as never,
     );
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.PAYMENTS_V2_ENABLED_MERCHANTS = '*';
+    process.env.PAYMENTS_PROVIDER_MAX_RETRIES = '1';
+    process.env.PAYMENTS_PROVIDER_CB_FAILURES = '3';
+    process.env.PAYMENTS_PROVIDER_CB_COOLDOWN_MS = '60000';
+    process.env.PAYMENTS_V2_TOLERATE_ATTEMPT_PERSIST_FAILURE = 'true';
+    service = buildService();
     prisma.$transaction.mockImplementation(async (fn: (trx: unknown) => Promise<unknown>) => fn(prisma));
     redis.getIdempotency.mockResolvedValue(null);
     redis.setIdempotency.mockResolvedValue(true);
@@ -91,6 +99,7 @@ describe('PaymentsV2Service', () => {
 
   it('rechaza merchant no habilitado para rollout v2', async () => {
     process.env.PAYMENTS_V2_ENABLED_MERCHANTS = 'm_enabled';
+    service = buildService();
     await expect(
       service.createIntent(
         'm_other',

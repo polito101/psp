@@ -1,16 +1,23 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PAYMENT_V2_STATUS, PaymentOperation } from '../domain/payment-status';
 import { PaymentProvider, ProviderContext, ProviderResult } from './payment-provider.interface';
 
 @Injectable()
 export class StripeProviderAdapter implements PaymentProvider {
   readonly name = 'stripe' as const;
-  private readonly apiBaseUrl = (process.env.STRIPE_API_BASE_URL ?? 'https://api.stripe.com/v1').replace(
-    /\/+$/,
-    '',
-  );
-  private readonly secretKey = process.env.STRIPE_SECRET_KEY;
-  private readonly timeoutMs = Number(process.env.PAYMENTS_PROVIDER_TIMEOUT_MS ?? 8_000);
+  private readonly apiBaseUrl: string;
+  private readonly secretKey: string;
+  private readonly timeoutMs: number;
+
+  constructor(private readonly config: ConfigService) {
+    this.apiBaseUrl = (this.config.get<string>('STRIPE_API_BASE_URL') ?? 'https://api.stripe.com/v1').replace(
+      /\/+$/,
+      '',
+    );
+    this.secretKey = this.config.get<string>('STRIPE_SECRET_KEY') ?? '';
+    this.timeoutMs = Number(this.config.get<string>('PAYMENTS_PROVIDER_TIMEOUT_MS') ?? 8_000);
+  }
 
   async run(operation: PaymentOperation, context: ProviderContext): Promise<ProviderResult> {
     if (!this.secretKey) {

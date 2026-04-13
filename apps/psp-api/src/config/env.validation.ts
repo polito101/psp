@@ -159,6 +159,13 @@ export function validateEnv(input: EnvInput): EnvInput {
     env.REDIS_URL = redisUrl;
   }
 
+  // Mantener compatibilidad con consumidores que aún lean `process.env` directamente.
+  // Importante: `getString()` ya trata "" como unset; aquí reflejamos los valores normalizados.
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined || value === null) continue;
+    process.env[key] = String(value);
+  }
+
   return env;
 }
 
