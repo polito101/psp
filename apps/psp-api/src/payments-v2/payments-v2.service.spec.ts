@@ -174,6 +174,16 @@ describe('PaymentsV2Service', () => {
     expect(stripeProvider.run).toHaveBeenCalled();
     expect(mockProvider.run).toHaveBeenCalled();
     expect(result.payment.selectedProvider).toBe('mock');
+    // Invariant: el fallback no debe dejar timestamps de fallo cuando termina en éxito.
+    // Validamos a nivel de update del estado exitoso que `failedAt` se limpia.
+    expect(prisma.payment.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: PAYMENT_V2_STATUS.AUTHORIZED,
+          failedAt: null,
+        }),
+      }),
+    );
   });
 
   it('devuelve pago existente en carrera P2002 con idempotency key', async () => {
@@ -203,6 +213,34 @@ describe('PaymentsV2Service', () => {
 
     expect(result.payment.id).toBe('pay_race');
     expect(result.nextAction).toBeNull();
+    expect(mockProvider.run).not.toHaveBeenCalled();
+  });
+
+  it('en hit idempotente preserva nextAction cuando el pago requiere acción (3DS)', async () => {
+    registry.orderedProviders.mockReturnValue(['stripe']);
+    prisma.payment.findUnique.mockResolvedValue({
+      id: 'pay_action',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.REQUIRES_ACTION,
+      amountMinor: 1200,
+      currency: 'EUR',
+      selectedProvider: 'stripe',
+      providerRef: 'pi_123',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+
+    const result = await service.createIntent(
+      'm_1',
+      { amountMinor: 1200, currency: 'EUR', provider: 'stripe' },
+      'idem-action',
+    );
+
+    expect(result.payment.id).toBe('pay_action');
+    expect(result.payment.status).toBe(PAYMENT_V2_STATUS.REQUIRES_ACTION);
+    expect(result.nextAction).toEqual({ type: '3ds' });
+    expect(prisma.payment.create).not.toHaveBeenCalled();
+    expect(stripeProvider.run).not.toHaveBeenCalled();
     expect(mockProvider.run).not.toHaveBeenCalled();
   });
 

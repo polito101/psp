@@ -52,6 +52,8 @@ export class PaymentsV2Service {
   private readonly cbFailures = Number(process.env.PAYMENTS_PROVIDER_CB_FAILURES ?? 3);
   private readonly cbCooldownMs = Number(process.env.PAYMENTS_PROVIDER_CB_COOLDOWN_MS ?? 60_000);
   private readonly attemptWriteMaxRetries = 5;
+  private readonly persistAttemptPayload =
+    (process.env.PAYMENTS_V2_PERSIST_PROVIDER_RAW ?? 'true').toLowerCase() === 'true';
 
   constructor(
     private readonly prisma: PrismaService,
@@ -74,7 +76,7 @@ export class PaymentsV2Service {
     if (idempotencyKey) {
       const existing = await this.resolveIdempotentPayment(merchantId, idempotencyKey, dto);
       if (existing) {
-        return { payment: existing, nextAction: null };
+        return { payment: existing, nextAction: this.nextActionFromPersistedPayment(existing) };
       }
     }
 
@@ -118,7 +120,7 @@ export class PaymentsV2Service {
               paymentId: existing.id,
             }),
           );
-          return { payment: existing, nextAction: null };
+          return { payment: existing, nextAction: this.nextActionFromPersistedPayment(existing) };
         }
       }
       throw error;
@@ -210,7 +212,9 @@ export class PaymentsV2Service {
     amountMinor: number,
     providerOrder: PaymentProviderName[],
   ): Promise<OperationResult> {
-    for (const providerName of providerOrder) {
+    for (let providerIndex = 0; providerIndex < providerOrder.length; providerIndex += 1) {
+      const providerName = providerOrder[providerIndex];
+      const isLastProvider = providerIndex === providerOrder.length - 1;
       if (this.isCircuitOpen(providerName)) {
         await this.createAttempt(payment, operation, providerName, {
           status: PAYMENT_V2_STATUS.FAILED,
@@ -220,13 +224,36 @@ export class PaymentsV2Service {
         continue;
       }
       const result = await this.runWithRetry(providerName, operation, payment, amountMinor);
-      const updated = await this.applyPaymentState(payment, operation, providerName, result, amountMinor);
-      if (
-        result.status !== PAYMENT_V2_STATUS.FAILED ||
-        result.reasonCode !== 'provider_unavailable'
-      ) {
-        return { payment: updated, nextAction: result.nextAction ?? null };
+      const shouldFallbackToNextProvider =
+        result.status === PAYMENT_V2_STATUS.FAILED &&
+        result.reasonCode === 'provider_unavailable' &&
+        !isLastProvider;
+
+      if (shouldFallbackToNextProvider) {
+        // No marcamos el pago como FAILED si hay proveedores alternativos; solo registramos el intento.
+        payment = await this.prisma.payment.update({
+          where: { id: payment.id },
+          data: {
+            selectedProvider: providerName,
+            lastAttemptAt: new Date(),
+          },
+          select: {
+            id: true,
+            merchantId: true,
+            status: true,
+            amountMinor: true,
+            currency: true,
+            selectedProvider: true,
+            providerRef: true,
+            statusReason: true,
+            paymentLinkId: true,
+          },
+        });
+        continue;
       }
+
+      payment = await this.applyPaymentState(payment, operation, providerName, result, amountMinor);
+      return { payment, nextAction: result.nextAction ?? null };
     }
     const failed = await this.markPaymentFailed(payment.id, 'provider_unavailable');
     return { payment: failed, nextAction: null };
@@ -297,6 +324,10 @@ export class PaymentsV2Service {
     result: ProviderResult,
     latencyMs: number,
   ) {
+    const sanitizedRaw = this.persistAttemptPayload
+      ? this.sanitizeProviderRaw(provider, result.raw ?? null)
+      : null;
+
     for (let retryNo = 0; retryNo < this.attemptWriteMaxRetries; retryNo += 1) {
       try {
         await this.prisma.$transaction(
@@ -318,7 +349,7 @@ export class PaymentsV2Service {
                 errorCode: result.reasonCode ?? null,
                 errorMessage: result.reasonMessage ?? null,
                 latencyMs,
-                responsePayload: result.raw ? (result.raw as Prisma.InputJsonValue) : undefined,
+                responsePayload: sanitizedRaw ? (sanitizedRaw as Prisma.InputJsonValue) : undefined,
               },
             });
           },
@@ -347,6 +378,64 @@ export class PaymentsV2Service {
     }
   }
 
+  private sanitizeProviderRaw(provider: PaymentProviderName, raw: Record<string, unknown> | null) {
+    if (!raw) return null;
+
+    if (provider === 'stripe') {
+      const safe: Record<string, unknown> = {
+        id: this.safeGetString(raw.id),
+        object: this.safeGetString(raw.object),
+        status: this.safeGetString(raw.status),
+        request_id: this.safeGetString(raw.request_id) ?? this.safeGetString(raw.requestId),
+      };
+
+      const error = this.safeGetObject(raw.error);
+      if (error) {
+        safe.error = {
+          code: this.safeGetString(error.code),
+          type: this.safeGetString(error.type),
+          message: this.truncate(this.safeGetString(error.message), 500),
+          decline_code: this.safeGetString(error.decline_code),
+          param: this.safeGetString(error.param),
+        };
+      }
+
+      // Elimina campos undefined/null para mantener payloads compactos
+      Object.keys(safe).forEach((k) => {
+        if (safe[k] === undefined || safe[k] === null) delete safe[k];
+      });
+      if (safe.error && typeof safe.error === 'object') {
+        Object.keys(safe.error as Record<string, unknown>).forEach((k) => {
+          const obj = safe.error as Record<string, unknown>;
+          if (obj[k] === undefined || obj[k] === null) delete obj[k];
+        });
+        if (Object.keys(safe.error as Record<string, unknown>).length === 0) delete safe.error;
+      }
+
+      return safe;
+    }
+
+    // Default: no persistimos raws desconocidos por seguridad.
+    return null;
+  }
+
+  private safeGetObject(value: unknown): Record<string, unknown> | null {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+    return null;
+  }
+
+  private safeGetString(value: unknown): string | undefined {
+    return typeof value === 'string' ? value : undefined;
+  }
+
+  private truncate(value: string | undefined, maxLen: number): string | undefined {
+    if (!value) return value;
+    if (value.length <= maxLen) return value;
+    return value.slice(0, maxLen);
+  }
+
   private async applyPaymentState(
     payment: OperationResult['payment'],
     operation: PaymentOperation,
@@ -366,6 +455,7 @@ export class PaymentsV2Service {
             status: PAYMENT_V2_STATUS.REFUNDED,
             selectedProvider: providerName,
             statusReason: null,
+            failedAt: null,
             providerRef: result.providerPaymentId ?? payment.providerRef,
             lastAttemptAt: new Date(),
           },
@@ -399,6 +489,7 @@ export class PaymentsV2Service {
           canceledAt: new Date(),
           selectedProvider: providerName,
           statusReason: null,
+          failedAt: null,
           providerRef: result.providerPaymentId ?? payment.providerRef,
           lastAttemptAt: new Date(),
         },
@@ -428,6 +519,7 @@ export class PaymentsV2Service {
         selectedProvider: providerName,
         providerRef: result.providerPaymentId ?? payment.providerRef ?? `prov_${randomBytes(6).toString('hex')}`,
         statusReason: null,
+        failedAt: null,
         lastAttemptAt: new Date(),
       },
       select: {
@@ -461,6 +553,7 @@ export class PaymentsV2Service {
           selectedProvider: providerName,
           providerRef: result.providerPaymentId ?? payment.providerRef,
           statusReason: null,
+          failedAt: null,
           lastAttemptAt: new Date(),
           succeededAt: new Date(),
         },
@@ -551,8 +644,22 @@ export class PaymentsV2Service {
     return existing;
   }
 
+  private nextActionFromPersistedPayment(
+    payment: Pick<OperationResult['payment'], 'status'>,
+  ): ProviderResult['nextAction'] | null {
+    if (payment.status === PAYMENT_V2_STATUS.REQUIRES_ACTION) {
+      return { type: '3ds' };
+    }
+    return null;
+  }
+
   private assertIdempotencyPayloadMatch(
-    existing: { amountMinor: number; currency: string; paymentLinkId: string | null },
+    existing: {
+      amountMinor: number;
+      currency: string;
+      paymentLinkId: string | null;
+      selectedProvider: string | null;
+    },
     incoming: CreatePaymentIntentDto,
   ) {
     const same =
@@ -561,6 +668,14 @@ export class PaymentsV2Service {
       existing.paymentLinkId === (incoming.paymentLinkId ?? null);
     if (!same) {
       throw new ConflictException('Idempotency key already used with a different payment intent');
+    }
+
+    if (incoming.provider) {
+      const providerOrder = this.registry.orderedProviders(incoming.provider);
+      const expectedSelectedProvider = providerOrder[0] ?? null;
+      if (existing.selectedProvider !== expectedSelectedProvider) {
+        throw new ConflictException('Idempotency key already used with a different payment intent');
+      }
     }
   }
 
