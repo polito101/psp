@@ -52,7 +52,7 @@ export class PaymentsV2Service {
   private readonly cbFailures = Number(process.env.PAYMENTS_PROVIDER_CB_FAILURES ?? 3);
   private readonly cbCooldownMs = Number(process.env.PAYMENTS_PROVIDER_CB_COOLDOWN_MS ?? 60_000);
   private readonly attemptWriteMaxRetries = 5;
-  private readonly operationLockStaleMs = Number(process.env.PAYMENTS_V2_OPERATION_LOCK_STALE_MS ?? 30_000);
+  private readonly operationLockStaleMs: number;
   private readonly persistAttemptPayload =
     (process.env.PAYMENTS_V2_PERSIST_PROVIDER_RAW ?? 'true').toLowerCase() === 'true';
   private readonly tolerateAttemptPersistFailure =
@@ -66,7 +66,22 @@ export class PaymentsV2Service {
     private readonly webhooks: WebhooksService,
     private readonly registry: ProviderRegistryService,
     private readonly observability: PaymentsV2ObservabilityService,
-  ) {}
+  ) {
+    const raw = process.env.PAYMENTS_V2_OPERATION_LOCK_STALE_MS;
+    const parsed = raw === undefined || raw.trim() === '' ? 30_000 : Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      this.operationLockStaleMs = 30_000;
+      this.log.warn(
+        JSON.stringify({
+          event: 'payments_v2.operation_lock_stale_ms_invalid',
+          raw: raw ?? null,
+          applied: this.operationLockStaleMs,
+        }),
+      );
+    } else {
+      this.operationLockStaleMs = parsed;
+    }
+  }
 
   async createIntent(
     merchantId: string,
@@ -407,7 +422,15 @@ export class PaymentsV2Service {
       break;
     }
 
-    if (finalResult.status === PAYMENT_V2_STATUS.FAILED) {
+    const shouldCountFailureForCircuitBreaker =
+      finalResult.status === PAYMENT_V2_STATUS.FAILED &&
+      finalResult.reasonCode !== 'provider_declined' &&
+      finalResult.reasonCode !== 'provider_validation_error' &&
+      (finalResult.transientError === true ||
+        finalResult.reasonCode === 'provider_unavailable' ||
+        finalResult.reasonCode === 'provider_timeout');
+
+    if (shouldCountFailureForCircuitBreaker) {
       this.registerProviderFailure(providerName);
     } else {
       this.resetProviderFailure(providerName);
@@ -812,23 +835,35 @@ export class PaymentsV2Service {
     const staleBefore = new Date(now.getTime() - this.operationLockStaleMs);
 
     const decision = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const existing = await tx.paymentOperation.findUnique({
-        where: { paymentId_operation: { paymentId, operation } },
-        select: { status: true, payloadHash: true, processingAt: true },
-      });
+      const read = async () =>
+        tx.paymentOperation.findUnique({
+          where: { paymentId_operation: { paymentId, operation } },
+          select: { status: true, payloadHash: true, processingAt: true },
+        });
+
+      let existing = await read();
 
       if (!existing) {
-        await tx.paymentOperation.create({
-          data: {
-            paymentId,
-            merchantId,
-            operation,
-            payloadHash,
-            status: 'processing',
-            processingAt: now,
-          },
-        });
-        return { proceed: true as const };
+        try {
+          await tx.paymentOperation.create({
+            data: {
+              paymentId,
+              merchantId,
+              operation,
+              payloadHash,
+              status: 'processing',
+              processingAt: now,
+            },
+          });
+          return { proceed: true as const };
+        } catch (error) {
+          const code =
+            error && typeof error === 'object' && 'code' in error ? (error as { code: string }).code : '';
+          if (code !== 'P2002') throw error;
+          // Carrera: otra transacción creó el lock (paymentId+operation) entre el read y el create.
+          existing = await read();
+          if (!existing) throw error;
+        }
       }
 
       if (existing.status === 'done') {

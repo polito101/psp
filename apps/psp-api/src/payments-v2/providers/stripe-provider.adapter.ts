@@ -63,7 +63,7 @@ export class StripeProviderAdapter implements PaymentProvider {
       status,
       providerPaymentId,
       raw: response.body,
-      nextAction: status === PAYMENT_V2_STATUS.REQUIRES_ACTION ? { type: '3ds' } : { type: 'none' },
+      nextAction: this.mapNextAction(status, response.body),
     };
   }
 
@@ -178,11 +178,32 @@ export class StripeProviderAdapter implements PaymentProvider {
 
   private mapIntentStatus(statusRaw: unknown) {
     const status = this.getString(statusRaw);
+    if (!status) return PAYMENT_V2_STATUS.PROCESSING;
     if (status === 'requires_action') return PAYMENT_V2_STATUS.REQUIRES_ACTION;
     if (status === 'requires_capture') return PAYMENT_V2_STATUS.AUTHORIZED;
     if (status === 'succeeded') return PAYMENT_V2_STATUS.SUCCEEDED;
     if (status === 'canceled') return PAYMENT_V2_STATUS.CANCELED;
-    return PAYMENT_V2_STATUS.FAILED;
+
+    // Estados no finales de Stripe (no debemos traducirlos a "failed" de negocio).
+    // https://docs.stripe.com/api/payment_intents/object#payment_intent_object-status
+    if (status === 'processing') return PAYMENT_V2_STATUS.PROCESSING;
+    if (status === 'requires_payment_method') return PAYMENT_V2_STATUS.PENDING;
+    if (status === 'requires_confirmation') return PAYMENT_V2_STATUS.PENDING;
+
+    // Estado desconocido: conservador -> no-final.
+    return PAYMENT_V2_STATUS.PROCESSING;
+  }
+
+  private mapNextAction(status: ProviderResult['status'], body: Record<string, unknown>) {
+    if (status !== PAYMENT_V2_STATUS.REQUIRES_ACTION) return { type: 'none' as const };
+    const nextAction = this.getObject(body.next_action);
+    const type = this.getString(nextAction?.type);
+    if (type === 'redirect_to_url') {
+      const redirect = this.getObject(nextAction?.redirect_to_url);
+      const url = this.getString(redirect?.url);
+      if (url) return { type: 'redirect' as const, url };
+    }
+    return { type: '3ds' as const };
   }
 
   private mapFailure(body: Record<string, unknown>): ProviderResult {

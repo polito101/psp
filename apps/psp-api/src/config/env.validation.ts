@@ -143,6 +143,13 @@ export function validateEnv(input: EnvInput): EnvInput {
       'PAYMENTS_PROVIDER_CB_COOLDOWN_MS',
     ),
   );
+  env.PAYMENTS_V2_OPERATION_LOCK_STALE_MS = String(
+    parsePositiveInt(
+      getString(env.PAYMENTS_V2_OPERATION_LOCK_STALE_MS),
+      30_000,
+      'PAYMENTS_V2_OPERATION_LOCK_STALE_MS',
+    ),
+  );
 
   if (nodeEnv === 'sandbox') {
     const redisUrl = getString(env.REDIS_URL);
