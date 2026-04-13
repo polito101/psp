@@ -29,4 +29,10 @@ export class RedisService implements OnModuleDestroy {
     if (!this.client) return null;
     return this.client.get(key);
   }
+
+  /** Elimina una clave de idempotencia (p. ej. tras fallo no terminal que debe permitir reintento). */
+  async delIdempotency(key: string): Promise<void> {
+    if (!this.client) return;
+    await this.client.del(key);
+  }
 }

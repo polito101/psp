@@ -41,6 +41,20 @@ type OperationResult = {
   nextAction: ProviderResult['nextAction'] | null;
 };
 
+/**
+ * Fallo del proveedor en refund: el pago sigue `succeeded`; el servicio lo mapea a `ConflictException` al caller.
+ * Permite liberar lock/idempotencia y reintentar.
+ */
+class RefundProviderFailedError extends Error {
+  override readonly name = 'RefundProviderFailedError';
+  constructor(
+    readonly paymentId: string,
+    readonly reasonCode: string,
+  ) {
+    super(`Refund provider failed (${reasonCode})`);
+  }
+}
+
 type CircuitBreakerState = {
   failures: number;
   openedUntil: number;
@@ -372,11 +386,30 @@ export class PaymentsV2Service {
       return { payment: claim.payment, nextAction: null };
     }
 
+    let refundLockOutcome: 'complete' | 'release' = 'complete';
     try {
       const providerOrder = this.registry.orderedProviders(this.toProviderName(payment.selectedProvider));
       return await this.executeProviderOperation(payment, 'refund', refundAmount, providerOrder);
+    } catch (error) {
+      if (error instanceof RefundProviderFailedError) {
+        refundLockOutcome = 'release';
+        throw new ConflictException({
+          message: 'Refund failed; payment remains succeeded and can be retried',
+          paymentId: error.paymentId,
+          reasonCode: error.reasonCode,
+        });
+      }
+      throw error;
     } finally {
-      await this.completePaymentOperation(paymentId, 'refund', '');
+      if (refundLockOutcome === 'complete') {
+        await this.completePaymentOperation(paymentId, 'refund', '');
+      } else {
+        await this.releaseRefundOperationAfterProviderFailure({
+          merchantId,
+          paymentId,
+          idempotencyKey,
+        });
+      }
     }
   }
 
@@ -434,7 +467,16 @@ export class PaymentsV2Service {
       }
 
       payment = await this.applyPaymentState(payment, operation, providerName, result, amountMinor);
+      if (operation === 'refund' && result.status === PAYMENT_V2_STATUS.FAILED) {
+        throw new RefundProviderFailedError(
+          payment.id,
+          result.reasonCode ?? 'provider_error',
+        );
+      }
       return { payment, nextAction: result.nextAction ?? null };
+    }
+    if (operation === 'refund') {
+      throw new RefundProviderFailedError(payment.id, 'provider_unavailable');
     }
     const failed = await this.markPaymentFailed(
       payment.id,
@@ -814,6 +856,27 @@ export class PaymentsV2Service {
       });
     }
 
+    if (operation === 'refund' && result.status === PAYMENT_V2_STATUS.FAILED) {
+      return this.prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          lastAttemptAt: new Date(),
+          selectedProvider: providerName,
+        },
+        select: {
+          id: true,
+          merchantId: true,
+          status: true,
+          amountMinor: true,
+          currency: true,
+          selectedProvider: true,
+          providerRef: true,
+          statusReason: true,
+          paymentLinkId: true,
+        },
+      });
+    }
+
     const nextStatus = result.status;
     if (nextStatus === PAYMENT_V2_STATUS.FAILED) {
       return this.markPaymentFailed(payment.id, this.toReasonCode(result.reasonCode), providerName);
@@ -917,6 +980,52 @@ export class PaymentsV2Service {
     return updated;
   }
 
+  private operationIdempotencyCacheKey(
+    merchantId: string,
+    paymentId: string,
+    operation: PaymentOperation,
+    idempotencyKey: string,
+  ): string {
+    return `payv2op:${merchantId}:${paymentId}:${operation}:${this.idempotencyKeyRedisTag(idempotencyKey)}`;
+  }
+
+  /**
+   * Tras fallo de proveedor en refund, elimina fila de lock y (si aplica) clave Redis para permitir reintento.
+   */
+  private async releaseRefundOperationAfterProviderFailure(params: {
+    merchantId: string;
+    paymentId: string;
+    idempotencyKey?: string;
+  }): Promise<void> {
+    const { merchantId, paymentId, idempotencyKey } = params;
+    try {
+      await this.prisma.paymentOperation.deleteMany({
+        where: { paymentId, operation: 'refund' },
+      });
+    } catch (error) {
+      this.log.warn(
+        JSON.stringify({
+          event: 'payments_v2.refund_lock_release_failed',
+          paymentId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+    if (!idempotencyKey) return;
+    const cacheKey = this.operationIdempotencyCacheKey(merchantId, paymentId, 'refund', idempotencyKey);
+    try {
+      await this.redis.delIdempotency(cacheKey);
+    } catch (error) {
+      this.log.warn(
+        JSON.stringify({
+          event: 'payments_v2.refund_idempotency_release_failed',
+          paymentId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  }
+
   private async tryAcquireOperationIdempotency(params: {
     merchantId: string;
     paymentId: string;
@@ -925,7 +1034,7 @@ export class PaymentsV2Service {
     payloadHash: string;
   }): Promise<boolean> {
     const { merchantId, paymentId, operation, idempotencyKey, payloadHash } = params;
-    const key = `payv2op:${merchantId}:${paymentId}:${operation}:${this.idempotencyKeyRedisTag(idempotencyKey)}`;
+    const key = this.operationIdempotencyCacheKey(merchantId, paymentId, operation, idempotencyKey);
     const value = `${paymentId}:${payloadHash}`;
 
     try {

@@ -1,6 +1,6 @@
 # PROJECT_CONTEXT
 
-Ultima actualizacion: 2026-04-14
+Ultima actualizacion: 2026-04-13
 
 ## 1) Resumen del proyecto
 
@@ -84,6 +84,8 @@ C:/AA psp/
 └── prisma_migration_v7
 ```
 
+En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc` y **`agent-behavior.mdc`**: guías de comportamiento del agente (aclarar supuestos ante ambigüedad, simplicidad, cambios mínimos, criterios de éxito verificables).
+
 ## 4) Patrones de diseno y convenciones detectadas
 
 - Arquitectura por dominio NestJS: cada dominio separa `module/controller/service/dto`.
@@ -103,7 +105,8 @@ C:/AA psp/
 - El endpoint de observabilidad `GET /api/v2/payments/ops/metrics` es interno y se protege con `InternalSecretGuard` (`X-Internal-Secret`) para evitar exponer agregados globales por merchant API key.
 - Nuevo modelo `PaymentAttempt` para trazabilidad por operacion/proveedor (`create/capture/cancel/refund`) con status, error taxonomy, latencia y payload de respuesta.
 - `PaymentAttempt.attemptNo` se asigna de forma atomica con `MAX(attemptNo)+1` dentro de transaccion serializable y retry para `P2002`/`P2034`, manteniendo `@@unique([paymentId, operation, attemptNo])`.
-- Concurrencia en operaciones v2: `PaymentOperation` (lock por `paymentId+operation`) evita ejecutar dos veces `capture/refund/cancel` bajo carrera; la fila se crea/actualiza a `processing` y se marca `done` al completar. Con lock en `processing`, si llega otra peticion con `payloadHash` distinto (p. ej. otro monto en `refund`), se responde `409 Conflict` con metadata `{ message, paymentId, operation }` en lugar de `proceed: false` silencioso. Si el hash coincide y no es stale, se devuelve `proceed: false` (espera idempotente); si es stale, takeover como antes.
+- Concurrencia en operaciones v2: `PaymentOperation` (lock por `paymentId+operation`) evita ejecutar dos veces `capture/refund/cancel` bajo carrera; la fila se crea/actualiza a `processing` y se marca `done` al completar con exito. Con lock en `processing`, si llega otra peticion con `payloadHash` distinto (p. ej. otro monto en `refund`), se responde `409 Conflict` con metadata `{ message, paymentId, operation }` en lugar de `proceed: false` silencioso. Si el hash coincide y no es stale, se devuelve `proceed: false` (espera idempotente); si es stale, takeover como antes.
+- Refund v2: si el proveedor devuelve `failed` (o se agota el orden sin proveedor usable), el pago **permanece** `succeeded`; no se toca `statusReason`/`failedAt` del pago salvo actualizar `lastAttemptAt`/`selectedProvider`. La API responde `409 Conflict` con `{ message, paymentId, reasonCode }`; se elimina la fila `PaymentOperation` de refund y, si hubo `Idempotency-Key`, la clave Redis `payv2op:*` correspondiente, para permitir reintento. El detalle del fallo sigue en `PaymentAttempt` y métricas.
 - Robustez adapter v2: throws en `getProvider`/`adapter.run` se convierten a `ProviderResult` FAILED (`provider_error`), con `transientError` heurístico (p. ej. `TypeError`/`SyntaxError` sin reintento; `ECONNRESET`/etc. transitorio); se persisten intentos, métricas y reglas de circuit breaker igual que fallos normales.
 - Rollout progresivo de Payments V2 por merchant con feature flag de entorno `PAYMENTS_V2_ENABLED_MERCHANTS` (CSV o `*`).
 - Idempotencia v2: cabecera `Idempotency-Key` opcional con máximo 256 caracteres y charset `[A-Za-z0-9._:-]`; inválida → `400` con mensaje `Invalid Idempotency-Key`. En Redis, claves `payv2:*` y `payv2op:*` usan sufijo `sha256(key)`; el valor canónico sigue en `Payment.idempotencyKey` para unicidad y comparación de payload.

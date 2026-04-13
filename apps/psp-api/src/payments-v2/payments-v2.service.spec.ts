@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { PaymentsV2Service } from './payments-v2.service';
 import { PAYMENT_V2_STATUS } from './domain/payment-status';
 import { ProviderResult } from './providers/payment-provider.interface';
@@ -20,6 +20,7 @@ describe('PaymentsV2Service', () => {
       create: jest.fn(),
       update: jest.fn(),
       updateMany: jest.fn(),
+      deleteMany: jest.fn(),
     },
     paymentAttempt: {
       aggregate: jest.fn(),
@@ -39,6 +40,7 @@ describe('PaymentsV2Service', () => {
   const redis = {
     getIdempotency: jest.fn(),
     setIdempotency: jest.fn(),
+    delIdempotency: jest.fn(),
   };
 
   const ledger = {
@@ -100,6 +102,7 @@ describe('PaymentsV2Service', () => {
     prisma.paymentOperation.create.mockResolvedValue(undefined);
     prisma.paymentOperation.update.mockResolvedValue(undefined);
     prisma.paymentOperation.updateMany.mockResolvedValue({ count: 1 });
+    prisma.paymentOperation.deleteMany.mockResolvedValue({ count: 1 });
     stripeAdapter.retrievePaymentIntent.mockReset();
     stripeAdapter.retrievePaymentIntent.mockResolvedValue({
       status: PAYMENT_V2_STATUS.FAILED,
@@ -445,6 +448,150 @@ describe('PaymentsV2Service', () => {
       provider: 'mock',
       operation: 'create',
     });
+  });
+
+  it('refund fallido no pasa el pago a FAILED y lanza Conflict', async () => {
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    const paymentSucceeded = {
+      id: 'pay_refund_fail',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.SUCCEEDED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'prov_1',
+      statusReason: null,
+      paymentLinkId: null,
+    };
+    prisma.payment.findFirst.mockResolvedValue(paymentSucceeded);
+    mockProvider.run.mockResolvedValue({
+      status: PAYMENT_V2_STATUS.FAILED,
+      reasonCode: 'provider_error',
+      reasonMessage: 'stripe unavailable',
+    });
+    prisma.payment.update.mockResolvedValue({
+      ...paymentSucceeded,
+      lastAttemptAt: new Date(),
+      selectedProvider: 'mock',
+    });
+    const txClaim = {
+      paymentOperation: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      paymentAttempt: {
+        aggregate: jest.fn().mockResolvedValue({ _max: { attemptNo: 0 } }),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    prisma.$transaction.mockImplementation(async (fn: (trx: unknown) => Promise<unknown>) => fn(txClaim));
+
+    await expect(service.refund('m_1', 'pay_refund_fail', 400)).rejects.toMatchObject({
+      response: expect.objectContaining({
+        message: 'Refund failed; payment remains succeeded and can be retried',
+        paymentId: 'pay_refund_fail',
+        reasonCode: 'provider_error',
+      }),
+    });
+
+    expect(prisma.payment.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'pay_refund_fail' },
+        data: expect.not.objectContaining({ status: PAYMENT_V2_STATUS.FAILED }),
+      }),
+    );
+    expect(prisma.paymentOperation.deleteMany).toHaveBeenCalledWith({
+      where: { paymentId: 'pay_refund_fail', operation: 'refund' },
+    });
+    expect(ledger.recordSuccessfulRefund).not.toHaveBeenCalled();
+  });
+
+  it('tras refund fallido se puede reintentar y completar refund', async () => {
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    const paymentSucceeded = {
+      id: 'pay_refund_retry',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.SUCCEEDED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'prov_1',
+      statusReason: null,
+      paymentLinkId: null,
+    };
+    prisma.payment.findFirst.mockResolvedValue(paymentSucceeded);
+    mockProvider.run
+      .mockResolvedValueOnce({
+        status: PAYMENT_V2_STATUS.FAILED,
+        reasonCode: 'provider_timeout',
+        reasonMessage: 'timeout',
+      })
+      .mockResolvedValueOnce({
+        status: PAYMENT_V2_STATUS.REFUNDED,
+        providerPaymentId: 're_ok',
+      });
+
+    const txClaim = {
+      paymentOperation: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      paymentAttempt: {
+        aggregate: jest.fn().mockResolvedValue({ _max: { attemptNo: 0 } }),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const txRefundOk = {
+      payment: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue({
+          ...paymentSucceeded,
+          status: PAYMENT_V2_STATUS.REFUNDED,
+          providerRef: 're_ok',
+        }),
+      },
+      paymentOperation: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      paymentAttempt: {
+        aggregate: jest.fn().mockResolvedValue({ _max: { attemptNo: 0 } }),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+
+    prisma.$transaction.mockImplementation(async (fn: (trx: unknown) => Promise<unknown>) => fn(txClaim));
+    prisma.payment.update.mockResolvedValue({
+      ...paymentSucceeded,
+      lastAttemptAt: new Date(),
+      selectedProvider: 'mock',
+    });
+
+    await expect(service.refund('m_1', 'pay_refund_retry', 400)).rejects.toBeInstanceOf(ConflictException);
+
+    prisma.$transaction.mockImplementation(async (fn: (trx: unknown) => Promise<unknown>) => fn(txRefundOk));
+    prisma.payment.update.mockReset();
+    prisma.payment.update.mockImplementation((args: { data?: Record<string, unknown> }) => {
+      if (args.data && 'status' in args.data && args.data.status === PAYMENT_V2_STATUS.REFUNDED) {
+        return Promise.resolve({
+          ...paymentSucceeded,
+          status: PAYMENT_V2_STATUS.REFUNDED,
+          providerRef: 're_ok',
+          selectedProvider: 'mock',
+        });
+      }
+      return Promise.resolve({
+        ...paymentSucceeded,
+        lastAttemptAt: new Date(),
+        selectedProvider: 'mock',
+      });
+    });
+
+    const ok = await service.refund('m_1', 'pay_refund_retry', 400);
+    expect(ok.payment.status).toBe(PAYMENT_V2_STATUS.REFUNDED);
+    expect(ledger.recordSuccessfulRefund).toHaveBeenCalled();
   });
 
   it('registra ledger cuando refund termina en success', async () => {
