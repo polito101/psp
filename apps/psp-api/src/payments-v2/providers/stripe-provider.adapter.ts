@@ -50,9 +50,18 @@ export class StripeProviderAdapter implements PaymentProvider {
       return this.mapFailure(response.body);
     }
     const status = this.mapIntentStatus(response.body.status);
+    const providerPaymentId = this.getString(response.body.id);
+    if (!providerPaymentId) {
+      return {
+        status: PAYMENT_V2_STATUS.FAILED,
+        reasonCode: 'provider_error',
+        reasonMessage: 'Stripe response missing payment intent id',
+        raw: response.body,
+      };
+    }
     return {
       status,
-      providerPaymentId: this.getString(response.body.id),
+      providerPaymentId,
       raw: response.body,
       nextAction: status === PAYMENT_V2_STATUS.REQUIRES_ACTION ? { type: '3ds' } : { type: 'none' },
     };
@@ -70,9 +79,18 @@ export class StripeProviderAdapter implements PaymentProvider {
     if (!response.ok) {
       return this.mapFailure(response.body);
     }
+    const providerPaymentId = this.getString(response.body.id);
+    if (!providerPaymentId) {
+      return {
+        status: PAYMENT_V2_STATUS.FAILED,
+        reasonCode: 'provider_error',
+        reasonMessage: 'Stripe response missing payment intent id on capture',
+        raw: response.body,
+      };
+    }
     return {
       status: this.mapIntentStatus(response.body.status),
-      providerPaymentId: this.getString(response.body.id),
+      providerPaymentId,
       raw: response.body,
     };
   }
@@ -89,9 +107,18 @@ export class StripeProviderAdapter implements PaymentProvider {
     if (!response.ok) {
       return this.mapFailure(response.body);
     }
+    const providerPaymentId = this.getString(response.body.id);
+    if (!providerPaymentId) {
+      return {
+        status: PAYMENT_V2_STATUS.FAILED,
+        reasonCode: 'provider_error',
+        reasonMessage: 'Stripe response missing payment intent id on cancel',
+        raw: response.body,
+      };
+    }
     return {
       status: PAYMENT_V2_STATUS.CANCELED,
-      providerPaymentId: this.getString(response.body.id),
+      providerPaymentId,
       raw: response.body,
     };
   }

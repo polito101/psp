@@ -6,6 +6,7 @@ type MetricsBucket = {
   success: number;
   failed: number;
   retries: number;
+  attemptPersistFailed: number;
   latencies: number[];
 };
 
@@ -27,6 +28,7 @@ export class PaymentsV2ObservabilityService {
       success: 0,
       failed: 0,
       retries: 0,
+      attemptPersistFailed: 0,
       latencies: [],
     };
     current.total += 1;
@@ -40,6 +42,23 @@ export class PaymentsV2ObservabilityService {
     this.metrics.set(key, current);
   }
 
+  registerAttemptPersistFailure(params: {
+    provider: PaymentProviderName;
+    operation: PaymentOperation;
+  }): void {
+    const key = `${params.provider}:${params.operation}`;
+    const current = this.metrics.get(key) ?? {
+      total: 0,
+      success: 0,
+      failed: 0,
+      retries: 0,
+      attemptPersistFailed: 0,
+      latencies: [],
+    };
+    current.attemptPersistFailed += 1;
+    this.metrics.set(key, current);
+  }
+
   snapshot(): Record<string, unknown> {
     const out: Record<string, unknown> = {};
     for (const [key, metric] of this.metrics) {
@@ -47,6 +66,7 @@ export class PaymentsV2ObservabilityService {
         total: metric.total,
         successRate: metric.total > 0 ? Number((metric.success / metric.total).toFixed(4)) : 0,
         retryRate: metric.total > 0 ? Number((metric.retries / metric.total).toFixed(4)) : 0,
+        attemptPersistFailed: metric.attemptPersistFailed,
         p95LatencyMs: this.p95(metric.latencies),
       };
     }

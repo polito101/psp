@@ -1,17 +1,29 @@
-import { PaymentOperation, PaymentProviderName, PaymentV2Status } from '../domain/payment-status';
+import { PAYMENT_V2_STATUS, PaymentOperation, PaymentProviderName, PaymentV2Status } from '../domain/payment-status';
 
-export type ProviderResult = {
-  status: PaymentV2Status;
-  providerPaymentId?: string;
+type ProviderNextAction = {
+  type: 'redirect' | '3ds' | 'none';
+  url?: string;
+};
+
+type ProviderResultCommon = {
   reasonCode?: string;
   reasonMessage?: string;
   transientError?: boolean;
-  nextAction?: {
-    type: 'redirect' | '3ds' | 'none';
-    url?: string;
-  };
+  nextAction?: ProviderNextAction;
   raw?: Record<string, unknown>;
 };
+
+export type ProviderResultFailed = ProviderResultCommon & {
+  status: typeof PAYMENT_V2_STATUS.FAILED;
+  providerPaymentId?: string;
+};
+
+export type ProviderResultNonFailed = ProviderResultCommon & {
+  status: Exclude<PaymentV2Status, typeof PAYMENT_V2_STATUS.FAILED>;
+  providerPaymentId: string;
+};
+
+export type ProviderResult = ProviderResultFailed | ProviderResultNonFailed;
 
 export type ProviderContext = {
   merchantId: string;

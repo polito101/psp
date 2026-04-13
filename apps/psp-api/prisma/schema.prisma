@@ -65,10 +65,30 @@ model Payment {
   paymentLink   PaymentLink?   @relation(fields: [paymentLinkId], references: [id], onDelete: SetNull)
   ledgerLines   LedgerLine[]
   attempts      PaymentAttempt[]
+  operations    PaymentOperation[]
 
   @@unique([merchantId, idempotencyKey])
   @@index([merchantId, status])
   @@index([merchantId, selectedProvider])
+}
+
+model PaymentOperation {
+  id            String   @id @default(cuid())
+  paymentId     String   @map("payment_id")
+  merchantId    String   @map("merchant_id")
+  operation     String
+  payloadHash   String   @map("payload_hash")
+  status        String   @default("processing")
+  processingAt  DateTime @default(now()) @map("processing_at")
+  completedAt   DateTime? @map("completed_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@unique([paymentId, operation])
+  @@index([merchantId, createdAt])
+  @@index([status, processingAt])
 }
 
 model PaymentAttempt {

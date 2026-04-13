@@ -38,23 +38,47 @@ export class PaymentsV2Controller {
 
   @Post(':id/capture')
   @ApiOperation({ summary: 'Capturar payment autorizado' })
-  capture(@CurrentMerchant() merchant: { id: string }, @Param('id') id: string) {
-    return this.payments.capture(merchant.id, id);
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description: 'Clave idempotente para la operación capture.',
+  })
+  capture(
+    @CurrentMerchant() merchant: { id: string },
+    @Param('id') id: string,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.payments.capture(merchant.id, id, idempotencyKey || undefined);
   }
 
   @Post(':id/cancel')
   @ApiOperation({ summary: 'Cancelar payment no liquidado' })
-  cancel(@CurrentMerchant() merchant: { id: string }, @Param('id') id: string) {
-    return this.payments.cancel(merchant.id, id);
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description: 'Clave idempotente para la operación cancel.',
+  })
+  cancel(
+    @CurrentMerchant() merchant: { id: string },
+    @Param('id') id: string,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.payments.cancel(merchant.id, id, idempotencyKey || undefined);
   }
 
   @Post(':id/refund')
   @ApiOperation({ summary: 'Reembolsar payment liquidado' })
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description: 'Clave idempotente para la operación refund.',
+  })
   refund(
     @CurrentMerchant() merchant: { id: string },
     @Param('id') id: string,
     @Body() dto: RefundPaymentDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.payments.refund(merchant.id, id, dto.amountMinor);
+    return this.payments.refund(merchant.id, id, dto.amountMinor, idempotencyKey || undefined);
   }
 }

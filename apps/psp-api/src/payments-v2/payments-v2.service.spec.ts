@@ -1,6 +1,7 @@
 import { ForbiddenException } from '@nestjs/common';
 import { PaymentsV2Service } from './payments-v2.service';
 import { PAYMENT_V2_STATUS } from './domain/payment-status';
+import { ProviderResult } from './providers/payment-provider.interface';
 
 describe('PaymentsV2Service', () => {
   const prisma = {
@@ -9,6 +10,12 @@ describe('PaymentsV2Service', () => {
       update: jest.fn(),
       findFirst: jest.fn(),
       findUnique: jest.fn(),
+    },
+    paymentOperation: {
+      findUnique: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
+      updateMany: jest.fn(),
     },
     paymentAttempt: {
       aggregate: jest.fn(),
@@ -48,6 +55,7 @@ describe('PaymentsV2Service', () => {
 
   const observability = {
     registerAttempt: jest.fn(),
+    registerAttemptPersistFailure: jest.fn(),
     logProviderEvent: jest.fn(),
     snapshot: jest.fn(),
   };
@@ -60,6 +68,7 @@ describe('PaymentsV2Service', () => {
     process.env.PAYMENTS_PROVIDER_MAX_RETRIES = '1';
     process.env.PAYMENTS_PROVIDER_CB_FAILURES = '3';
     process.env.PAYMENTS_PROVIDER_CB_COOLDOWN_MS = '60000';
+    process.env.PAYMENTS_V2_TOLERATE_ATTEMPT_PERSIST_FAILURE = 'true';
     service = new PaymentsV2Service(
       prisma as never,
       links as never,
@@ -74,6 +83,10 @@ describe('PaymentsV2Service', () => {
     redis.setIdempotency.mockResolvedValue(true);
     prisma.paymentAttempt.aggregate.mockResolvedValue({ _max: { attemptNo: 0 } });
     prisma.paymentAttempt.create.mockResolvedValue(undefined);
+    prisma.paymentOperation.findUnique.mockResolvedValue(null);
+    prisma.paymentOperation.create.mockResolvedValue(undefined);
+    prisma.paymentOperation.update.mockResolvedValue(undefined);
+    prisma.paymentOperation.updateMany.mockResolvedValue({ count: 1 });
   });
 
   it('rechaza merchant no habilitado para rollout v2', async () => {
@@ -297,6 +310,51 @@ describe('PaymentsV2Service', () => {
     );
   });
 
+  it('no aborta la operación si falla la persistencia del attempt tras ejecutar el proveedor', async () => {
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    prisma.payment.create.mockResolvedValue({
+      id: 'pay_attempt_persist_fail',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.PROCESSING,
+      amountMinor: 1500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    mockProvider.run.mockResolvedValue({
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      providerPaymentId: 'mock_pi_persist_fail',
+      nextAction: { type: 'none' },
+    });
+    prisma.$transaction.mockRejectedValue({ code: 'P2034' });
+    prisma.payment.update.mockResolvedValue({
+      id: 'pay_attempt_persist_fail',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 1500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'mock_pi_persist_fail',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+
+    const result = await service.createIntent('m_1', {
+      amountMinor: 1500,
+      currency: 'EUR',
+      provider: 'mock',
+    });
+
+    expect(result.payment.status).toBe(PAYMENT_V2_STATUS.AUTHORIZED);
+    expect(observability.registerAttemptPersistFailure).toHaveBeenCalledWith({
+      provider: 'mock',
+      operation: 'create',
+    });
+  });
+
   it('registra ledger cuando refund termina en success', async () => {
     registry.orderedProviders.mockReturnValue(['mock']);
     registry.getProvider.mockReturnValue(mockProvider);
@@ -318,7 +376,8 @@ describe('PaymentsV2Service', () => {
 
     const tx = {
       payment: {
-        update: jest.fn().mockResolvedValue({
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue({
           id: 'pay_refund',
           merchantId: 'm_1',
           status: PAYMENT_V2_STATUS.REFUNDED,
@@ -329,6 +388,11 @@ describe('PaymentsV2Service', () => {
           statusReason: null,
           paymentLinkId: null,
         }),
+      },
+      paymentOperation: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+        update: jest.fn().mockResolvedValue(undefined),
       },
       paymentAttempt: {
         aggregate: jest.fn().mockResolvedValue({ _max: { attemptNo: 0 } }),
@@ -346,5 +410,54 @@ describe('PaymentsV2Service', () => {
       amountMinor: 400,
       currency: 'EUR',
     });
+  });
+
+  it('marca FAILED si provider devuelve éxito sin providerPaymentId y payment.providerRef es null', async () => {
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    prisma.payment.create.mockResolvedValue({
+      id: 'pay_missing_provider_id',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.PENDING,
+      amountMinor: 1500,
+      currency: 'EUR',
+      selectedProvider: null,
+      providerRef: null,
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    // Fuerza un resultado "no FAILED" pero sin providerPaymentId (bug de provider)
+    mockProvider.run.mockResolvedValue({
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      // providerPaymentId ausente
+      nextAction: { type: 'none' },
+    } as unknown as ProviderResult);
+    prisma.payment.update.mockResolvedValue({
+      id: 'pay_missing_provider_id',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.FAILED,
+      amountMinor: 1500,
+      currency: 'EUR',
+      selectedProvider: null,
+      providerRef: null,
+      statusReason: 'provider_error',
+      paymentLinkId: null,
+    });
+
+    const result = await service.createIntent('m_1', {
+      amountMinor: 1500,
+      currency: 'EUR',
+      provider: 'mock',
+    });
+
+    expect(result.payment.status).toBe(PAYMENT_V2_STATUS.FAILED);
+    expect(prisma.payment.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: PAYMENT_V2_STATUS.FAILED,
+          statusReason: 'provider_error',
+        }),
+      }),
+    );
   });
 });

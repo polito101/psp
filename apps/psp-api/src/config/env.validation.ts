@@ -112,7 +112,19 @@ export function validateEnv(input: EnvInput): EnvInput {
   env.HTTP_LOG_SKIP_PATH_PREFIXES = httpLogSkipPrefixes;
 
   env.PAYMENTS_V2_ENABLED_MERCHANTS = getString(env.PAYMENTS_V2_ENABLED_MERCHANTS) ?? '';
-  env.PAYMENTS_PROVIDER_ORDER = getString(env.PAYMENTS_PROVIDER_ORDER) ?? 'stripe,mock';
+  env.PAYMENTS_ALLOW_MOCK = String(parseBoolean(getString(env.PAYMENTS_ALLOW_MOCK), false));
+  const defaultProviderOrder = nodeEnv === 'production' ? 'stripe' : 'stripe,mock';
+  const providerOrder = parsePaymentsProviderOrder(
+    getString(env.PAYMENTS_PROVIDER_ORDER) ?? defaultProviderOrder,
+    {
+      nodeEnv,
+      allowMockOutsideSandbox:
+        nodeEnv === 'development' || nodeEnv === 'sandbox'
+          ? true
+          : env.PAYMENTS_ALLOW_MOCK === 'true',
+    },
+  );
+  env.PAYMENTS_PROVIDER_ORDER = providerOrder.join(',');
   env.STRIPE_SECRET_KEY = getString(env.STRIPE_SECRET_KEY) ?? '';
   env.STRIPE_API_BASE_URL = validateStripeApiBaseUrl(getString(env.STRIPE_API_BASE_URL));
   env.PAYMENTS_PROVIDER_TIMEOUT_MS = String(
@@ -141,6 +153,53 @@ export function validateEnv(input: EnvInput): EnvInput {
   }
 
   return env;
+}
+
+type PaymentsProviderName = 'stripe' | 'mock';
+
+function parsePaymentsProviderOrder(
+  raw: string,
+  opts: { nodeEnv: string; allowMockOutsideSandbox: boolean },
+): PaymentsProviderName[] {
+  const entries = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  if (entries.length === 0) {
+    throw new Error(
+      'PAYMENTS_PROVIDER_ORDER must contain at least one provider: stripe or mock',
+    );
+  }
+
+  const seen = new Set<PaymentsProviderName>();
+  const result: PaymentsProviderName[] = [];
+  for (const entry of entries) {
+    if (entry !== 'stripe' && entry !== 'mock') {
+      throw new Error(
+        `PAYMENTS_PROVIDER_ORDER contains an invalid provider: "${entry}" (allowed: stripe,mock)`,
+      );
+    }
+    const name = entry as PaymentsProviderName;
+    if (!seen.has(name)) {
+      seen.add(name);
+      result.push(name);
+    }
+  }
+
+  if (result.length === 0) {
+    throw new Error(
+      'PAYMENTS_PROVIDER_ORDER must contain at least one provider: stripe or mock',
+    );
+  }
+
+  if (result.includes('mock') && !opts.allowMockOutsideSandbox) {
+    throw new Error(
+      `PAYMENTS_PROVIDER_ORDER cannot include "mock" when NODE_ENV=${opts.nodeEnv}. Remove "mock" or set PAYMENTS_ALLOW_MOCK=true explicitly.`,
+    );
+  }
+
+  return result;
 }
 
 /**

@@ -52,8 +52,11 @@ export class PaymentsV2Service {
   private readonly cbFailures = Number(process.env.PAYMENTS_PROVIDER_CB_FAILURES ?? 3);
   private readonly cbCooldownMs = Number(process.env.PAYMENTS_PROVIDER_CB_COOLDOWN_MS ?? 60_000);
   private readonly attemptWriteMaxRetries = 5;
+  private readonly operationLockStaleMs = Number(process.env.PAYMENTS_V2_OPERATION_LOCK_STALE_MS ?? 30_000);
   private readonly persistAttemptPayload =
     (process.env.PAYMENTS_V2_PERSIST_PROVIDER_RAW ?? 'true').toLowerCase() === 'true';
+  private readonly tolerateAttemptPersistFailure =
+    (process.env.PAYMENTS_V2_TOLERATE_ATTEMPT_PERSIST_FAILURE ?? 'true').toLowerCase() === 'true';
 
   constructor(
     private readonly prisma: PrismaService,
@@ -154,8 +157,33 @@ export class PaymentsV2Service {
     return { ...payment, attempts };
   }
 
-  async capture(merchantId: string, paymentId: string): Promise<OperationResult> {
+  async capture(merchantId: string, paymentId: string, idempotencyKey?: string): Promise<OperationResult> {
     this.assertMerchantEnabled(merchantId);
+
+    if (idempotencyKey) {
+      const duplicate = await this.tryAcquireOperationIdempotency({
+        merchantId,
+        paymentId,
+        operation: 'capture',
+        idempotencyKey,
+        payloadHash: 'v=1',
+      });
+      if (duplicate) {
+        const current = await this.findMerchantPayment(merchantId, paymentId);
+        return { payment: current, nextAction: null };
+      }
+    }
+
+    const claim = await this.claimPaymentOperation({
+      merchantId,
+      paymentId,
+      operation: 'capture',
+      payloadHash: 'v=1',
+    });
+    if (!claim.proceed) {
+      return { payment: claim.payment, nextAction: null };
+    }
+
     const payment = await this.findMerchantPayment(merchantId, paymentId);
     if (payment.status === PAYMENT_V2_STATUS.SUCCEEDED) {
       return { payment, nextAction: null };
@@ -168,11 +196,38 @@ export class PaymentsV2Service {
       throw new ConflictException('Payment is not capturable in current state');
     }
     const providerOrder = this.registry.orderedProviders(this.toProviderName(payment.selectedProvider));
-    return this.executeProviderOperation(payment, 'capture', payment.amountMinor, providerOrder);
+    const result = await this.executeProviderOperation(payment, 'capture', payment.amountMinor, providerOrder);
+    await this.completePaymentOperation(payment.id, 'capture', result.payment.status);
+    return result;
   }
 
-  async cancel(merchantId: string, paymentId: string): Promise<OperationResult> {
+  async cancel(merchantId: string, paymentId: string, idempotencyKey?: string): Promise<OperationResult> {
     this.assertMerchantEnabled(merchantId);
+
+    if (idempotencyKey) {
+      const duplicate = await this.tryAcquireOperationIdempotency({
+        merchantId,
+        paymentId,
+        operation: 'cancel',
+        idempotencyKey,
+        payloadHash: 'v=1',
+      });
+      if (duplicate) {
+        const current = await this.findMerchantPayment(merchantId, paymentId);
+        return { payment: current, nextAction: null };
+      }
+    }
+
+    const claim = await this.claimPaymentOperation({
+      merchantId,
+      paymentId,
+      operation: 'cancel',
+      payloadHash: 'v=1',
+    });
+    if (!claim.proceed) {
+      return { payment: claim.payment, nextAction: null };
+    }
+
     const payment = await this.findMerchantPayment(merchantId, paymentId);
     if (
       payment.status === PAYMENT_V2_STATUS.CANCELED ||
@@ -185,12 +240,22 @@ export class PaymentsV2Service {
       throw new ConflictException('Succeeded payment must be refunded, not canceled');
     }
     const providerOrder = this.registry.orderedProviders(this.toProviderName(payment.selectedProvider));
-    return this.executeProviderOperation(payment, 'cancel', payment.amountMinor, providerOrder);
+    const result = await this.executeProviderOperation(payment, 'cancel', payment.amountMinor, providerOrder);
+    await this.completePaymentOperation(payment.id, 'cancel', result.payment.status);
+    return result;
   }
 
-  async refund(merchantId: string, paymentId: string, amountMinor?: number): Promise<OperationResult> {
+  async refund(
+    merchantId: string,
+    paymentId: string,
+    amountMinor?: number,
+    idempotencyKey?: string,
+  ): Promise<OperationResult> {
     this.assertMerchantEnabled(merchantId);
     const payment = await this.findMerchantPayment(merchantId, paymentId);
+    if (payment.status === PAYMENT_V2_STATUS.REFUNDED) {
+      return { payment, nextAction: null };
+    }
     if (payment.status !== PAYMENT_V2_STATUS.SUCCEEDED) {
       throw new ConflictException('Only succeeded payments can be refunded');
     }
@@ -198,8 +263,35 @@ export class PaymentsV2Service {
     if (refundAmount <= 0 || refundAmount > payment.amountMinor) {
       throw new BadRequestException('Invalid refund amount');
     }
+
+    const claim = await this.claimPaymentOperation({
+      merchantId,
+      paymentId,
+      operation: 'refund',
+      payloadHash: `amount=${refundAmount}`,
+    });
+    if (!claim.proceed) {
+      return { payment: claim.payment, nextAction: null };
+    }
+
+    if (idempotencyKey) {
+      const duplicate = await this.tryAcquireOperationIdempotency({
+        merchantId,
+        paymentId,
+        operation: 'refund',
+        idempotencyKey,
+        payloadHash: `amount=${refundAmount}`,
+      });
+      if (duplicate) {
+        const current = await this.findMerchantPayment(merchantId, paymentId);
+        return { payment: current, nextAction: null };
+      }
+    }
+
     const providerOrder = this.registry.orderedProviders(this.toProviderName(payment.selectedProvider));
-    return this.executeProviderOperation(payment, 'refund', refundAmount, providerOrder);
+    const result = await this.executeProviderOperation(payment, 'refund', refundAmount, providerOrder);
+    await this.completePaymentOperation(payment.id, 'refund', result.payment.status);
+    return result;
   }
 
   getMetricsSnapshot() {
@@ -212,11 +304,13 @@ export class PaymentsV2Service {
     amountMinor: number,
     providerOrder: PaymentProviderName[],
   ): Promise<OperationResult> {
+    let lastProviderAttempted: PaymentProviderName | null = null;
     for (let providerIndex = 0; providerIndex < providerOrder.length; providerIndex += 1) {
       const providerName = providerOrder[providerIndex];
+      lastProviderAttempted = providerName;
       const isLastProvider = providerIndex === providerOrder.length - 1;
       if (this.isCircuitOpen(providerName)) {
-        await this.createAttempt(payment, operation, providerName, {
+        await this.safeCreateAttempt(payment, operation, providerName, {
           status: PAYMENT_V2_STATUS.FAILED,
           reasonCode: 'provider_unavailable',
           reasonMessage: 'Provider circuit breaker is open',
@@ -255,7 +349,11 @@ export class PaymentsV2Service {
       payment = await this.applyPaymentState(payment, operation, providerName, result, amountMinor);
       return { payment, nextAction: result.nextAction ?? null };
     }
-    const failed = await this.markPaymentFailed(payment.id, 'provider_unavailable');
+    const failed = await this.markPaymentFailed(
+      payment.id,
+      'provider_unavailable',
+      lastProviderAttempted ?? providerOrder[providerOrder.length - 1] ?? this.toProviderName(payment.selectedProvider),
+    );
     return { payment: failed, nextAction: null };
   }
 
@@ -284,7 +382,7 @@ export class PaymentsV2Service {
       };
       const result = await adapter.run(operation, context);
       const latencyMs = Date.now() - start;
-      await this.createAttempt(payment, operation, providerName, result, latencyMs);
+      await this.safeCreateAttempt(payment, operation, providerName, result, latencyMs);
       this.observability.registerAttempt({
         provider: providerName,
         operation,
@@ -315,6 +413,35 @@ export class PaymentsV2Service {
       this.resetProviderFailure(providerName);
     }
     return finalResult;
+  }
+
+  private async safeCreateAttempt(
+    payment: OperationResult['payment'],
+    operation: PaymentOperation,
+    provider: PaymentProviderName,
+    result: ProviderResult,
+    latencyMs: number,
+  ): Promise<void> {
+    try {
+      await this.createAttempt(payment, operation, provider, result, latencyMs);
+    } catch (error) {
+      this.observability.registerAttemptPersistFailure({ provider, operation });
+      const payload = {
+        event: 'payments_v2.attempt_persist_failed',
+        paymentId: payment.id,
+        merchantId: payment.merchantId,
+        operation,
+        provider,
+        providerStatus: result.status,
+        providerReasonCode: result.reasonCode ?? null,
+        error: error instanceof Error ? error.message : String(error),
+      };
+      if (!this.tolerateAttemptPersistFailure) {
+        this.log.error(JSON.stringify({ ...payload, fatal: true }));
+        throw error;
+      }
+      this.log.error(JSON.stringify({ ...payload, tolerated: true }));
+    }
   }
 
   private async createAttempt(
@@ -443,14 +570,35 @@ export class PaymentsV2Service {
     result: ProviderResult,
     amountMinor: number,
   ): Promise<OperationResult['payment']> {
+    const hasNonEmptyProviderId = (value: string | undefined | null): value is string =>
+      typeof value === 'string' && value.trim().length > 0;
+
+    if (
+      result.status !== PAYMENT_V2_STATUS.FAILED &&
+      !hasNonEmptyProviderId(result.providerPaymentId) &&
+      payment.providerRef === null
+    ) {
+      this.log.error(
+        JSON.stringify({
+          event: 'payments_v2.provider_success_missing_id',
+          paymentId: payment.id,
+          merchantId: payment.merchantId,
+          operation,
+          provider: providerName,
+          providerStatus: result.status,
+        }),
+      );
+      return this.markPaymentFailed(payment.id, 'provider_error', providerName);
+    }
+
     if (operation === 'capture' && result.status === PAYMENT_V2_STATUS.SUCCEEDED) {
       return this.captureSucceeded(payment, providerName, result);
     }
 
     if (operation === 'refund' && result.status === PAYMENT_V2_STATUS.REFUNDED) {
       return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-        const updated = await tx.payment.update({
-          where: { id: payment.id },
+        const cas = await tx.payment.updateMany({
+          where: { id: payment.id, status: PAYMENT_V2_STATUS.SUCCEEDED },
           data: {
             status: PAYMENT_V2_STATUS.REFUNDED,
             selectedProvider: providerName,
@@ -459,6 +607,10 @@ export class PaymentsV2Service {
             providerRef: result.providerPaymentId ?? payment.providerRef,
             lastAttemptAt: new Date(),
           },
+        });
+
+        const current = await tx.payment.findUniqueOrThrow({
+          where: { id: payment.id },
           select: {
             id: true,
             merchantId: true,
@@ -471,13 +623,18 @@ export class PaymentsV2Service {
             paymentLinkId: true,
           },
         });
+
+        if (cas.count === 0) {
+          return current;
+        }
+
         await this.ledger.recordSuccessfulRefund(tx, {
           merchantId: payment.merchantId,
           paymentId: payment.id,
           amountMinor,
           currency: payment.currency,
         });
-        return updated;
+        return current;
       });
     }
 
@@ -509,7 +666,7 @@ export class PaymentsV2Service {
 
     const nextStatus = result.status;
     if (nextStatus === PAYMENT_V2_STATUS.FAILED) {
-      return this.markPaymentFailed(payment.id, this.toReasonCode(result.reasonCode));
+      return this.markPaymentFailed(payment.id, this.toReasonCode(result.reasonCode), providerName);
     }
 
     return this.prisma.payment.update({
@@ -517,7 +674,7 @@ export class PaymentsV2Service {
       data: {
         status: nextStatus,
         selectedProvider: providerName,
-        providerRef: result.providerPaymentId ?? payment.providerRef ?? `prov_${randomBytes(6).toString('hex')}`,
+        providerRef: result.providerPaymentId ?? payment.providerRef,
         statusReason: null,
         failedAt: null,
         lastAttemptAt: new Date(),
@@ -545,9 +702,12 @@ export class PaymentsV2Service {
       where: { id: payment.merchantId },
       select: { feeBps: true },
     });
-    const updated = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const next = await tx.payment.update({
-        where: { id: payment.id },
+    const { updated, transitioned } = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const cas = await tx.payment.updateMany({
+        where: {
+          id: payment.id,
+          status: { in: [PAYMENT_V2_STATUS.AUTHORIZED, PAYMENT_V2_STATUS.REQUIRES_ACTION, PAYMENT_V2_STATUS.PENDING] },
+        },
         data: {
           status: PAYMENT_V2_STATUS.SUCCEEDED,
           selectedProvider: providerName,
@@ -557,6 +717,10 @@ export class PaymentsV2Service {
           lastAttemptAt: new Date(),
           succeededAt: new Date(),
         },
+      });
+
+      const next = await tx.payment.findUniqueOrThrow({
+        where: { id: payment.id },
         select: {
           id: true,
           merchantId: true,
@@ -569,6 +733,11 @@ export class PaymentsV2Service {
           paymentLinkId: true,
         },
       });
+
+      if (cas.count === 0) {
+        return { updated: next, transitioned: false as const };
+      }
+
       await this.ledger.recordSuccessfulCapture(tx, {
         merchantId: payment.merchantId,
         paymentId: payment.id,
@@ -582,16 +751,132 @@ export class PaymentsV2Service {
           data: { status: 'used' },
         });
       }
-      return next;
+      return { updated: next, transitioned: true as const };
     });
-    await this.webhooks.deliver(payment.merchantId, 'payment.succeeded', {
-      payment_id: payment.id,
-      amount_minor: payment.amountMinor,
-      currency: payment.currency,
-      status: PAYMENT_V2_STATUS.SUCCEEDED,
-      provider: providerName,
-    });
+
+    if (transitioned) {
+      await this.webhooks.deliver(payment.merchantId, 'payment.succeeded', {
+        payment_id: payment.id,
+        amount_minor: payment.amountMinor,
+        currency: payment.currency,
+        status: PAYMENT_V2_STATUS.SUCCEEDED,
+        provider: providerName,
+      });
+    }
+
     return updated;
+  }
+
+  private async tryAcquireOperationIdempotency(params: {
+    merchantId: string;
+    paymentId: string;
+    operation: PaymentOperation;
+    idempotencyKey: string;
+    payloadHash: string;
+  }): Promise<boolean> {
+    const { merchantId, paymentId, operation, idempotencyKey, payloadHash } = params;
+    const key = `payv2op:${merchantId}:${paymentId}:${operation}:${idempotencyKey}`;
+    const value = `${paymentId}:${payloadHash}`;
+
+    try {
+      const ok = await this.redis.setIdempotency(key, value, 24 * 3600);
+      if (ok) return false;
+      const existing = await this.redis.getIdempotency(key);
+      if (existing && existing !== value) {
+        throw new ConflictException('Idempotency key already used with a different payload');
+      }
+      return true;
+    } catch (error) {
+      // Si Redis falla, degradamos a CAS por estado (evita duplicar efectos DB/webhooks).
+      this.log.warn(
+        JSON.stringify({
+          event: 'payments_v2.operation_idempotency_unavailable',
+          merchantId,
+          paymentId,
+          operation,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      return false;
+    }
+  }
+
+  private async claimPaymentOperation(params: {
+    merchantId: string;
+    paymentId: string;
+    operation: PaymentOperation;
+    payloadHash: string;
+  }): Promise<{ proceed: true } | { proceed: false; payment: OperationResult['payment'] }> {
+    const { merchantId, paymentId, operation, payloadHash } = params;
+    const now = new Date();
+    const staleBefore = new Date(now.getTime() - this.operationLockStaleMs);
+
+    const decision = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const existing = await tx.paymentOperation.findUnique({
+        where: { paymentId_operation: { paymentId, operation } },
+        select: { status: true, payloadHash: true, processingAt: true },
+      });
+
+      if (!existing) {
+        await tx.paymentOperation.create({
+          data: {
+            paymentId,
+            merchantId,
+            operation,
+            payloadHash,
+            status: 'processing',
+            processingAt: now,
+          },
+        });
+        return { proceed: true as const };
+      }
+
+      if (existing.status === 'done') {
+        if (existing.payloadHash !== payloadHash) {
+          throw new ConflictException('Operation already completed with a different payload');
+        }
+        return { proceed: false as const };
+      }
+
+      const stale = existing.processingAt < staleBefore;
+      if (!stale) {
+        return { proceed: false as const };
+      }
+
+      await tx.paymentOperation.update({
+        where: { paymentId_operation: { paymentId, operation } },
+        data: {
+          payloadHash,
+          status: 'processing',
+          processingAt: now,
+          completedAt: null,
+        },
+      });
+      return { proceed: true as const };
+    });
+
+    if (decision.proceed) return decision;
+
+    const payment = await this.findMerchantPayment(merchantId, paymentId);
+    return { proceed: false, payment };
+  }
+
+  private async completePaymentOperation(paymentId: string, operation: PaymentOperation, finalStatus: string) {
+    try {
+      await this.prisma.paymentOperation.updateMany({
+        where: { paymentId, operation, status: 'processing' },
+        data: { status: 'done', completedAt: new Date() },
+      });
+    } catch (error) {
+      this.log.warn(
+        JSON.stringify({
+          event: 'payments_v2.operation_lock_complete_failed',
+          paymentId,
+          operation,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
   }
 
   private async resolveIdempotentPayment(
@@ -791,11 +1076,16 @@ export class PaymentsV2Service {
     this.cbState.set(providerName, { failures: 0, openedUntil: 0 });
   }
 
-  private async markPaymentFailed(paymentId: string, reason: PaymentReasonCode): Promise<OperationResult['payment']> {
+  private async markPaymentFailed(
+    paymentId: string,
+    reason: PaymentReasonCode,
+    providerName: PaymentProviderName,
+  ): Promise<OperationResult['payment']> {
     return this.prisma.payment.update({
       where: { id: paymentId },
       data: {
         status: PAYMENT_V2_STATUS.FAILED,
+        selectedProvider: providerName,
         statusReason: reason,
         failedAt: new Date(),
         lastAttemptAt: new Date(),
