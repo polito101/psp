@@ -5,7 +5,10 @@ import { PaymentProvider, ProviderContext, ProviderResult } from './payment-prov
 @Injectable()
 export class StripeProviderAdapter implements PaymentProvider {
   readonly name = 'stripe' as const;
-  private readonly apiBaseUrl = process.env.STRIPE_API_BASE_URL ?? 'https://api.stripe.com/v1';
+  private readonly apiBaseUrl = (process.env.STRIPE_API_BASE_URL ?? 'https://api.stripe.com/v1').replace(
+    /\/+$/,
+    '',
+  );
   private readonly secretKey = process.env.STRIPE_SECRET_KEY;
   private readonly timeoutMs = Number(process.env.PAYMENTS_PROVIDER_TIMEOUT_MS ?? 8_000);
 
@@ -120,7 +123,8 @@ export class StripeProviderAdapter implements PaymentProvider {
     body?: URLSearchParams,
   ): Promise<{ ok: boolean; body: Record<string, unknown> }> {
     try {
-      const res = await fetch(`${this.apiBaseUrl}${path}`, {
+      const safePath = path.startsWith('/') ? path : `/${path}`;
+      const res = await fetch(`${this.apiBaseUrl}${safePath}`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.secretKey}`,

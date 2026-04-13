@@ -51,6 +51,7 @@ export class PaymentsV2Service {
   private readonly maxRetries = Number(process.env.PAYMENTS_PROVIDER_MAX_RETRIES ?? 2);
   private readonly cbFailures = Number(process.env.PAYMENTS_PROVIDER_CB_FAILURES ?? 3);
   private readonly cbCooldownMs = Number(process.env.PAYMENTS_PROVIDER_CB_COOLDOWN_MS ?? 60_000);
+  private readonly attemptWriteMaxRetries = 5;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -296,24 +297,54 @@ export class PaymentsV2Service {
     result: ProviderResult,
     latencyMs: number,
   ) {
-    const currentCount = await this.prisma.paymentAttempt.count({
-      where: { paymentId: payment.id, operation },
-    });
-    await this.prisma.paymentAttempt.create({
-      data: {
-        paymentId: payment.id,
-        merchantId: payment.merchantId,
-        operation,
-        provider,
-        attemptNo: currentCount + 1,
-        status: result.status,
-        providerPaymentId: result.providerPaymentId ?? null,
-        errorCode: result.reasonCode ?? null,
-        errorMessage: result.reasonMessage ?? null,
-        latencyMs,
-        responsePayload: result.raw ? (result.raw as Prisma.InputJsonValue) : undefined,
-      },
-    });
+    for (let retryNo = 0; retryNo < this.attemptWriteMaxRetries; retryNo += 1) {
+      try {
+        await this.prisma.$transaction(
+          async (tx: Prisma.TransactionClient) => {
+            const maxAttempt = await tx.paymentAttempt.aggregate({
+              where: { paymentId: payment.id, operation },
+              _max: { attemptNo: true },
+            });
+            const nextAttemptNo = (maxAttempt._max.attemptNo ?? 0) + 1;
+            await tx.paymentAttempt.create({
+              data: {
+                paymentId: payment.id,
+                merchantId: payment.merchantId,
+                operation,
+                provider,
+                attemptNo: nextAttemptNo,
+                status: result.status,
+                providerPaymentId: result.providerPaymentId ?? null,
+                errorCode: result.reasonCode ?? null,
+                errorMessage: result.reasonMessage ?? null,
+                latencyMs,
+                responsePayload: result.raw ? (result.raw as Prisma.InputJsonValue) : undefined,
+              },
+            });
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+        return;
+      } catch (error) {
+        const code =
+          error && typeof error === 'object' && 'code' in error ? (error as { code: string }).code : '';
+        const retryable = code === 'P2002' || code === 'P2034';
+        const lastRetry = retryNo >= this.attemptWriteMaxRetries - 1;
+        if (!retryable || lastRetry) {
+          throw error;
+        }
+        this.log.warn(
+          JSON.stringify({
+            event: 'payments_v2.create_attempt_retry',
+            paymentId: payment.id,
+            operation,
+            provider,
+            retryNo: retryNo + 1,
+            code,
+          }),
+        );
+      }
+    }
   }
 
   private async applyPaymentState(

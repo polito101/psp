@@ -104,6 +104,8 @@ jobs:
         run: docker build -t psp-api:sandbox .
       - name: Prisma generate
         run: npx prisma generate
+      - name: Prisma migrate deploy
+        run: npx prisma migrate deploy
       - name: Trigger sandbox deploy hook
         env:
           SANDBOX_DEPLOY_HOOK_URL: ${{ secrets.SANDBOX_DEPLOY_HOOK_URL }}
@@ -113,8 +115,6 @@ jobs:
             exit 1
           fi
           curl -fsSL -X POST "$SANDBOX_DEPLOY_HOOK_URL"
-      - name: Prisma migrate deploy
-        run: npx prisma migrate deploy
       - name: Wait for sandbox health endpoint
         run: |
           if [ -z "$SMOKE_BASE_URL" ]; then

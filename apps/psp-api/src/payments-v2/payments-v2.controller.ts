@@ -30,12 +30,6 @@ export class PaymentsV2Controller {
     return this.payments.createIntent(merchant.id, dto, idempotencyKey || undefined);
   }
 
-  @Get('ops/metrics')
-  @ApiOperation({ summary: 'Snapshot de métricas operativas por proveedor (v2)' })
-  metrics() {
-    return this.payments.getMetricsSnapshot();
-  }
-
   @Get(':id')
   @ApiOperation({ summary: 'Consultar payment + attempts' })
   findOne(@CurrentMerchant() merchant: { id: string }, @Param('id') id: string) {

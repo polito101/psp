@@ -96,7 +96,10 @@ C:/AA psp/
 - Convencion Prisma: modelos en PascalCase y mapeo SQL snake_case mediante `@map`/`@@map`.
 - Modulo `RedisModule/RedisService` para responsabilidades de cache e idempotencia.
 - Payments V2 (`/api/v2/payments`) introduce orquestacion multi-proveedor (Stripe + Mock) con `ProviderRegistry`, adapters por proveedor, retries acotados y circuit breaker basico por proveedor.
+- Hardening Stripe: `STRIPE_API_BASE_URL` se valida fail-fast y se normaliza a `https://api.stripe.com/v1` para evitar enviar el Bearer token a hosts arbitrarios por mala configuracion.
+- El endpoint de observabilidad `GET /api/v2/payments/ops/metrics` es interno y se protege con `InternalSecretGuard` (`X-Internal-Secret`) para evitar exponer agregados globales por merchant API key.
 - Nuevo modelo `PaymentAttempt` para trazabilidad por operacion/proveedor (`create/capture/cancel/refund`) con status, error taxonomy, latencia y payload de respuesta.
+- `PaymentAttempt.attemptNo` se asigna de forma atomica con `MAX(attemptNo)+1` dentro de transaccion serializable y retry para `P2002`/`P2034`, manteniendo `@@unique([paymentId, operation, attemptNo])`.
 - Rollout progresivo de Payments V2 por merchant con feature flag de entorno `PAYMENTS_V2_ENABLED_MERCHANTS` (CSV o `*`).
 - Webhooks outbox: en el claim atomico `pending → processing` se escribe `scheduledAt = now` como inicio de procesamiento. El reintento operativo (`POST .../deliveries/:id/retry`) acepta `failed` siempre y `processing` solo si ese `scheduledAt` es anterior a `FETCH_TIMEOUT_MS + 5s` (fila atascada), para no reencolar durante un `fetch` activo ni duplicar POST al merchant.
 - Swagger condicionado por `ENABLE_SWAGGER`; CORS por `CORS_ALLOWED_ORIGINS` (obligatorio en `production`; en dev/sandbox sin lista se usa `origin: true` como compatibilidad). Cada entrada se valida como URL http(s) sin path/query/hash y se normaliza a `URL.origin` (p. ej. barra final eliminada).

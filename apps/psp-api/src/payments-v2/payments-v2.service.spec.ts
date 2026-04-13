@@ -11,7 +11,7 @@ describe('PaymentsV2Service', () => {
       findUnique: jest.fn(),
     },
     paymentAttempt: {
-      count: jest.fn(),
+      aggregate: jest.fn(),
       create: jest.fn(),
       findMany: jest.fn(),
     },
@@ -69,9 +69,10 @@ describe('PaymentsV2Service', () => {
       registry as never,
       observability as never,
     );
+    prisma.$transaction.mockImplementation(async (fn: (trx: unknown) => Promise<unknown>) => fn(prisma));
     redis.getIdempotency.mockResolvedValue(null);
     redis.setIdempotency.mockResolvedValue(true);
-    prisma.paymentAttempt.count.mockResolvedValue(0);
+    prisma.paymentAttempt.aggregate.mockResolvedValue({ _max: { attemptNo: 0 } });
     prisma.paymentAttempt.create.mockResolvedValue(undefined);
   });
 
@@ -205,6 +206,59 @@ describe('PaymentsV2Service', () => {
     expect(mockProvider.run).not.toHaveBeenCalled();
   });
 
+  it('reintenta createAttempt ante P2002 y evita romper el flujo', async () => {
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    prisma.payment.create.mockResolvedValue({
+      id: 'pay_retry',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.PROCESSING,
+      amountMinor: 1500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    mockProvider.run.mockResolvedValue({
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      providerPaymentId: 'mock_pi_retry',
+      nextAction: { type: 'none' },
+    });
+    prisma.paymentAttempt.aggregate
+      .mockResolvedValueOnce({ _max: { attemptNo: 0 } })
+      .mockResolvedValueOnce({ _max: { attemptNo: 1 } });
+    prisma.paymentAttempt.create.mockRejectedValueOnce({ code: 'P2002' }).mockResolvedValueOnce(undefined);
+    prisma.payment.update.mockResolvedValue({
+      id: 'pay_retry',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 1500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'mock_pi_retry',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+
+    const result = await service.createIntent('m_1', {
+      amountMinor: 1500,
+      currency: 'EUR',
+      provider: 'mock',
+    });
+
+    expect(result.payment.status).toBe(PAYMENT_V2_STATUS.AUTHORIZED);
+    expect(prisma.paymentAttempt.create).toHaveBeenCalledTimes(2);
+    expect(prisma.paymentAttempt.create).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          attemptNo: 2,
+        }),
+      }),
+    );
+  });
+
   it('registra ledger cuando refund termina en success', async () => {
     registry.orderedProviders.mockReturnValue(['mock']);
     registry.getProvider.mockReturnValue(mockProvider);
@@ -237,6 +291,10 @@ describe('PaymentsV2Service', () => {
           statusReason: null,
           paymentLinkId: null,
         }),
+      },
+      paymentAttempt: {
+        aggregate: jest.fn().mockResolvedValue({ _max: { attemptNo: 0 } }),
+        create: jest.fn().mockResolvedValue(undefined),
       },
     };
     prisma.$transaction.mockImplementation(async (fn: (trx: unknown) => Promise<unknown>) => fn(tx));

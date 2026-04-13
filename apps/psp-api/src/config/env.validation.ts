@@ -114,7 +114,7 @@ export function validateEnv(input: EnvInput): EnvInput {
   env.PAYMENTS_V2_ENABLED_MERCHANTS = getString(env.PAYMENTS_V2_ENABLED_MERCHANTS) ?? '';
   env.PAYMENTS_PROVIDER_ORDER = getString(env.PAYMENTS_PROVIDER_ORDER) ?? 'stripe,mock';
   env.STRIPE_SECRET_KEY = getString(env.STRIPE_SECRET_KEY) ?? '';
-  env.STRIPE_API_BASE_URL = getString(env.STRIPE_API_BASE_URL) ?? 'https://api.stripe.com/v1';
+  env.STRIPE_API_BASE_URL = validateStripeApiBaseUrl(getString(env.STRIPE_API_BASE_URL));
   env.PAYMENTS_PROVIDER_TIMEOUT_MS = String(
     parsePositiveInt(getString(env.PAYMENTS_PROVIDER_TIMEOUT_MS), 8_000, 'PAYMENTS_PROVIDER_TIMEOUT_MS'),
   );
@@ -141,6 +141,51 @@ export function validateEnv(input: EnvInput): EnvInput {
   }
 
   return env;
+}
+
+/**
+ * Valida y normaliza el base URL de Stripe para evitar exfiltración accidental del token Bearer
+ * hacia hosts arbitrarios.
+ *
+ * Reglas:
+ * - protocolo: https
+ * - host: api.stripe.com
+ * - base path: /v1 (se acepta /v1/ y se normaliza)
+ * - sin userinfo, query ni hash
+ *
+ * @returns siempre `https://api.stripe.com/v1`
+ * @throws {Error} si el valor configurado no es seguro
+ */
+function validateStripeApiBaseUrl(raw: string | undefined): string {
+  const DEFAULT = 'https://api.stripe.com/v1';
+  if (raw === undefined || raw.trim() === '') return DEFAULT;
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error('STRIPE_API_BASE_URL must be a valid https URL');
+  }
+
+  if (url.protocol !== 'https:') {
+    throw new Error('STRIPE_API_BASE_URL must use https scheme');
+  }
+  if (url.host !== 'api.stripe.com') {
+    throw new Error('STRIPE_API_BASE_URL host must be exactly api.stripe.com');
+  }
+  if (url.username !== '' || url.password !== '') {
+    throw new Error('STRIPE_API_BASE_URL must not include userinfo');
+  }
+  if (url.search !== '' || url.hash !== '') {
+    throw new Error('STRIPE_API_BASE_URL must not include query or hash');
+  }
+
+  const normalizedPath = url.pathname.replace(/\/+$/, '');
+  if (normalizedPath !== '/v1') {
+    throw new Error('STRIPE_API_BASE_URL path must be exactly /v1');
+  }
+
+  return DEFAULT;
 }
 
 function getString(value: unknown): string | undefined {
