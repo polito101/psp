@@ -7,7 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { Prisma } from '../generated/prisma/client';
 import { LedgerService } from '../ledger/ledger.service';
 import { PaymentLinksService } from '../payment-links/payment-links.service';
@@ -48,6 +48,10 @@ type CircuitBreakerState = {
 
 @Injectable()
 export class PaymentsV2Service {
+  /** Longitud máxima del valor persistido en `Payment.idempotencyKey` y validado en cabecera. */
+  private static readonly IDEMPOTENCY_KEY_MAX_LEN = 256;
+  private static readonly IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
+
   private readonly log = new Logger(PaymentsV2Service.name);
   private readonly cbState = new Map<PaymentProviderName, CircuitBreakerState>();
   private readonly maxRetries: number;
@@ -102,11 +106,38 @@ export class PaymentsV2Service {
     return Number.isFinite(parsed) ? parsed : defaultValue;
   }
 
+  /**
+   * Normaliza la cabecera `Idempotency-Key` (incl. duplicados → primera entrada) y valida tamaño/charset.
+   *
+   * @returns `undefined` si no hay clave usable; lanza `BadRequestException` si el valor es inválido.
+   */
+  private parseOptionalIdempotencyKey(raw: string | string[] | undefined): string | undefined {
+    if (raw === undefined) return undefined;
+    const first = Array.isArray(raw) ? raw[0] : raw;
+    if (first === undefined || first === null) return undefined;
+    if (typeof first !== 'string') return undefined;
+    const trimmed = first.trim();
+    if (trimmed === '') return undefined;
+    if (trimmed.length > PaymentsV2Service.IDEMPOTENCY_KEY_MAX_LEN) {
+      throw new BadRequestException('Invalid Idempotency-Key');
+    }
+    if (!PaymentsV2Service.IDEMPOTENCY_KEY_PATTERN.test(trimmed)) {
+      throw new BadRequestException('Invalid Idempotency-Key');
+    }
+    return trimmed;
+  }
+
+  /** Huella fija para claves Redis; el valor canónico sigue en BD y en comparaciones de payload. */
+  private idempotencyKeyRedisTag(idempotencyKey: string): string {
+    return createHash('sha256').update(idempotencyKey, 'utf8').digest('hex');
+  }
+
   async createIntent(
     merchantId: string,
     dto: CreatePaymentIntentDto,
-    idempotencyKey?: string,
+    idempotencyKey?: string | string[],
   ): Promise<OperationResult> {
+    idempotencyKey = this.parseOptionalIdempotencyKey(idempotencyKey);
     this.assertMerchantEnabled(merchantId);
     await this.assertPaymentLinkConsistency(merchantId, dto.paymentLinkId, dto.amountMinor, dto.currency);
 
@@ -196,7 +227,12 @@ export class PaymentsV2Service {
     return { ...payment, attempts };
   }
 
-  async capture(merchantId: string, paymentId: string, idempotencyKey?: string): Promise<OperationResult> {
+  async capture(
+    merchantId: string,
+    paymentId: string,
+    idempotencyKey?: string | string[],
+  ): Promise<OperationResult> {
+    idempotencyKey = this.parseOptionalIdempotencyKey(idempotencyKey);
     this.assertMerchantEnabled(merchantId);
 
     if (idempotencyKey) {
@@ -240,7 +276,12 @@ export class PaymentsV2Service {
     }
   }
 
-  async cancel(merchantId: string, paymentId: string, idempotencyKey?: string): Promise<OperationResult> {
+  async cancel(
+    merchantId: string,
+    paymentId: string,
+    idempotencyKey?: string | string[],
+  ): Promise<OperationResult> {
+    idempotencyKey = this.parseOptionalIdempotencyKey(idempotencyKey);
     this.assertMerchantEnabled(merchantId);
 
     if (idempotencyKey) {
@@ -290,8 +331,9 @@ export class PaymentsV2Service {
     merchantId: string,
     paymentId: string,
     amountMinor?: number,
-    idempotencyKey?: string,
+    idempotencyKey?: string | string[],
   ): Promise<OperationResult> {
+    idempotencyKey = this.parseOptionalIdempotencyKey(idempotencyKey);
     this.assertMerchantEnabled(merchantId);
     const payment = await this.findMerchantPayment(merchantId, paymentId);
     if (payment.status === PAYMENT_V2_STATUS.REFUNDED) {
@@ -883,7 +925,7 @@ export class PaymentsV2Service {
     payloadHash: string;
   }): Promise<boolean> {
     const { merchantId, paymentId, operation, idempotencyKey, payloadHash } = params;
-    const key = `payv2op:${merchantId}:${paymentId}:${operation}:${idempotencyKey}`;
+    const key = `payv2op:${merchantId}:${paymentId}:${operation}:${this.idempotencyKeyRedisTag(idempotencyKey)}`;
     const value = `${paymentId}:${payloadHash}`;
 
     try {
@@ -958,6 +1000,14 @@ export class PaymentsV2Service {
         return { proceed: false as const };
       }
 
+      if (existing.payloadHash !== payloadHash) {
+        throw new ConflictException({
+          message: 'Operation in progress with a different payload',
+          paymentId,
+          operation,
+        });
+      }
+
       const stale = existing.processingAt < staleBefore;
       if (!stale) {
         return { proceed: false as const };
@@ -1004,7 +1054,7 @@ export class PaymentsV2Service {
     idempotencyKey: string,
     dto: CreatePaymentIntentDto,
   ): Promise<OperationResult['payment'] | null> {
-    const cacheKey = `payv2:${merchantId}:${idempotencyKey}`;
+    const cacheKey = `payv2:${merchantId}:${this.idempotencyKeyRedisTag(idempotencyKey)}`;
     let cachedId: string | null = null;
     try {
       cachedId = await this.redis.getIdempotency(cacheKey);
@@ -1110,7 +1160,8 @@ export class PaymentsV2Service {
 
   private async safeSetIdempotency(merchantId: string, idempotencyKey: string, paymentId: string) {
     try {
-      await this.redis.setIdempotency(`payv2:${merchantId}:${idempotencyKey}`, paymentId, 24 * 3600);
+      const cacheKey = `payv2:${merchantId}:${this.idempotencyKeyRedisTag(idempotencyKey)}`;
+      await this.redis.setIdempotency(cacheKey, paymentId, 24 * 3600);
     } catch (error) {
       this.log.warn(
         JSON.stringify({

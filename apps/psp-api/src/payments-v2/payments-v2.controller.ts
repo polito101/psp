@@ -20,12 +20,13 @@ export class PaymentsV2Controller {
   @ApiHeader({
     name: 'Idempotency-Key',
     required: false,
-    description: 'Clave idempotente de creación de intent.',
+    description:
+      'Opcional. Máximo 256 caracteres; charset [A-Za-z0-9._:-]. Cabeceras duplicadas: se usa la primera.',
   })
   createIntent(
     @CurrentMerchant() merchant: { id: string },
     @Body() dto: CreatePaymentIntentDto,
-    @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers('idempotency-key') idempotencyKey?: string | string[],
   ) {
     return this.payments.createIntent(merchant.id, dto, idempotencyKey || undefined);
   }
@@ -41,12 +42,13 @@ export class PaymentsV2Controller {
   @ApiHeader({
     name: 'Idempotency-Key',
     required: false,
-    description: 'Clave idempotente para la operación capture.',
+    description:
+      'Opcional. Máximo 256 caracteres; charset [A-Za-z0-9._:-]. Cabeceras duplicadas: se usa la primera.',
   })
   capture(
     @CurrentMerchant() merchant: { id: string },
     @Param('id') id: string,
-    @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers('idempotency-key') idempotencyKey?: string | string[],
   ) {
     return this.payments.capture(merchant.id, id, idempotencyKey || undefined);
   }
@@ -56,12 +58,13 @@ export class PaymentsV2Controller {
   @ApiHeader({
     name: 'Idempotency-Key',
     required: false,
-    description: 'Clave idempotente para la operación cancel.',
+    description:
+      'Opcional. Máximo 256 caracteres; charset [A-Za-z0-9._:-]. Cabeceras duplicadas: se usa la primera.',
   })
   cancel(
     @CurrentMerchant() merchant: { id: string },
     @Param('id') id: string,
-    @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers('idempotency-key') idempotencyKey?: string | string[],
   ) {
     return this.payments.cancel(merchant.id, id, idempotencyKey || undefined);
   }
@@ -71,13 +74,14 @@ export class PaymentsV2Controller {
   @ApiHeader({
     name: 'Idempotency-Key',
     required: false,
-    description: 'Clave idempotente para la operación refund.',
+    description:
+      'Opcional. Máximo 256 caracteres; charset [A-Za-z0-9._:-]. Cabeceras duplicadas: se usa la primera.',
   })
   refund(
     @CurrentMerchant() merchant: { id: string },
     @Param('id') id: string,
     @Body() dto: RefundPaymentDto,
-    @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers('idempotency-key') idempotencyKey?: string | string[],
   ) {
     return this.payments.refund(merchant.id, id, dto.amountMinor, idempotencyKey || undefined);
   }

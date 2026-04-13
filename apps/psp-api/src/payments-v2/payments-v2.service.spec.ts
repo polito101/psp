@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { PaymentsV2Service } from './payments-v2.service';
 import { PAYMENT_V2_STATUS } from './domain/payment-status';
 import { ProviderResult } from './providers/payment-provider.interface';
@@ -106,6 +106,64 @@ describe('PaymentsV2Service', () => {
       reasonCode: 'provider_error',
       reasonMessage: 'retrieve stub',
     });
+  });
+
+  it('rechaza Idempotency-Key demasiado larga', async () => {
+    const longKey = 'a'.repeat(257);
+    await expect(
+      service.createIntent('m_1', { amountMinor: 1000, currency: 'EUR', provider: 'mock' }, longKey),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rechaza Idempotency-Key con caracteres fuera del charset permitido', async () => {
+    await expect(
+      service.createIntent('m_1', { amountMinor: 1000, currency: 'EUR', provider: 'mock' }, 'key with space'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('acepta la primera entrada si la cabecera Idempotency-Key viene duplicada (array)', async () => {
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    prisma.payment.findUnique.mockResolvedValue(null);
+    prisma.payment.create.mockResolvedValue({
+      id: 'pay_dup',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.PROCESSING,
+      amountMinor: 500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    mockProvider.run.mockResolvedValue({
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      providerPaymentId: 'mock_pi_dup',
+      nextAction: { type: 'none' },
+    });
+    prisma.payment.update.mockResolvedValue({
+      id: 'pay_dup',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'mock_pi_dup',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+
+    await service.createIntent(
+      'm_1',
+      { amountMinor: 500, currency: 'EUR', provider: 'mock' },
+      ['first-key', 'ignored'],
+    );
+
+    expect(prisma.payment.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ idempotencyKey: 'first-key' }),
+      }),
+    );
   });
 
   it('rechaza merchant no habilitado para rollout v2', async () => {
@@ -444,6 +502,71 @@ describe('PaymentsV2Service', () => {
       amountMinor: 400,
       currency: 'EUR',
     });
+  });
+
+  it('refund concurrente con distinto monto lanza Conflict mientras el lock refund está processing', async () => {
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_refund_race',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.SUCCEEDED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'prov_1',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    const tx = {
+      paymentOperation: {
+        findUnique: jest.fn().mockResolvedValue({
+          status: 'processing',
+          payloadHash: 'amount=500',
+          processingAt: new Date(),
+        }),
+      },
+    };
+    prisma.$transaction.mockImplementation(async (fn: (trx: unknown) => Promise<unknown>) => fn(tx));
+
+    await expect(service.refund('m_1', 'pay_refund_race', 300)).rejects.toMatchObject({
+      response: expect.objectContaining({
+        message: 'Operation in progress with a different payload',
+        paymentId: 'pay_refund_race',
+        operation: 'refund',
+      }),
+    });
+    expect(mockProvider.run).not.toHaveBeenCalled();
+  });
+
+  it('refund con mismo payload que lock processing devuelve pago sin re-ejecutar provider', async () => {
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    const paymentRow = {
+      id: 'pay_refund_wait',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.SUCCEEDED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'prov_1',
+      statusReason: null,
+      paymentLinkId: null,
+    };
+    prisma.payment.findFirst.mockResolvedValue(paymentRow);
+    const tx = {
+      paymentOperation: {
+        findUnique: jest.fn().mockResolvedValue({
+          status: 'processing',
+          payloadHash: 'amount=400',
+          processingAt: new Date(),
+        }),
+      },
+    };
+    prisma.$transaction.mockImplementation(async (fn: (trx: unknown) => Promise<unknown>) => fn(tx));
+
+    const result = await service.refund('m_1', 'pay_refund_wait', 400);
+
+    expect(result.payment).toEqual(paymentRow);
+    expect(mockProvider.run).not.toHaveBeenCalled();
   });
 
   it('marca FAILED si provider devuelve éxito sin providerPaymentId y payment.providerRef es null', async () => {
