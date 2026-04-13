@@ -469,4 +469,115 @@ describe('PaymentsV2Service', () => {
       }),
     );
   });
+
+  it('si el adapter lanza, convierte a FAILED provider_error y registra attempt + métricas', async () => {
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    prisma.payment.create.mockResolvedValue({
+      id: 'pay_adapter_throw',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.PROCESSING,
+      amountMinor: 1500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    mockProvider.run.mockRejectedValue(new Error('unexpected throw'));
+    prisma.payment.update.mockResolvedValue({
+      id: 'pay_adapter_throw',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.FAILED,
+      amountMinor: 1500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: 'provider_error',
+      paymentLinkId: null,
+    });
+
+    const result = await service.createIntent('m_1', {
+      amountMinor: 1500,
+      currency: 'EUR',
+      provider: 'mock',
+    });
+
+    expect(result.payment.status).toBe(PAYMENT_V2_STATUS.FAILED);
+    expect(prisma.paymentAttempt.create).toHaveBeenCalled();
+    expect(observability.registerAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'mock',
+        operation: 'create',
+        success: false,
+      }),
+    );
+    expect(observability.logProviderEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: PAYMENT_V2_STATUS.FAILED,
+        reasonCode: 'provider_error',
+      }),
+    );
+  });
+
+  it('TypeError del adapter no es transitorio: un solo intento en runWithRetry', async () => {
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    prisma.payment.create.mockResolvedValue({
+      id: 'pay_type_throw',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.PROCESSING,
+      amountMinor: 500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    mockProvider.run.mockRejectedValue(new TypeError('parse bug'));
+    prisma.payment.update.mockResolvedValue({
+      id: 'pay_type_throw',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.FAILED,
+      amountMinor: 500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: 'provider_error',
+      paymentLinkId: null,
+    });
+
+    await service.createIntent('m_1', {
+      amountMinor: 500,
+      currency: 'EUR',
+      provider: 'mock',
+    });
+
+    expect(observability.registerAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it('completa el lock de capture cuando el pago ya está SUCCEEDED (evita processing colgado)', async () => {
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_already_ok',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.SUCCEEDED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'pi_1',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    prisma.paymentOperation.findUnique.mockResolvedValue(null);
+    prisma.paymentOperation.create.mockResolvedValue(undefined);
+
+    const result = await service.capture('m_1', 'pay_already_ok');
+
+    expect(result.payment.status).toBe(PAYMENT_V2_STATUS.SUCCEEDED);
+    expect(prisma.paymentOperation.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { paymentId: 'pay_already_ok', operation: 'capture', status: 'processing' },
+      }),
+    );
+  });
 });

@@ -216,21 +216,23 @@ export class PaymentsV2Service {
       return { payment: claim.payment, nextAction: null };
     }
 
-    const payment = await this.findMerchantPayment(merchantId, paymentId);
-    if (payment.status === PAYMENT_V2_STATUS.SUCCEEDED) {
-      return { payment, nextAction: null };
+    try {
+      const payment = await this.findMerchantPayment(merchantId, paymentId);
+      if (payment.status === PAYMENT_V2_STATUS.SUCCEEDED) {
+        return { payment, nextAction: null };
+      }
+      if (
+        payment.status !== PAYMENT_V2_STATUS.AUTHORIZED &&
+        payment.status !== PAYMENT_V2_STATUS.REQUIRES_ACTION &&
+        payment.status !== PAYMENT_V2_STATUS.PENDING
+      ) {
+        throw new ConflictException('Payment is not capturable in current state');
+      }
+      const providerOrder = this.registry.orderedProviders(this.toProviderName(payment.selectedProvider));
+      return await this.executeProviderOperation(payment, 'capture', payment.amountMinor, providerOrder);
+    } finally {
+      await this.completePaymentOperation(paymentId, 'capture', '');
     }
-    if (
-      payment.status !== PAYMENT_V2_STATUS.AUTHORIZED &&
-      payment.status !== PAYMENT_V2_STATUS.REQUIRES_ACTION &&
-      payment.status !== PAYMENT_V2_STATUS.PENDING
-    ) {
-      throw new ConflictException('Payment is not capturable in current state');
-    }
-    const providerOrder = this.registry.orderedProviders(this.toProviderName(payment.selectedProvider));
-    const result = await this.executeProviderOperation(payment, 'capture', payment.amountMinor, providerOrder);
-    await this.completePaymentOperation(payment.id, 'capture', result.payment.status);
-    return result;
   }
 
   async cancel(merchantId: string, paymentId: string, idempotencyKey?: string): Promise<OperationResult> {
@@ -260,21 +262,23 @@ export class PaymentsV2Service {
       return { payment: claim.payment, nextAction: null };
     }
 
-    const payment = await this.findMerchantPayment(merchantId, paymentId);
-    if (
-      payment.status === PAYMENT_V2_STATUS.CANCELED ||
-      payment.status === PAYMENT_V2_STATUS.FAILED ||
-      payment.status === PAYMENT_V2_STATUS.REFUNDED
-    ) {
-      return { payment, nextAction: null };
+    try {
+      const payment = await this.findMerchantPayment(merchantId, paymentId);
+      if (
+        payment.status === PAYMENT_V2_STATUS.CANCELED ||
+        payment.status === PAYMENT_V2_STATUS.FAILED ||
+        payment.status === PAYMENT_V2_STATUS.REFUNDED
+      ) {
+        return { payment, nextAction: null };
+      }
+      if (payment.status === PAYMENT_V2_STATUS.SUCCEEDED) {
+        throw new ConflictException('Succeeded payment must be refunded, not canceled');
+      }
+      const providerOrder = this.registry.orderedProviders(this.toProviderName(payment.selectedProvider));
+      return await this.executeProviderOperation(payment, 'cancel', payment.amountMinor, providerOrder);
+    } finally {
+      await this.completePaymentOperation(paymentId, 'cancel', '');
     }
-    if (payment.status === PAYMENT_V2_STATUS.SUCCEEDED) {
-      throw new ConflictException('Succeeded payment must be refunded, not canceled');
-    }
-    const providerOrder = this.registry.orderedProviders(this.toProviderName(payment.selectedProvider));
-    const result = await this.executeProviderOperation(payment, 'cancel', payment.amountMinor, providerOrder);
-    await this.completePaymentOperation(payment.id, 'cancel', result.payment.status);
-    return result;
   }
 
   async refund(
@@ -296,23 +300,14 @@ export class PaymentsV2Service {
       throw new BadRequestException('Invalid refund amount');
     }
 
-    const claim = await this.claimPaymentOperation({
-      merchantId,
-      paymentId,
-      operation: 'refund',
-      payloadHash: `amount=${refundAmount}`,
-    });
-    if (!claim.proceed) {
-      return { payment: claim.payment, nextAction: null };
-    }
-
+    const refundPayloadHash = `amount=${refundAmount}`;
     if (idempotencyKey) {
       const duplicate = await this.tryAcquireOperationIdempotency({
         merchantId,
         paymentId,
         operation: 'refund',
         idempotencyKey,
-        payloadHash: `amount=${refundAmount}`,
+        payloadHash: refundPayloadHash,
       });
       if (duplicate) {
         const current = await this.findMerchantPayment(merchantId, paymentId);
@@ -320,10 +315,22 @@ export class PaymentsV2Service {
       }
     }
 
-    const providerOrder = this.registry.orderedProviders(this.toProviderName(payment.selectedProvider));
-    const result = await this.executeProviderOperation(payment, 'refund', refundAmount, providerOrder);
-    await this.completePaymentOperation(payment.id, 'refund', result.payment.status);
-    return result;
+    const claim = await this.claimPaymentOperation({
+      merchantId,
+      paymentId,
+      operation: 'refund',
+      payloadHash: refundPayloadHash,
+    });
+    if (!claim.proceed) {
+      return { payment: claim.payment, nextAction: null };
+    }
+
+    try {
+      const providerOrder = this.registry.orderedProviders(this.toProviderName(payment.selectedProvider));
+      return await this.executeProviderOperation(payment, 'refund', refundAmount, providerOrder);
+    } finally {
+      await this.completePaymentOperation(paymentId, 'refund', '');
+    }
   }
 
   getMetricsSnapshot() {
@@ -404,15 +411,20 @@ export class PaymentsV2Service {
 
     while (retries <= this.maxRetries) {
       const start = Date.now();
-      const adapter = this.registry.getProvider(providerName);
-      const context: ProviderContext = {
-        merchantId: payment.merchantId,
-        paymentId: payment.id,
-        amountMinor,
-        currency: payment.currency,
-        providerPaymentId: payment.providerRef,
-      };
-      const result = await adapter.run(operation, context);
+      let result: ProviderResult;
+      try {
+        const adapter = this.registry.getProvider(providerName);
+        const context: ProviderContext = {
+          merchantId: payment.merchantId,
+          paymentId: payment.id,
+          amountMinor,
+          currency: payment.currency,
+          providerPaymentId: payment.providerRef,
+        };
+        result = await adapter.run(operation, context);
+      } catch (caught) {
+        result = this.providerRunFailureFromThrow(caught);
+      }
       const latencyMs = Date.now() - start;
       await this.safeCreateAttempt(payment, operation, providerName, result, latencyMs);
       this.observability.registerAttempt({
@@ -453,6 +465,49 @@ export class PaymentsV2Service {
       this.resetProviderFailure(providerName);
     }
     return finalResult;
+  }
+
+  /**
+   * Normaliza throws inesperados del adapter (o de `getProvider`) a un {@link ProviderResult} FAILED
+   * para persistir intentos, métricas y circuit breaker igual que un fallo explícito del proveedor.
+   */
+  private providerRunFailureFromThrow(caught: unknown): ProviderResult {
+    const name = caught instanceof Error ? caught.name : 'NonError';
+    const msg = caught instanceof Error ? caught.message : String(caught);
+    return {
+      status: PAYMENT_V2_STATUS.FAILED,
+      reasonCode: 'provider_error',
+      reasonMessage: msg ? `${name}: ${msg}` : name,
+      transientError: this.isTransientProviderRunThrow(caught),
+    };
+  }
+
+  /**
+   * Heurística: errores de programación típicos no se reintentan; ECONNRESET/ETIMEDOUT/etc. sí.
+   */
+  private isTransientProviderRunThrow(caught: unknown): boolean {
+    if (
+      caught instanceof TypeError ||
+      caught instanceof SyntaxError ||
+      caught instanceof ReferenceError ||
+      caught instanceof EvalError
+    ) {
+      return false;
+    }
+    if (caught instanceof Error && typeof (caught as NodeJS.ErrnoException).code === 'string') {
+      const code = (caught as NodeJS.ErrnoException).code;
+      if (
+        code === 'ECONNRESET' ||
+        code === 'ETIMEDOUT' ||
+        code === 'ECONNREFUSED' ||
+        code === 'ENOTFOUND' ||
+        code === 'EPIPE' ||
+        code === 'ECANCELED'
+      ) {
+        return true;
+      }
+    }
+    return true;
   }
 
   private async safeCreateAttempt(
