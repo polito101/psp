@@ -157,6 +157,28 @@ Invoke-RestMethod -Method Post "http://localhost:3000/api/v1/payments" `
 - Si reutilizas la misma key con payload distinto, la API devuelve `409 Conflict`.
 - No uses el campo placeholder `"string"` en Swagger: usa IDs reales del sistema.
 
+## Payments Orchestrator V2 (multi-proveedor)
+
+- Endpoints nuevos en `v2`:
+  - `POST /api/v2/payments` (create intent)
+  - `GET /api/v2/payments/{id}` (incluye attempts)
+  - `POST /api/v2/payments/{id}/capture`
+  - `POST /api/v2/payments/{id}/cancel`
+  - `POST /api/v2/payments/{id}/refund`
+  - `GET /api/v2/payments/ops/metrics` (snapshot operativo **interno**, requiere `X-Internal-Secret`)
+- Proveedores iniciales: `stripe` y `mock` con fallback configurable (`PAYMENTS_PROVIDER_ORDER`).
+- Rollout por merchant vía `PAYMENTS_V2_ENABLED_MERCHANTS`:
+  - CSV de IDs (`m_1,m_2`) o `*` para habilitar todos en sandbox.
+- Trazabilidad de intentos por operación/proveedor en `PaymentAttempt`.
+- Resiliencia configurable:
+  - timeout por request (`PAYMENTS_PROVIDER_TIMEOUT_MS`)
+  - retries acotados (`PAYMENTS_PROVIDER_MAX_RETRIES`)
+  - circuit breaker (`PAYMENTS_PROVIDER_CB_FAILURES`, `PAYMENTS_PROVIDER_CB_COOLDOWN_MS`)
+- **Stripe — confirmación y captura:**
+  - Body opcional `stripePaymentMethodId` (`pm_...`): confirmación en servidor; opcional `stripeReturnUrl` si el método exige redirect (p. ej. 3DS redirect).
+  - Sin PM: la respuesta de `POST /api/v2/payments` incluye `nextAction.clientSecret` y `nextAction.type` (`confirm_with_stripe_js`, `redirect`, `3ds`, etc.) para completar el pago con **Stripe.js** hasta que el pago quede `authorized`.
+  - `POST .../capture` solo acepta pagos en estado **`authorized`** (el PI debe estar en `requires_capture` en Stripe).
+
 ## API keys (seguridad MVP)
 
 - Formato esperado: `psp.<merchantId>.<secret>`.

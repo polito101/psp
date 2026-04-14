@@ -57,4 +57,25 @@ export class LedgerService {
       },
     });
   }
+
+  async recordSuccessfulRefund(
+    tx: Prisma.TransactionClient,
+    params: {
+      merchantId: string;
+      paymentId: string;
+      amountMinor: number;
+      currency: string;
+    },
+  ) {
+    await tx.ledgerLine.create({
+      data: {
+        merchantId: params.merchantId,
+        paymentId: params.paymentId,
+        entryType: 'available',
+        amountMinor: -params.amountMinor,
+        currency: params.currency,
+        description: 'Reversa por reembolso',
+      },
+    });
+  }
 }

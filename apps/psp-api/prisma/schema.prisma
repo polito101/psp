@@ -50,17 +50,70 @@ model Payment {
   amountMinor    Int      @map("amount_minor")
   currency       String
   status         String
+  statusReason   String?  @map("status_reason")
+  selectedProvider String? @map("selected_provider")
   providerRef    String?  @map("provider_ref")
   rail           String   @default("fiat")
+  lastAttemptAt  DateTime? @map("last_attempt_at")
+  succeededAt    DateTime? @map("succeeded_at")
+  failedAt       DateTime? @map("failed_at")
+  canceledAt     DateTime? @map("canceled_at")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
-  merchant     Merchant      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  paymentLink  PaymentLink?  @relation(fields: [paymentLinkId], references: [id], onDelete: SetNull)
-  ledgerLines  LedgerLine[]
+  merchant      Merchant       @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  paymentLink   PaymentLink?   @relation(fields: [paymentLinkId], references: [id], onDelete: SetNull)
+  ledgerLines   LedgerLine[]
+  attempts      PaymentAttempt[]
+  operations    PaymentOperation[]
 
   @@unique([merchantId, idempotencyKey])
   @@index([merchantId, status])
+  @@index([merchantId, selectedProvider])
+}
+
+// `merchantId` debe coincidir con `Payment.merchantId` del mismo `paymentId`; el servicio valida ownership antes del lock y purga filas incoherentes en `claimPaymentOperation`.
+model PaymentOperation {
+  id            String   @id @default(cuid())
+  paymentId     String   @map("payment_id")
+  merchantId    String   @map("merchant_id")
+  operation     String
+  payloadHash   String   @map("payload_hash")
+  status        String   @default("processing")
+  processingAt  DateTime @default(now()) @map("processing_at")
+  completedAt   DateTime? @map("completed_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@unique([paymentId, operation])
+  @@index([merchantId, createdAt])
+  @@index([status, processingAt])
+}
+
+model PaymentAttempt {
+  id                String   @id @default(cuid())
+  paymentId         String   @map("payment_id")
+  merchantId        String   @map("merchant_id")
+  operation         String
+  provider          String
+  attemptNo         Int      @map("attempt_no")
+  status            String
+  providerPaymentId String?  @map("provider_payment_id")
+  errorCode         String?  @map("error_code")
+  errorMessage      String?  @map("error_message")
+  latencyMs         Int?     @map("latency_ms")
+  requestPayload    Json?    @map("request_payload")
+  responsePayload   Json?    @map("response_payload")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId, createdAt])
+  @@index([merchantId, createdAt])
+  @@index([provider, providerPaymentId])
+  @@unique([paymentId, operation, attemptNo])
 }
 
 model LedgerLine {

@@ -1,0 +1,59 @@
+---
+description: Guías de comportamiento del agente para reducir errores típicos del LLM al codificar; complementa project-context y vibecoding-master.
+alwaysApply: true
+---
+
+# Comportamiento del agente (anti-errores LLM)
+
+Estas guías **complementan** `PROJECT_CONTEXT.md`, `.cursor/rules/project-context.mdc` y `.cursor/rules/vibecoding-master.mdc`. Donde haya tensión: mantén respuestas **concisas** (vibe), pero **no adivines** requisitos ambiguos — aclara en pocas frases o opciones.
+
+**Trade-off:** sesgan hacia la **prudencia** frente a la velocidad. En tareas triviales, usa criterio y no bloquees el flujo.
+
+## 1) Pensar antes de codificar
+
+- No asumas en silencio. Si hay duda razonable, **dila** o **pregunta**.
+- Antes de implementar:
+  - Enuncia **supuestos** explícitos; si no estás seguro, pregunta.
+  - Si hay **varias interpretaciones**, preséntalas; no elijas en silencio.
+  - Si existe un enfoque **más simple**, dilo. **Empuja de vuelta** cuando el pedido sea frágil o contradictorio con el contexto del repo.
+  - Si algo **no está claro**, para: nombra qué falta y pregunta.
+
+## 2) Simplicidad primero
+
+- **Mínimo código** que resuelva el problema. Nada especulativo.
+- Sin features fuera de lo pedido.
+- Sin abstracciones para un solo uso.
+- Sin “flexibilidad” o configuración no solicitada.
+- Sin manejo de errores para escenarios imposibles o no pedidos.
+- Si escribes mucho y podría ser menos, **simplifica**.
+
+Pregunta: *¿un senior diría que está sobrecomplicado?* Si sí, reduce.
+
+## 3) Cambios quirúrgicos
+
+- Toca **solo lo necesario**. Limpia **solo** lo que **tu** cambio dejó huérfano (imports, variables, funciones **sin uso por tu diff**).
+- Al editar código existente:
+  - No “mejores” código colindante, comentarios ni formato si no es parte del pedido.
+  - No refactorices lo que no está roto (salvo petición explícita).
+  - **Empata el estilo** del archivo, aunque harías otra cosa.
+  - Código muerto **ajeno**: puedes **mencionarlo**; no lo borres salvo que te lo pidan.
+
+**Prueba:** cada línea cambiada debe **trazar** directamente al pedido del usuario.
+
+## 4) Ejecución orientada al objetivo
+
+- Define **criterios de éxito** verificables. Itera hasta comprobarlos cuando el entorno lo permita.
+
+Ejemplos de traducción:
+
+- “Añadir validación” → tests (o checks) para entradas inválidas, luego hacerlos pasar.
+- “Arreglar el bug” → test o pasos que lo reproduzcan, luego corregir.
+- “Refactorizar X” → tests verdes antes y después (o equivalente acordado).
+
+En tareas multipaso, un **plan breve** con verificación por paso:
+
+1. [Paso] → verificar: [qué comprobar]
+2. [Paso] → verificar: [qué comprobar]
+3. [Paso] → verificar: [qué comprobar]
+
+**Señal de que funciona:** menos ruido en diffs, menos reescrituras por sobre-ingeniería, y las **preguntas clarificadoras** llegan **antes** del código equivocado.

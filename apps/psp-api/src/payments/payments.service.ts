@@ -222,6 +222,19 @@ export class PaymentsService {
   async findOne(merchantId: string, id: string) {
     const p = await this.prisma.payment.findFirst({
       where: { id, merchantId },
+      select: {
+        id: true,
+        merchantId: true,
+        paymentLinkId: true,
+        idempotencyKey: true,
+        amountMinor: true,
+        currency: true,
+        status: true,
+        rail: true,
+        providerRef: true,
+        createdAt: true,
+        updatedAt: true,
+      },
     });
     if (!p) {
       throw new NotFoundException('Payment not found');
