@@ -63,7 +63,7 @@ export class StripeProviderAdapter implements PaymentProvider {
       params.set('automatic_payment_methods[enabled]', 'true');
     }
 
-    const response = await this.requestStripe('POST', '/payment_intents', params);
+    const response = await this.requestStripe('POST', '/payment_intents', params, context.idempotencyKey);
     return this.paymentIntentResponseToResult(response);
   }
 
@@ -119,6 +119,8 @@ export class StripeProviderAdapter implements PaymentProvider {
     const response = await this.requestStripe(
       'POST',
       `/payment_intents/${context.providerPaymentId}/capture`,
+      undefined,
+      context.idempotencyKey,
     );
     if (!response.ok) {
       return this.mapFailure(response.body);
@@ -150,6 +152,8 @@ export class StripeProviderAdapter implements PaymentProvider {
     const response = await this.requestStripe(
       'POST',
       `/payment_intents/${context.providerPaymentId}/cancel`,
+      undefined,
+      context.idempotencyKey,
     );
     if (!response.ok) {
       return this.mapFailure(response.body);
@@ -181,7 +185,7 @@ export class StripeProviderAdapter implements PaymentProvider {
     const params = new URLSearchParams();
     params.set('payment_intent', context.providerPaymentId);
     params.set('amount', String(context.amountMinor));
-    const response = await this.requestStripe('POST', '/refunds', params);
+    const response = await this.requestStripe('POST', '/refunds', params, context.idempotencyKey);
     if (!response.ok) {
       return this.mapFailure(response.body);
     }
@@ -196,12 +200,16 @@ export class StripeProviderAdapter implements PaymentProvider {
     method: 'GET' | 'POST',
     path: string,
     body?: URLSearchParams,
+    idempotencyKey?: string,
   ): Promise<{ ok: boolean; body: Record<string, unknown> }> {
     try {
       const safePath = path.startsWith('/') ? path : `/${path}`;
       const headers: Record<string, string> = {
         Authorization: `Bearer ${this.secretKey}`,
       };
+      if (method === 'POST' && idempotencyKey) {
+        headers['Idempotency-Key'] = idempotencyKey;
+      }
       if (method === 'POST' && body) {
         headers['Content-Type'] = 'application/x-www-form-urlencoded';
       }

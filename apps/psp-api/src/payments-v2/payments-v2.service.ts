@@ -286,7 +286,7 @@ export class PaymentsV2Service {
     try {
       const providerOrder = this.registry.orderedProviders(this.toProviderName(payment.selectedProvider));
       const result = await this.executeProviderOperation(payment, 'capture', payment.amountMinor, providerOrder);
-      await this.completePaymentOperation(paymentId, 'capture', '');
+      await this.completePaymentOperation({ merchantId, paymentId, operation: 'capture', finalStatus: '' });
       return result;
     } catch (error) {
       await this.releasePaymentOperationLockForRetry({
@@ -354,7 +354,7 @@ export class PaymentsV2Service {
     try {
       const providerOrder = this.registry.orderedProviders(this.toProviderName(payment.selectedProvider));
       const result = await this.executeProviderOperation(payment, 'cancel', payment.amountMinor, providerOrder);
-      await this.completePaymentOperation(paymentId, 'cancel', '');
+      await this.completePaymentOperation({ merchantId, paymentId, operation: 'cancel', finalStatus: '' });
       return result;
     } catch (error) {
       await this.releasePaymentOperationLockForRetry({
@@ -437,7 +437,7 @@ export class PaymentsV2Service {
       throw error;
     } finally {
       if (refundLockOutcome === 'complete') {
-        await this.completePaymentOperation(paymentId, 'refund', '');
+        await this.completePaymentOperation({ merchantId, paymentId, operation: 'refund', finalStatus: '' });
       } else {
         await this.releasePaymentOperationLockForRetry({
           merchantId,
@@ -541,12 +541,14 @@ export class PaymentsV2Service {
       let result: ProviderResult;
       try {
         const adapter = this.registry.getProvider(providerName);
+        const idempotencyKey = this.buildProviderIdempotencyKey(operation, payment.id, amountMinor);
         const context: ProviderContext = {
           merchantId: payment.merchantId,
           paymentId: payment.id,
           amountMinor,
           currency: payment.currency,
           providerPaymentId: payment.providerRef,
+          idempotencyKey,
           ...(operation === 'create' && createExtras
             ? {
                 stripePaymentMethodId: createExtras.stripePaymentMethodId,
@@ -598,6 +600,18 @@ export class PaymentsV2Service {
       this.resetProviderFailure(providerName);
     }
     return finalResult;
+  }
+
+  private buildProviderIdempotencyKey(
+    operation: PaymentOperation,
+    paymentId: string,
+    amountMinor: number,
+  ): string {
+    if (operation === 'refund') {
+      // Refunds pueden existir múltiples veces para un mismo payment; el monto debe participar en la key.
+      return `payv2:refund:${paymentId}:amount=${amountMinor}`;
+    }
+    return `payv2:${operation}:${paymentId}`;
   }
 
   /**
@@ -1038,7 +1052,7 @@ export class PaymentsV2Service {
     const { merchantId, paymentId, operation, idempotencyKey } = params;
     try {
       await this.prisma.paymentOperation.deleteMany({
-        where: { paymentId, operation },
+        where: { paymentId, operation, merchantId },
       });
     } catch (error) {
       this.log.warn(
@@ -1218,10 +1232,16 @@ export class PaymentsV2Service {
   /**
    * Marca el lock como `done` solo tras finalizar el flujo de negocio sin error (llamar desde el camino de éxito).
    */
-  private async completePaymentOperation(paymentId: string, operation: PaymentOperation, finalStatus: string) {
+  private async completePaymentOperation(params: {
+    merchantId: string;
+    paymentId: string;
+    operation: PaymentOperation;
+    finalStatus: string;
+  }) {
+    const { merchantId, paymentId, operation } = params;
     try {
       await this.prisma.paymentOperation.updateMany({
-        where: { paymentId, operation, status: 'processing' },
+        where: { paymentId, operation, merchantId, status: 'processing' },
         data: { status: 'done', completedAt: new Date() },
       });
     } catch (error) {

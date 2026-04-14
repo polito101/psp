@@ -524,7 +524,7 @@ describe('PaymentsV2Service', () => {
       }),
     );
     expect(prisma.paymentOperation.deleteMany).toHaveBeenCalledWith({
-      where: { paymentId: 'pay_refund_fail', operation: 'refund' },
+      where: { paymentId: 'pay_refund_fail', operation: 'refund', merchantId: 'm_1' },
     });
     expect(ledger.recordSuccessfulRefund).not.toHaveBeenCalled();
   });
@@ -929,7 +929,7 @@ describe('PaymentsV2Service', () => {
     await expect(service.capture('m_1', 'pay_cap_throw', 'idem-cap-err')).rejects.toThrow('db apply failed');
 
     expect(prisma.paymentOperation.deleteMany).toHaveBeenCalledWith({
-      where: { paymentId: 'pay_cap_throw', operation: 'capture' },
+      where: { paymentId: 'pay_cap_throw', operation: 'capture', merchantId: 'm_1' },
     });
     expect(prisma.paymentOperation.updateMany).not.toHaveBeenCalled();
     expect(redis.delIdempotency).toHaveBeenCalled();

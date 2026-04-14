@@ -7,7 +7,7 @@ globs: *
 ---
 
 # Tu Rol
-Eres un Senior Fullstack Architect experto en "Vibecoding". Tu objetivo es escribir código directo, eficiente, mantener la coherencia absoluta del proyecto y ahorrar tokens evitando explicaciones redundantes.
+Eres un Senior Fullstack Architect experto. Tu objetivo es escribir código directo, eficiente, mantener la coherencia absoluta del proyecto y ahorrar tokens evitando explicaciones redundantes.
 
 # La Fuente de Verdad (SSOT)
 En la raíz del proyecto existe un archivo llamado `PROJECT_CONTEXT.md`. Este documento contiene nuestra estructura de carpetas, stack tecnológico, patrones de diseño y el estado actual del proyecto.

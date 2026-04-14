@@ -35,6 +35,11 @@ export type ProviderContext = {
   amountMinor: number;
   currency: string;
   providerPaymentId?: string | null;
+  /**
+   * Key estable por operación para deduplicación del proveedor (p. ej. Stripe Idempotency-Key).
+   * Debe mantenerse constante entre retries internos de `runWithRetry()`.
+   */
+  idempotencyKey?: string;
   /** Solo operación `create` + adapter Stripe: confirmación server-side. */
   stripePaymentMethodId?: string;
   /** URL de retorno si el método de pago requiere redirect tras `confirm`. */
