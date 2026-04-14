@@ -12,8 +12,13 @@ describe('PaymentsV2Service', () => {
     payment: {
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
       findFirst: jest.fn(),
       findUnique: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
+    },
+    paymentLink: {
+      updateMany: jest.fn(),
     },
     paymentOperation: {
       findUnique: jest.fn(),
@@ -21,6 +26,7 @@ describe('PaymentsV2Service', () => {
       update: jest.fn(),
       updateMany: jest.fn(),
       deleteMany: jest.fn(),
+      delete: jest.fn(),
     },
     paymentAttempt: {
       aggregate: jest.fn(),
@@ -98,8 +104,23 @@ describe('PaymentsV2Service', () => {
     redis.setIdempotency.mockResolvedValue(true);
     prisma.paymentAttempt.aggregate.mockResolvedValue({ _max: { attemptNo: 0 } });
     prisma.paymentAttempt.create.mockResolvedValue(undefined);
+    prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+    prisma.payment.findUniqueOrThrow.mockResolvedValue({
+      id: 'pay_default',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.SUCCEEDED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'pi_1',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    prisma.paymentLink.updateMany.mockResolvedValue({ count: 1 });
+    prisma.merchant.findUniqueOrThrow.mockResolvedValue({ feeBps: 0 });
     prisma.paymentOperation.findUnique.mockResolvedValue(null);
     prisma.paymentOperation.create.mockResolvedValue(undefined);
+    prisma.paymentOperation.delete.mockResolvedValue(undefined);
     prisma.paymentOperation.update.mockResolvedValue(undefined);
     prisma.paymentOperation.updateMany.mockResolvedValue({ count: 1 });
     prisma.paymentOperation.deleteMany.mockResolvedValue({ count: 1 });
@@ -479,6 +500,7 @@ describe('PaymentsV2Service', () => {
       paymentOperation: {
         findUnique: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue(undefined),
+        delete: jest.fn().mockResolvedValue(undefined),
       },
       paymentAttempt: {
         aggregate: jest.fn().mockResolvedValue({ _max: { attemptNo: 0 } }),
@@ -537,6 +559,7 @@ describe('PaymentsV2Service', () => {
       paymentOperation: {
         findUnique: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue(undefined),
+        delete: jest.fn().mockResolvedValue(undefined),
       },
       paymentAttempt: {
         aggregate: jest.fn().mockResolvedValue({ _max: { attemptNo: 0 } }),
@@ -555,6 +578,7 @@ describe('PaymentsV2Service', () => {
       paymentOperation: {
         findUnique: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue(undefined),
+        delete: jest.fn().mockResolvedValue(undefined),
       },
       paymentAttempt: {
         aggregate: jest.fn().mockResolvedValue({ _max: { attemptNo: 0 } }),
@@ -632,6 +656,7 @@ describe('PaymentsV2Service', () => {
         findUnique: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue(undefined),
         update: jest.fn().mockResolvedValue(undefined),
+        delete: jest.fn().mockResolvedValue(undefined),
       },
       paymentAttempt: {
         aggregate: jest.fn().mockResolvedValue({ _max: { attemptNo: 0 } }),
@@ -666,10 +691,12 @@ describe('PaymentsV2Service', () => {
     const tx = {
       paymentOperation: {
         findUnique: jest.fn().mockResolvedValue({
+          merchantId: 'm_1',
           status: 'processing',
           payloadHash: 'amount=500',
           processingAt: new Date(),
         }),
+        delete: jest.fn().mockResolvedValue(undefined),
       },
     };
     prisma.$transaction.mockImplementation(async (fn: (trx: unknown) => Promise<unknown>) => fn(tx));
@@ -702,10 +729,12 @@ describe('PaymentsV2Service', () => {
     const tx = {
       paymentOperation: {
         findUnique: jest.fn().mockResolvedValue({
+          merchantId: 'm_1',
           status: 'processing',
           payloadHash: 'amount=400',
           processingAt: new Date(),
         }),
+        delete: jest.fn().mockResolvedValue(undefined),
       },
     };
     prisma.$transaction.mockImplementation(async (fn: (trx: unknown) => Promise<unknown>) => fn(tx));
@@ -851,7 +880,7 @@ describe('PaymentsV2Service', () => {
     expect(observability.registerAttempt).toHaveBeenCalledTimes(1);
   });
 
-  it('completa el lock de capture cuando el pago ya está SUCCEEDED (evita processing colgado)', async () => {
+  it('no adquiere lock de capture si el pago ya está SUCCEEDED', async () => {
     prisma.payment.findFirst.mockResolvedValue({
       id: 'pay_already_ok',
       merchantId: 'm_1',
@@ -863,16 +892,113 @@ describe('PaymentsV2Service', () => {
       statusReason: null,
       paymentLinkId: null,
     });
-    prisma.paymentOperation.findUnique.mockResolvedValue(null);
-    prisma.paymentOperation.create.mockResolvedValue(undefined);
 
     const result = await service.capture('m_1', 'pay_already_ok');
 
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.SUCCEEDED);
-    expect(prisma.paymentOperation.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { paymentId: 'pay_already_ok', operation: 'capture', status: 'processing' },
-      }),
-    );
+    expect(prisma.paymentOperation.create).not.toHaveBeenCalled();
+    expect(prisma.paymentOperation.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('capture con excepción interna libera lock y no marca done', async () => {
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    const payCap = {
+      id: 'pay_cap_throw',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'pi_x',
+      statusReason: null,
+      paymentLinkId: null,
+    };
+    const payCapSucceeded = { ...payCap, status: PAYMENT_V2_STATUS.SUCCEEDED };
+    prisma.payment.findFirst.mockResolvedValue(payCap);
+    mockProvider.run.mockResolvedValue({
+      status: PAYMENT_V2_STATUS.SUCCEEDED,
+      providerPaymentId: 'pi_x',
+      nextAction: { type: 'none' },
+    });
+    prisma.merchant.findUniqueOrThrow.mockResolvedValue({ feeBps: 0 });
+    prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+    prisma.payment.findUniqueOrThrow.mockResolvedValue(payCapSucceeded);
+    ledger.recordSuccessfulCapture.mockRejectedValueOnce(new Error('db apply failed'));
+
+    await expect(service.capture('m_1', 'pay_cap_throw', 'idem-cap-err')).rejects.toThrow('db apply failed');
+
+    expect(prisma.paymentOperation.deleteMany).toHaveBeenCalledWith({
+      where: { paymentId: 'pay_cap_throw', operation: 'capture' },
+    });
+    expect(prisma.paymentOperation.updateMany).not.toHaveBeenCalled();
+    expect(redis.delIdempotency).toHaveBeenCalled();
+  });
+
+  it('capture elimina lock con merchantId incorrecto y permite al dueño del pago continuar', async () => {
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_owned',
+      merchantId: 'm_owner',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'pi_own',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+
+    let findOpCalls = 0;
+    prisma.paymentOperation.findUnique.mockImplementation(async () => {
+      findOpCalls += 1;
+      if (findOpCalls === 1) {
+        return {
+          merchantId: 'm_attacker',
+          status: 'done',
+          payloadHash: 'v=1',
+          processingAt: new Date(),
+        };
+      }
+      return null;
+    });
+
+    mockProvider.run.mockResolvedValue({
+      status: PAYMENT_V2_STATUS.SUCCEEDED,
+      providerPaymentId: 'pi_own',
+      nextAction: { type: 'none' },
+    });
+    prisma.merchant.findUniqueOrThrow.mockResolvedValue({ feeBps: 0 });
+    prisma.payment.findUniqueOrThrow.mockResolvedValue({
+      id: 'pay_owned',
+      merchantId: 'm_owner',
+      status: PAYMENT_V2_STATUS.SUCCEEDED,
+      amountMinor: 500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'pi_own',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    prisma.payment.update.mockResolvedValue({
+      id: 'pay_owned',
+      merchantId: 'm_owner',
+      status: PAYMENT_V2_STATUS.SUCCEEDED,
+      amountMinor: 500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'pi_own',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+
+    const result = await service.capture('m_owner', 'pay_owned');
+
+    expect(prisma.paymentOperation.delete).toHaveBeenCalledWith({
+      where: { paymentId_operation: { paymentId: 'pay_owned', operation: 'capture' } },
+    });
+    expect(prisma.paymentOperation.create).toHaveBeenCalled();
+    expect(result.payment.status).toBe(PAYMENT_V2_STATUS.SUCCEEDED);
   });
 });

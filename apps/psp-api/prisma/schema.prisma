@@ -72,6 +72,7 @@ model Payment {
   @@index([merchantId, selectedProvider])
 }
 
+// `merchantId` debe coincidir con `Payment.merchantId` del mismo `paymentId`; el servicio valida ownership antes del lock y purga filas incoherentes en `claimPaymentOperation`.
 model PaymentOperation {
   id            String   @id @default(cuid())
   paymentId     String   @map("payment_id")

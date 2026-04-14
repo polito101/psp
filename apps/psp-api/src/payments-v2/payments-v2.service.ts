@@ -263,6 +263,16 @@ export class PaymentsV2Service {
       }
     }
 
+    const payment = await this.findMerchantPayment(merchantId, paymentId);
+    if (payment.status === PAYMENT_V2_STATUS.SUCCEEDED) {
+      return { payment, nextAction: null };
+    }
+    if (payment.status !== PAYMENT_V2_STATUS.AUTHORIZED) {
+      throw new ConflictException(
+        'Payment is not capturable: status must be authorized (Stripe requires_capture). Complete payment confirmation or 3DS first.',
+      );
+    }
+
     const claim = await this.claimPaymentOperation({
       merchantId,
       paymentId,
@@ -274,19 +284,26 @@ export class PaymentsV2Service {
     }
 
     try {
-      const payment = await this.findMerchantPayment(merchantId, paymentId);
-      if (payment.status === PAYMENT_V2_STATUS.SUCCEEDED) {
-        return { payment, nextAction: null };
-      }
-      if (payment.status !== PAYMENT_V2_STATUS.AUTHORIZED) {
-        throw new ConflictException(
-          'Payment is not capturable: status must be authorized (Stripe requires_capture). Complete payment confirmation or 3DS first.',
-        );
-      }
       const providerOrder = this.registry.orderedProviders(this.toProviderName(payment.selectedProvider));
-      return await this.executeProviderOperation(payment, 'capture', payment.amountMinor, providerOrder);
-    } finally {
+      const result = await this.executeProviderOperation(payment, 'capture', payment.amountMinor, providerOrder);
       await this.completePaymentOperation(paymentId, 'capture', '');
+      return result;
+    } catch (error) {
+      await this.releasePaymentOperationLockForRetry({
+        merchantId,
+        paymentId,
+        operation: 'capture',
+        idempotencyKey,
+      });
+      this.log.warn(
+        JSON.stringify({
+          event: 'payments_v2.operation_lock_released_after_error',
+          paymentId,
+          operation: 'capture',
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      throw error;
     }
   }
 
@@ -312,6 +329,18 @@ export class PaymentsV2Service {
       }
     }
 
+    const payment = await this.findMerchantPayment(merchantId, paymentId);
+    if (
+      payment.status === PAYMENT_V2_STATUS.CANCELED ||
+      payment.status === PAYMENT_V2_STATUS.FAILED ||
+      payment.status === PAYMENT_V2_STATUS.REFUNDED
+    ) {
+      return { payment, nextAction: null };
+    }
+    if (payment.status === PAYMENT_V2_STATUS.SUCCEEDED) {
+      throw new ConflictException('Succeeded payment must be refunded, not canceled');
+    }
+
     const claim = await this.claimPaymentOperation({
       merchantId,
       paymentId,
@@ -323,21 +352,26 @@ export class PaymentsV2Service {
     }
 
     try {
-      const payment = await this.findMerchantPayment(merchantId, paymentId);
-      if (
-        payment.status === PAYMENT_V2_STATUS.CANCELED ||
-        payment.status === PAYMENT_V2_STATUS.FAILED ||
-        payment.status === PAYMENT_V2_STATUS.REFUNDED
-      ) {
-        return { payment, nextAction: null };
-      }
-      if (payment.status === PAYMENT_V2_STATUS.SUCCEEDED) {
-        throw new ConflictException('Succeeded payment must be refunded, not canceled');
-      }
       const providerOrder = this.registry.orderedProviders(this.toProviderName(payment.selectedProvider));
-      return await this.executeProviderOperation(payment, 'cancel', payment.amountMinor, providerOrder);
-    } finally {
+      const result = await this.executeProviderOperation(payment, 'cancel', payment.amountMinor, providerOrder);
       await this.completePaymentOperation(paymentId, 'cancel', '');
+      return result;
+    } catch (error) {
+      await this.releasePaymentOperationLockForRetry({
+        merchantId,
+        paymentId,
+        operation: 'cancel',
+        idempotencyKey,
+      });
+      this.log.warn(
+        JSON.stringify({
+          event: 'payments_v2.operation_lock_released_after_error',
+          paymentId,
+          operation: 'cancel',
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      throw error;
     }
   }
 
@@ -399,14 +433,16 @@ export class PaymentsV2Service {
           reasonCode: error.reasonCode,
         });
       }
+      refundLockOutcome = 'release';
       throw error;
     } finally {
       if (refundLockOutcome === 'complete') {
         await this.completePaymentOperation(paymentId, 'refund', '');
       } else {
-        await this.releaseRefundOperationAfterProviderFailure({
+        await this.releasePaymentOperationLockForRetry({
           merchantId,
           paymentId,
+          operation: 'refund',
           idempotencyKey,
         });
       }
@@ -990,36 +1026,40 @@ export class PaymentsV2Service {
   }
 
   /**
-   * Tras fallo de proveedor en refund, elimina fila de lock y (si aplica) clave Redis para permitir reintento.
+   * Libera lock `PaymentOperation` y clave `payv2op:*` opcional tras error que no debe dejar la operación en `done`
+   * (fallo de proveedor en refund, excepción interna en capture/cancel/refund).
    */
-  private async releaseRefundOperationAfterProviderFailure(params: {
+  private async releasePaymentOperationLockForRetry(params: {
     merchantId: string;
     paymentId: string;
+    operation: PaymentOperation;
     idempotencyKey?: string;
   }): Promise<void> {
-    const { merchantId, paymentId, idempotencyKey } = params;
+    const { merchantId, paymentId, operation, idempotencyKey } = params;
     try {
       await this.prisma.paymentOperation.deleteMany({
-        where: { paymentId, operation: 'refund' },
+        where: { paymentId, operation },
       });
     } catch (error) {
       this.log.warn(
         JSON.stringify({
-          event: 'payments_v2.refund_lock_release_failed',
+          event: 'payments_v2.operation_lock_release_failed',
           paymentId,
+          operation,
           error: error instanceof Error ? error.message : String(error),
         }),
       );
     }
     if (!idempotencyKey) return;
-    const cacheKey = this.operationIdempotencyCacheKey(merchantId, paymentId, 'refund', idempotencyKey);
+    const cacheKey = this.operationIdempotencyCacheKey(merchantId, paymentId, operation, idempotencyKey);
     try {
       await this.redis.delIdempotency(cacheKey);
     } catch (error) {
       this.log.warn(
         JSON.stringify({
-          event: 'payments_v2.refund_idempotency_release_failed',
+          event: 'payments_v2.operation_idempotency_release_failed',
           paymentId,
+          operation,
           error: error instanceof Error ? error.message : String(error),
         }),
       );
@@ -1060,6 +1100,11 @@ export class PaymentsV2Service {
     }
   }
 
+  /**
+   * Adquiere o reutiliza la fila `PaymentOperation` por `(paymentId, operation)`.
+   * Si el lock existente tiene `merchantId` distinto al solicitante, se elimina (dato inválido / bug previo) y se reintenta.
+   * Takeover de lock stale: `updateMany` condicional (CAS) para que solo un request gane si varios compiten.
+   */
   private async claimPaymentOperation(params: {
     merchantId: string;
     paymentId: string;
@@ -1069,69 +1114,99 @@ export class PaymentsV2Service {
     const { merchantId, paymentId, operation, payloadHash } = params;
     const now = new Date();
     const staleBefore = new Date(now.getTime() - this.operationLockStaleMs);
+    const maxIterations = 12;
 
     const decision = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const read = async () =>
-        tx.paymentOperation.findUnique({
+      for (let i = 0; i < maxIterations; i++) {
+        const existing = await tx.paymentOperation.findUnique({
           where: { paymentId_operation: { paymentId, operation } },
-          select: { status: true, payloadHash: true, processingAt: true },
+          select: { status: true, payloadHash: true, processingAt: true, merchantId: true },
         });
 
-      let existing = await read();
-
-      if (!existing) {
-        try {
-          await tx.paymentOperation.create({
-            data: {
-              paymentId,
-              merchantId,
-              operation,
-              payloadHash,
-              status: 'processing',
-              processingAt: now,
-            },
+        if (existing && existing.merchantId !== merchantId) {
+          await tx.paymentOperation.delete({
+            where: { paymentId_operation: { paymentId, operation } },
           });
-          return { proceed: true as const };
-        } catch (error) {
-          const code =
-            error && typeof error === 'object' && 'code' in error ? (error as { code: string }).code : '';
-          if (code !== 'P2002') throw error;
-          // Carrera: otra transacción creó el lock (paymentId+operation) entre el read y el create.
-          existing = await read();
-          if (!existing) throw error;
+          this.log.warn(
+            JSON.stringify({
+              event: 'payments_v2.operation_lock_merchant_mismatch',
+              paymentId,
+              operation,
+              lockMerchantId: existing.merchantId,
+              requestMerchantId: merchantId,
+            }),
+          );
+          continue;
         }
-      }
 
-      if (existing.status === 'done') {
+        if (!existing) {
+          try {
+            await tx.paymentOperation.create({
+              data: {
+                paymentId,
+                merchantId,
+                operation,
+                payloadHash,
+                status: 'processing',
+                processingAt: now,
+              },
+            });
+            return { proceed: true as const };
+          } catch (error) {
+            const code =
+              error && typeof error === 'object' && 'code' in error ? (error as { code: string }).code : '';
+            if (code !== 'P2002') throw error;
+            continue;
+          }
+        }
+
+        if (existing.status === 'done') {
+          if (existing.payloadHash !== payloadHash) {
+            throw new ConflictException('Operation already completed with a different payload');
+          }
+          return { proceed: false as const };
+        }
+
         if (existing.payloadHash !== payloadHash) {
-          throw new ConflictException('Operation already completed with a different payload');
+          throw new ConflictException({
+            message: 'Operation in progress with a different payload',
+            paymentId,
+            operation,
+          });
         }
-        return { proceed: false as const };
-      }
 
-      if (existing.payloadHash !== payloadHash) {
-        throw new ConflictException({
-          message: 'Operation in progress with a different payload',
-          paymentId,
-          operation,
+        const stale = existing.processingAt < staleBefore;
+        if (!stale) {
+          return { proceed: false as const };
+        }
+
+        const cas = await tx.paymentOperation.updateMany({
+          where: {
+            paymentId,
+            operation,
+            status: 'processing',
+            payloadHash,
+            processingAt: { lt: staleBefore },
+          },
+          data: {
+            merchantId,
+            payloadHash,
+            status: 'processing',
+            processingAt: now,
+            completedAt: null,
+          },
         });
+        if (cas.count === 1) {
+          return { proceed: true as const };
+        }
+        continue;
       }
 
-      const stale = existing.processingAt < staleBefore;
-      if (!stale) {
-        return { proceed: false as const };
-      }
-
-      await tx.paymentOperation.update({
-        where: { paymentId_operation: { paymentId, operation } },
-        data: {
-          payloadHash,
-          status: 'processing',
-          processingAt: now,
-          completedAt: null,
-        },
+      throw new ConflictException({
+        message: 'Could not acquire payment operation lock',
+        paymentId,
+        operation,
       });
-      return { proceed: true as const };
     });
 
     if (decision.proceed) return decision;
@@ -1140,6 +1215,9 @@ export class PaymentsV2Service {
     return { proceed: false, payment };
   }
 
+  /**
+   * Marca el lock como `done` solo tras finalizar el flujo de negocio sin error (llamar desde el camino de éxito).
+   */
   private async completePaymentOperation(paymentId: string, operation: PaymentOperation, finalStatus: string) {
     try {
       await this.prisma.paymentOperation.updateMany({
