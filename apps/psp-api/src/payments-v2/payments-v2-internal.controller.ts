@@ -1,5 +1,5 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
-import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import { ApiOperation, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { InternalSecretGuard } from '../common/guards/internal-secret.guard';
 import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
 import { PaymentsV2Service } from './payments-v2.service';
@@ -22,6 +22,31 @@ export class PaymentsV2InternalController {
   @Get('ops/transactions')
   @ApiOperation({
     summary: 'Listado operativo interno de transacciones con último intento de proveedor',
+  })
+  @ApiQuery({
+    name: 'direction',
+    required: false,
+    description: 'Dirección de paginación por cursor. next=items más viejos, prev=items más nuevos. Default: next.',
+    schema: { type: 'string', enum: ['next', 'prev'], default: 'next' },
+  })
+  @ApiQuery({
+    name: 'cursorCreatedAt',
+    required: false,
+    description: 'Cursor (createdAt ISO) del boundary item. Debe venir junto con cursorId.',
+    schema: { type: 'string', format: 'date-time' },
+  })
+  @ApiQuery({
+    name: 'cursorId',
+    required: false,
+    description: 'Cursor (id) del boundary item. Debe venir junto con cursorCreatedAt.',
+    schema: { type: 'string' },
+  })
+  @ApiQuery({
+    name: 'includeTotal',
+    required: false,
+    description:
+      'Si es false, omite el COUNT global; total y totalPages serán null (útil para polling). Por defecto true.',
+    schema: { type: 'boolean', default: true },
   })
   async listTransactions(@Query() query: ListOpsTransactionsDto) {
     return this.payments.listOpsTransactions(query);

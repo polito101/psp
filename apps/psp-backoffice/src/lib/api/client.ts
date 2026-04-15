@@ -6,14 +6,18 @@ import type {
 
 function toSearchParams(filters: TransactionsFilters): URLSearchParams {
   const params = new URLSearchParams();
-  params.set("page", String(filters.page));
   params.set("pageSize", String(filters.pageSize));
+  if (filters.direction) params.set("direction", filters.direction);
+  if (filters.cursorCreatedAt) params.set("cursorCreatedAt", filters.cursorCreatedAt);
+  if (filters.cursorId) params.set("cursorId", filters.cursorId);
   if (filters.merchantId) params.set("merchantId", filters.merchantId);
   if (filters.paymentId) params.set("paymentId", filters.paymentId);
   if (filters.status) params.set("status", filters.status);
   if (filters.provider) params.set("provider", filters.provider);
   if (filters.createdFrom) params.set("createdFrom", filters.createdFrom);
   if (filters.createdTo) params.set("createdTo", filters.createdTo);
+  if (filters.includeTotal === false) params.set("includeTotal", "false");
+  if (filters.includeTotal === true) params.set("includeTotal", "true");
   return params;
 }
 

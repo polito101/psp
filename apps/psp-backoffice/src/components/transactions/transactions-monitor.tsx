@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   type ColumnDef,
@@ -83,10 +83,8 @@ function formatDate(value: string | null): string {
   }).format(date);
 }
 
-function buildFilters(base: FilterDraft, page: number): TransactionsFilters {
+function buildFilters(base: FilterDraft): Omit<TransactionsFilters, "pageSize"> {
   return {
-    page,
-    pageSize: DEFAULT_PAGE_SIZE,
     merchantId: base.merchantId || undefined,
     paymentId: base.paymentId || undefined,
     status: base.status || undefined,
@@ -96,8 +94,19 @@ function buildFilters(base: FilterDraft, page: number): TransactionsFilters {
   };
 }
 
+function filtersStableKey(f: Omit<TransactionsFilters, "pageSize">): string {
+  return JSON.stringify({
+    merchantId: f.merchantId,
+    paymentId: f.paymentId,
+    status: f.status,
+    provider: f.provider,
+    createdFrom: f.createdFrom,
+    createdTo: f.createdTo,
+  });
+}
+
 export function TransactionsMonitor() {
-  const [page, setPage] = useState(1);
+  const [cursorStack, setCursorStack] = useState<({ createdAt: string; id: string } | null)[]>([null]);
   const [selectedTransaction, setSelectedTransaction] = useState<OpsTransactionItem | null>(null);
   const [draft, setDraft] = useState<FilterDraft>({
     merchantId: "",
@@ -109,13 +118,55 @@ export function TransactionsMonitor() {
   });
   const [appliedDraft, setAppliedDraft] = useState<FilterDraft>(draft);
 
-  const filters = useMemo(() => buildFilters(appliedDraft, page), [appliedDraft, page]);
+  const page = cursorStack.length;
+  const cursor = cursorStack[cursorStack.length - 1] ?? null;
+  const baseFilters = useMemo(() => buildFilters(appliedDraft), [appliedDraft]);
+  const filters: TransactionsFilters = useMemo(
+    () => ({
+      ...baseFilters,
+      pageSize: DEFAULT_PAGE_SIZE,
+      direction: "next",
+      ...(cursor ? { cursorCreatedAt: cursor.createdAt, cursorId: cursor.id } : {}),
+    }),
+    [baseFilters, cursor],
+  );
+  const filterKey = useMemo(() => filtersStableKey(filters), [filters]);
+  /** Clave del último fetch que devolvió `total` numérico; alineado con polling sin COUNT. */
+  const lastTotalsKeyRef = useRef<string | null>(null);
+  const forceIncludeTotalRef = useRef(true);
+  const lastKnownTotalsRef = useRef<{ total: number; totalPages: number }>({ total: 0, totalPages: 1 });
 
   const transactionsQuery = useQuery({
     queryKey: ["ops-transactions", filters],
-    queryFn: () => fetchOpsTransactions(filters),
+    queryFn: async () => {
+      const includeTotal =
+        lastTotalsKeyRef.current !== filterKey || forceIncludeTotalRef.current;
+      forceIncludeTotalRef.current = false;
+      const data = await fetchOpsTransactions({ ...filters, includeTotal });
+      if (typeof data.page.total === "number" && typeof data.page.totalPages === "number") {
+        lastTotalsKeyRef.current = filterKey;
+      }
+      return data;
+    },
     refetchInterval: REFRESH_INTERVAL_MS,
   });
+
+  useEffect(() => {
+    const t = transactionsQuery.data?.page.total;
+    const tp = transactionsQuery.data?.page.totalPages;
+    if (typeof t === "number" && typeof tp === "number") {
+      lastKnownTotalsRef.current = { total: t, totalPages: tp };
+    }
+  }, [transactionsQuery.data?.page.total, transactionsQuery.data?.page.totalPages]);
+
+  const displayTotal =
+    transactionsQuery.data?.page.total != null
+      ? transactionsQuery.data.page.total
+      : lastKnownTotalsRef.current.total;
+  const displayTotalPages =
+    transactionsQuery.data?.page.totalPages != null
+      ? transactionsQuery.data.page.totalPages
+      : lastKnownTotalsRef.current.totalPages;
 
   const providerHealthQuery = useQuery({
     queryKey: ["provider-health"],
@@ -217,7 +268,10 @@ export function TransactionsMonitor() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => transactionsQuery.refetch()}
+            onClick={() => {
+              forceIncludeTotalRef.current = true;
+              void transactionsQuery.refetch();
+            }}
             disabled={transactionsQuery.isFetching}
           >
             <RefreshCw className="mr-2 size-4" />
@@ -281,7 +335,7 @@ export function TransactionsMonitor() {
             <Button
               size="sm"
               onClick={() => {
-                setPage(1);
+              setCursorStack([null]);
                 setAppliedDraft(draft);
               }}
             >
@@ -339,18 +393,26 @@ export function TransactionsMonitor() {
 
           <div className="flex items-center justify-between">
             <p className="text-sm text-slate-500">
-              Total: {transactionsQuery.data?.page.total ?? 0} - Pagina {transactionsQuery.data?.page.page ?? 1} de{" "}
-              {transactionsQuery.data?.page.totalPages ?? 1}
+              Total: {displayTotal} - Pagina {page} de {displayTotalPages}
             </p>
             <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((prev) => prev - 1)}>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page <= 1}
+                onClick={() => setCursorStack((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev))}
+              >
                 Anterior
               </Button>
               <Button
                 variant="outline"
                 size="sm"
-                disabled={!transactionsQuery.data?.page.hasNextPage}
-                onClick={() => setPage((prev) => prev + 1)}
+                disabled={!transactionsQuery.data?.page.hasNextPage || !transactionsQuery.data?.cursors.next}
+                onClick={() => {
+                  const next = transactionsQuery.data?.cursors.next ?? null;
+                  if (!next) return;
+                  setCursorStack((prev) => [...prev, next]);
+                }}
               >
                 Siguiente
               </Button>

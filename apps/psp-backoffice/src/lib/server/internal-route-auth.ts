@@ -56,10 +56,11 @@ export function enforceInternalRouteAuth(request: NextRequest): NextResponse | n
   try {
     adminSecret = getAdminSecret();
   } catch {
-    return NextResponse.json(
-      { message: "Backoffice auth is misconfigured" },
-      { status: 500 },
-    );
+    if (process.env.NODE_ENV !== "production") {
+      return null;
+    }
+
+    return NextResponse.json({ message: "Backoffice auth is misconfigured" }, { status: 500 });
   }
 
   const requestToken = getRequestToken(request);

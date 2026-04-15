@@ -56,7 +56,7 @@ describe('internal/webhooks integration', () => {
     const response = await request(app.getHttpServer())
       .get('/api/v2/payments/ops/transactions')
       .set('X-Internal-Secret', internalSecret)
-      .query({ merchantId: merchant.id, page: 1, pageSize: 5, provider: 'mock' })
+      .query({ merchantId: merchant.id, pageSize: 5, provider: 'mock' })
       .expect(200);
 
     expect(Array.isArray(response.body.items)).toBe(true);
@@ -65,6 +65,29 @@ describe('internal/webhooks integration', () => {
     expect(response.body.items[0].merchantId).toBe(merchant.id);
     expect(response.body.items[0].lastAttempt).toBeDefined();
     expect(response.body.items[0].selectedProvider).toBe('mock');
+    expect(response.body.cursors).toBeDefined();
+  });
+
+  it('returns null totals when includeTotal=false', async () => {
+    const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
+    const merchant = await createMerchantViaHttp(app);
+
+    await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .send({ amountMinor: 100, currency: 'EUR', provider: 'mock' })
+      .expect(201);
+
+    const response = await request(app.getHttpServer())
+      .get('/api/v2/payments/ops/transactions')
+      .set('X-Internal-Secret', internalSecret)
+      .query({ merchantId: merchant.id, pageSize: 5, includeTotal: 'false' })
+      .expect(200);
+
+    expect(response.body.page.total).toBeNull();
+    expect(response.body.page.totalPages).toBeNull();
+    expect(response.body.page.hasNextPage).toBe(false);
+    expect(Array.isArray(response.body.items)).toBe(true);
   });
 
   it('requeues failed webhook deliveries from internal endpoint', async () => {

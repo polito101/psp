@@ -45,11 +45,16 @@ export type OpsTransactionItem = {
 export type OpsTransactionsResponse = {
   items: OpsTransactionItem[];
   page: {
-    page: number;
     pageSize: number;
-    total: number;
-    totalPages: number;
+    /** `null` cuando la petición va con `includeTotal=false` (sin COUNT en servidor). */
+    total: number | null;
+    totalPages: number | null;
+    hasPrevPage: boolean;
     hasNextPage: boolean;
+  };
+  cursors: {
+    prev: { createdAt: string; id: string } | null;
+    next: { createdAt: string; id: string } | null;
   };
 };
 
@@ -65,12 +70,16 @@ export type ProviderHealthResponse = {
 };
 
 export type TransactionsFilters = {
-  page: number;
   pageSize: number;
+  cursorCreatedAt?: string;
+  cursorId?: string;
+  direction?: "next" | "prev";
   merchantId?: string;
   paymentId?: string;
   status?: TransactionStatus;
   provider?: TransactionProvider;
   createdFrom?: string;
   createdTo?: string;
+  /** Si es false, el BFF/API omiten el agregado total (menos carga en DB con polling). */
+  includeTotal?: boolean;
 };

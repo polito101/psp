@@ -70,6 +70,8 @@ type OpsTransactionsItem = {
     latencyMs: number | null;
     createdAt: Date;
   } | null;
+};
+
 type StripeWebhookApplyResult = {
   handled: boolean;
   paymentId?: string;
@@ -494,11 +496,30 @@ export class PaymentsV2Service {
 
   /**
    * Lista transacciones para monitoreo interno con filtros operativos y último intento de provider.
+   *
+   * @param query.includeTotal - Por defecto `true`. Con `false` no se ejecuta `count()`; `page.total` y `page.totalPages` serán `null`.
    */
   async listOpsTransactions(query: ListOpsTransactionsDto) {
+    const includeTotal = query.includeTotal !== false;
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 25;
-    const skip = (page - 1) * pageSize;
+
+    if (page > 1) {
+      throw new BadRequestException({
+        message: 'Pagination is cursor-based. Use cursorCreatedAt + cursorId (+ direction) instead of page>1.',
+        hint: 'Call first page with page=1 (or omit), then pass the returned cursor to navigate.',
+      });
+    }
+
+    const direction: 'next' | 'prev' = query.direction ?? 'next';
+    const cursorCreatedAt = query.cursorCreatedAt ? new Date(query.cursorCreatedAt) : null;
+    const cursorId = query.cursorId ?? null;
+    if ((cursorCreatedAt && !cursorId) || (!cursorCreatedAt && cursorId)) {
+      throw new BadRequestException('cursorCreatedAt and cursorId must be provided together');
+    }
+    if (cursorCreatedAt && Number.isNaN(cursorCreatedAt.valueOf())) {
+      throw new BadRequestException('Invalid cursorCreatedAt');
+    }
     const createdAt: Prisma.DateTimeFilter = {};
     if (query.createdFrom) {
       createdAt.gte = new Date(query.createdFrom);
@@ -517,42 +538,37 @@ export class PaymentsV2Service {
 
     const orderBy: Prisma.PaymentOrderByWithRelationInput[] = [{ createdAt: 'desc' }, { id: 'desc' }];
 
-    const [total, rowsPlusOne] = await this.prisma.$transaction(async (tx) => {
-      const totalCountPromise = tx.payment.count({ where });
+    const [total, rowsPlusOne, hasPrevPage, hasNextPage] = await this.prisma.$transaction(async (tx) => {
+      const totalCountPromise = includeTotal ? tx.payment.count({ where }) : null;
 
-      // Evitar `skip` sobre filas "anchas" (select + joins) en páginas profundas:
-      // - resolvemos un cursor liviano (createdAt/id) para la última fila de la página anterior
-      // - luego hacemos keyset pagination estable por (createdAt desc, id desc)
       let keysetWhere: Prisma.PaymentWhereInput = where;
-      if (page > 1) {
-        const cursorRow = await tx.payment.findFirst({
-          where,
-          orderBy,
-          skip: skip - 1,
-          take: 1,
-          select: { createdAt: true, id: true },
-        });
-        if (!cursorRow) {
-          const totalCount = await totalCountPromise;
-          return [totalCount, [] as const] as const;
-        }
+      if (cursorCreatedAt && cursorId) {
+        const boundaryClause: Prisma.PaymentWhereInput =
+          direction === 'next'
+            ? {
+                OR: [
+                  { createdAt: { lt: cursorCreatedAt } },
+                  { createdAt: cursorCreatedAt, id: { lt: cursorId } },
+                ],
+              }
+            : {
+                OR: [
+                  { createdAt: { gt: cursorCreatedAt } },
+                  { createdAt: cursorCreatedAt, id: { gt: cursorId } },
+                ],
+              };
 
         keysetWhere = {
-          AND: [
-            where,
-            {
-              OR: [
-                { createdAt: { lt: cursorRow.createdAt } },
-                { createdAt: cursorRow.createdAt, id: { lt: cursorRow.id } },
-              ],
-            },
-          ],
+          AND: [where, boundaryClause],
         };
       }
 
+      const queryOrderBy: Prisma.PaymentOrderByWithRelationInput[] =
+        direction === 'next' ? orderBy : [{ createdAt: 'asc' }, { id: 'asc' }];
+
       const rows = await tx.payment.findMany({
         where: keysetWhere,
-        orderBy,
+        orderBy: queryOrderBy,
         take: pageSize + 1,
         select: {
           id: true,
@@ -592,12 +608,55 @@ export class PaymentsV2Service {
         },
       });
 
-      const totalCount = await totalCountPromise;
-      return [totalCount, rows] as const;
+      const hasMoreInDirection = rows.length > pageSize;
+      const trimmed = hasMoreInDirection ? rows.slice(0, pageSize) : rows;
+      const normalized = direction === 'next' ? trimmed : trimmed.slice().reverse();
+
+      let prevExists = false;
+      let nextExists = false;
+      if (normalized.length > 0) {
+        const first = normalized[0];
+        const last = normalized[normalized.length - 1];
+
+        const prevWhere: Prisma.PaymentWhereInput = {
+          AND: [
+            where,
+            {
+              OR: [
+                { createdAt: { gt: first.createdAt } },
+                { createdAt: first.createdAt, id: { gt: first.id } },
+              ],
+            },
+          ],
+        };
+        const nextWhere: Prisma.PaymentWhereInput = {
+          AND: [
+            where,
+            {
+              OR: [
+                { createdAt: { lt: last.createdAt } },
+                { createdAt: last.createdAt, id: { lt: last.id } },
+              ],
+            },
+          ],
+        };
+
+        const [prevRow, nextRow] = await Promise.all([
+          tx.payment.findFirst({ where: prevWhere, select: { id: true } }),
+          tx.payment.findFirst({ where: nextWhere, select: { id: true } }),
+        ]);
+        prevExists = Boolean(prevRow);
+        nextExists = Boolean(nextRow);
+      }
+
+      if (includeTotal && totalCountPromise) {
+        const totalCount = await totalCountPromise;
+        return [totalCount, normalized, prevExists, nextExists] as const;
+      }
+      return [null, normalized, prevExists, nextExists] as const;
     });
 
-    const hasNextPage = rowsPlusOne.length > pageSize;
-    const rows = hasNextPage ? rowsPlusOne.slice(0, pageSize) : rowsPlusOne;
+    const rows = rowsPlusOne;
 
     const items: OpsTransactionsItem[] = rows.map((row) => {
       const lastAttempt = row.attempts[0] ?? null;
@@ -622,17 +681,30 @@ export class PaymentsV2Service {
       };
     });
 
-    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const totalPages = total != null ? Math.max(1, Math.ceil(total / pageSize)) : null;
+    const prevCursor =
+      items.length > 0 ? { createdAt: items[0].createdAt.toISOString(), id: items[0].id } : null;
+    const nextCursor =
+      items.length > 0
+        ? { createdAt: items[items.length - 1].createdAt.toISOString(), id: items[items.length - 1].id }
+        : null;
     return {
       items,
       page: {
-        page,
         pageSize,
         total,
         totalPages,
+        hasPrevPage,
         hasNextPage,
       },
+      cursors: {
+        prev: prevCursor,
+        next: nextCursor,
+      },
     };
+  }
+
+  /**
    * Aplica cambios de estado desde eventos inbound de Stripe usando CAS por estado para idempotencia.
    * No duplica ledger aunque Stripe reintente el mismo evento.
    */

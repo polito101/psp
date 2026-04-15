@@ -5,8 +5,10 @@ import { mapProxyError, proxyInternalGet } from "@/lib/server/backoffice-api";
 import { enforceInternalRouteAuth } from "@/lib/server/internal-route-auth";
 
 const querySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(25),
+  direction: z.enum(["next", "prev"]).optional().default("next"),
+  cursorCreatedAt: z.string().datetime().optional(),
+  cursorId: z.string().trim().min(1).max(64).optional(),
   merchantId: z.string().trim().min(1).max(64).optional(),
   paymentId: z.string().trim().min(1).max(64).optional(),
   status: z
@@ -24,6 +26,20 @@ const querySchema = z.object({
   provider: z.enum(["stripe", "mock"]).optional(),
   createdFrom: z.string().datetime().optional(),
   createdTo: z.string().datetime().optional(),
+  includeTotal: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => (v === "false" ? false : v === "true" ? true : undefined)),
+}).superRefine((value, ctx) => {
+  const hasCreatedAt = Boolean(value.cursorCreatedAt);
+  const hasId = Boolean(value.cursorId);
+  if (hasCreatedAt !== hasId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "cursorCreatedAt and cursorId must be provided together",
+      path: ["cursorCreatedAt"],
+    });
+  }
 });
 
 export async function GET(request: NextRequest) {
