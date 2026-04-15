@@ -14,6 +14,7 @@ alwaysApply: true
 - Caché e idempotencia: Redis (ioredis)
 - Documentación API: Swagger (`@nestjs/swagger`)
 - Testing: Jest
+- Estado de cobertura de tests: `docs/testing-status.md` (documento vivo)
 
 ### Alcance actual del repositorio
 - Este repositorio es backend-first.

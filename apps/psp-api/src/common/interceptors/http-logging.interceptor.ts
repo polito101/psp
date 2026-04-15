@@ -36,9 +36,7 @@ export type HttpLoggableRequest = {
  * si no hay plantilla Express/Nest. Orden: más específicos primero.
  */
 const REDACT_AFTER_PREFIXES: readonly string[] = [
-  '/api/v1/payment-links/',
-  '/api/v1/payments/',
-  '/api/v1/pay/',
+  '/api/v2/payments/',
   '/api/v1/merchants/',
   '/api/v1/webhooks/',
 ];
@@ -277,12 +275,12 @@ export function redactSensitivePath(path: string): string {
 }
 
 /**
- * En `sandbox` y `production`, añade prefijos con skip de éxitos por defecto (`/api/v1/pay`)
+ * En `sandbox` y `production`, añade prefijos con skip de éxitos por defecto (`/api/v2/payments`)
  * además de los definidos en env (4xx/5xx no se omiten).
  */
 export function mergeSkipPrefixes(parsed: string[], nodeEnv: string): string[] {
   const defaults =
-    nodeEnv === 'sandbox' || nodeEnv === 'production' ? (['/api/v1/pay'] as const) : [];
+    nodeEnv === 'sandbox' || nodeEnv === 'production' ? (['/api/v2/payments'] as const) : [];
   return dedupePrefixList([...defaults, ...parsed]);
 }
 

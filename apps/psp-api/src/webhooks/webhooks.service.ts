@@ -76,6 +76,40 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
     this.stopWorker();
   }
 
+  /**
+   * Snapshot operativo interno de la cola de webhooks para soporte en sandbox.
+   * Incluye backlog por estado y antigüedad de la entrega pending más vieja.
+   */
+  async getQueueSnapshot(): Promise<{
+    workerEnabled: boolean;
+    intervalMs: number;
+    maxAttempts: number;
+    counts: { pending: number; processing: number; failed: number };
+    oldestPendingAgeMs: number | null;
+    fetchTimeoutMs: number;
+  }> {
+    const now = Date.now();
+    const [pending, processing, failed, oldestPending] = await Promise.all([
+      this.prisma.webhookDelivery.count({ where: { status: 'pending' } }),
+      this.prisma.webhookDelivery.count({ where: { status: STATUS_PROCESSING } }),
+      this.prisma.webhookDelivery.count({ where: { status: 'failed' } }),
+      this.prisma.webhookDelivery.findFirst({
+        where: { status: 'pending' },
+        orderBy: { scheduledAt: 'asc' },
+        select: { scheduledAt: true },
+      }),
+    ]);
+
+    return {
+      workerEnabled: this.workerEnabled,
+      intervalMs: WORKER_INTERVAL_MS,
+      maxAttempts: MAX_ATTEMPTS,
+      counts: { pending, processing, failed },
+      oldestPendingAgeMs: oldestPending ? Math.max(0, now - oldestPending.scheduledAt.getTime()) : null,
+      fetchTimeoutMs: FETCH_TIMEOUT_MS,
+    };
+  }
+
   // ──────────────────────────────────────────────────────────────────────────
   // Signing helper (público para que el receptor pueda verificar)
   // ──────────────────────────────────────────────────────────────────────────

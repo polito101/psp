@@ -57,6 +57,9 @@ jobs:
         run: npm run lint
       - name: Unit tests
         run: npm run test
+      - name: Integration tests (critical subset, non-blocking bootstrap)
+        continue-on-error: true
+        run: npm run test:integration:critical
       - name: Build
         run: npm run build
 
@@ -78,7 +81,15 @@ jobs:
         run: terraform validate
 
   sandbox-deploy:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/sandbox'
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/sandbox' &&
+      secrets.SANDBOX_DEPLOY_HOOK_URL != '' &&
+      secrets.SANDBOX_DATABASE_URL != '' &&
+      secrets.SANDBOX_REDIS_URL != '' &&
+      secrets.SANDBOX_INTERNAL_API_SECRET != '' &&
+      secrets.SANDBOX_APP_ENCRYPTION_KEY != '' &&
+      vars.SANDBOX_BASE_URL != ''
     needs: [api-ci]
     runs-on: ubuntu-latest
     environment: sandbox
@@ -100,7 +111,7 @@ jobs:
           cache-dependency-path: apps/psp-api/package-lock.json
       - name: Install dependencies
         run: npm ci
-      - name: Build Docker image (sandbox)
+      - name: Build Docker image (sandbox validation only)
         run: docker build -t psp-api:sandbox .
       - name: Prisma generate
         run: npx prisma generate
@@ -115,19 +126,37 @@ jobs:
             exit 1
           fi
           curl -fsSL --connect-timeout 5 --max-time 30 --retry 3 --retry-delay 2 -X POST "$SANDBOX_DEPLOY_HOOK_URL"
-      - name: Wait for sandbox health endpoint
+      - name: Wait for sandbox readiness (`status=ok` + db/redis ok)
         run: |
           if [ -z "$SMOKE_BASE_URL" ]; then
             echo "Missing SANDBOX_BASE_URL environment variable"
             exit 1
           fi
           for i in {1..30}; do
-            if curl -fsSL --connect-timeout 3 --max-time 5 "${SMOKE_BASE_URL}/health" >/dev/null; then
-              exit 0
+            health_json="$(curl -fsSL --connect-timeout 3 --max-time 5 "${SMOKE_BASE_URL}/health" || true)"
+            if [ -n "$health_json" ]; then
+              HEALTH_JSON="$health_json" node -e "const d=JSON.parse(process.env.HEALTH_JSON); if (d?.status==='ok' && d?.checks?.db?.status==='ok' && d?.checks?.redis?.status==='ok') process.exit(0); process.exit(1)" && exit 0
             fi
             sleep 10
           done
-          echo "Sandbox health check timed out"
+          echo "Sandbox readiness check timed out"
+          exit 1
+      - name: Wait for ops metrics readiness gate
+        run: |
+          for i in {1..18}; do
+            node scripts/ci/check-ops-metrics.mjs && exit 0
+            sleep 10
+          done
+          echo "Ops metrics readiness check timed out"
           exit 1
       - name: Run smoke tests against sandbox
         run: npm run test:smoke:sandbox
+      - name: Run Stripe smoke tests against sandbox (optional)
+        if: >-
+          secrets.SANDBOX_SMOKE_API_KEY_STRIPE != '' &&
+          secrets.SANDBOX_STRIPE_PAYMENT_METHOD_ID != ''
+        env:
+          SMOKE_STRIPE_ENABLED: "true"
+          SMOKE_API_KEY: ${{ secrets.SANDBOX_SMOKE_API_KEY_STRIPE }}
+          SMOKE_STRIPE_PAYMENT_METHOD_ID: ${{ secrets.SANDBOX_STRIPE_PAYMENT_METHOD_ID }}
+        run: npm run test:smoke:stripe

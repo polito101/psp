@@ -11,8 +11,10 @@ export class PaymentsV2InternalController {
   constructor(private readonly payments: PaymentsV2Service) {}
 
   @Get('ops/metrics')
-  @ApiOperation({ summary: 'Snapshot interno de métricas operativas por proveedor (v2)' })
-  metrics() {
+  @ApiOperation({
+    summary: 'Snapshot interno de métricas operativas (payments, circuit breakers y cola webhooks)',
+  })
+  async metrics() {
     return this.payments.getMetricsSnapshot();
   }
 }

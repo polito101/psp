@@ -2,8 +2,8 @@
 module.exports = {
   rootDir: '.',
   moduleFileExtensions: ['js', 'json', 'ts'],
-  testMatch: ['<rootDir>/test/smoke/**/*.spec.ts'],
-  setupFiles: ['<rootDir>/test/smoke/jest.smoke.setup.ts'],
+  testMatch: ['<rootDir>/test/integration/**/*.spec.ts'],
+  setupFiles: ['<rootDir>/test/integration/jest.integration.setup.ts'],
   transform: {
     '^.+\\.(t|j)s$': [
       'ts-jest',

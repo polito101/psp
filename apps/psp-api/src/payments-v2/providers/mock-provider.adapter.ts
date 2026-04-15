@@ -28,14 +28,6 @@ export class MockProviderAdapter implements PaymentProvider {
 
   private async createIntent(context: ProviderContext): Promise<ProviderResult> {
     const fingerprint = this.hash(`${context.paymentId}:${context.amountMinor}:${context.currency}`);
-    if (context.amountMinor % 13 === 0) {
-      return {
-        status: PAYMENT_V2_STATUS.FAILED,
-        reasonCode: 'provider_declined',
-        reasonMessage: 'Mock decline policy',
-        providerPaymentId: `mock_pi_${fingerprint}`,
-      };
-    }
     if (context.amountMinor % 7 === 0) {
       return {
         status: PAYMENT_V2_STATUS.REQUIRES_ACTION,
@@ -43,6 +35,14 @@ export class MockProviderAdapter implements PaymentProvider {
         nextAction: {
           type: '3ds',
         },
+      };
+    }
+    if (context.amountMinor % 13 === 0) {
+      return {
+        status: PAYMENT_V2_STATUS.FAILED,
+        reasonCode: 'provider_declined',
+        reasonMessage: 'Mock decline policy',
+        providerPaymentId: `mock_pi_${fingerprint}`,
       };
     }
     return {

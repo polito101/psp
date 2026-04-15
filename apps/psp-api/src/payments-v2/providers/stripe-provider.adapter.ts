@@ -58,6 +58,11 @@ export class StripeProviderAdapter implements PaymentProvider {
       const returnUrl = context.stripeReturnUrl?.trim();
       if (returnUrl) {
         params.set('return_url', returnUrl);
+      } else {
+        // Evita exigir `return_url` cuando el Dashboard tiene métodos con redirect habilitados.
+        // Para un confirm server-side con un PaymentMethod tipo `pm_card_visa`, no queremos redirects.
+        params.set('automatic_payment_methods[enabled]', 'true');
+        params.set('automatic_payment_methods[allow_redirects]', 'never');
       }
     } else {
       params.set('automatic_payment_methods[enabled]', 'true');

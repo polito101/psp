@@ -39,7 +39,7 @@ export class CreatePaymentIntentDto {
   })
   @IsOptional()
   @IsString()
-  @Matches(/^pm_[A-Za-z0-9]+$/, { message: 'stripePaymentMethodId must be a Stripe PaymentMethod id (pm_...)' })
+  @Matches(/^pm_[A-Za-z0-9_]+$/, { message: 'stripePaymentMethodId must be a Stripe PaymentMethod id (pm_...)' })
   stripePaymentMethodId?: string;
 
   @ApiPropertyOptional({

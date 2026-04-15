@@ -4,8 +4,8 @@
 
 - [ ] Workflow único activo (`.github/workflows/ci.yml`).
 - [ ] Job `api-ci` verde (lint, test, build).
-- [ ] Job `sandbox-deploy` verde en branch `sandbox` (incluye build Docker + hook + migrate + smoke).
-- [ ] Migrations ejecutadas con `prisma migrate deploy` tras el deploy hook.
+- [ ] Job `sandbox-deploy` verde en branch `sandbox` (incluye validación de build Docker + migrate + hook + readiness + gate `ops/metrics` + smoke).
+- [ ] Migrations ejecutadas con `prisma migrate deploy` antes del deploy hook (exigir migraciones backward-compatible durante rollout).
 
 ## Seguridad mínima
 
@@ -16,8 +16,10 @@
 
 ## Operación
 
-- [ ] `/health` responde `ok` o `degraded` controlado.
+- [ ] Gate de readiness exige `/health` con `status=ok` y checks `db=ok`, `redis=ok`.
+- [ ] Gate de readiness operativo (`/api/v2/payments/ops/metrics`) en verde.
 - [ ] Smoke tests de flujo crítico en verde.
+- [ ] Smoke Stripe en verde (si sandbox expone credenciales de test Stripe para CI).
 - [ ] Runbook actualizado (`docs/sandbox-runbook.md`).
 - [ ] Matriz de variables actualizada (`docs/sandbox-env.md`).
 
