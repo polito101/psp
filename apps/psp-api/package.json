@@ -18,7 +18,7 @@
     "test:watch": "jest --watch",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev && prisma generate",
-    "prisma:ops:indexes": "prisma db execute --schema prisma/schema.prisma --file prisma/ops/create-indexes-concurrently.sql",
+    "prisma:ops:indexes": "node scripts/ops/create-indexes-concurrently.mjs",
     "prisma:migrate:deploy": "prisma migrate deploy && npm run prisma:ops:indexes && prisma generate"
   },
   "dependencies": {
