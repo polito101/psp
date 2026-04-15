@@ -126,6 +126,16 @@ export function validateEnv(input: EnvInput): EnvInput {
   );
   env.PAYMENTS_PROVIDER_ORDER = providerOrder.join(',');
   env.STRIPE_SECRET_KEY = getString(env.STRIPE_SECRET_KEY) ?? '';
+  env.STRIPE_WEBHOOK_SECRET = getString(env.STRIPE_WEBHOOK_SECRET) ?? '';
+  env.STRIPE_WEBHOOK_TOLERANCE_SEC = String(
+    parseIntegerRange(
+      getString(env.STRIPE_WEBHOOK_TOLERANCE_SEC),
+      300,
+      30,
+      900,
+      'STRIPE_WEBHOOK_TOLERANCE_SEC',
+    ),
+  );
   env.STRIPE_API_BASE_URL = validateStripeApiBaseUrl(getString(env.STRIPE_API_BASE_URL));
   env.PAYMENTS_PROVIDER_TIMEOUT_MS = String(
     parsePositiveInt(getString(env.PAYMENTS_PROVIDER_TIMEOUT_MS), 8_000, 'PAYMENTS_PROVIDER_TIMEOUT_MS'),

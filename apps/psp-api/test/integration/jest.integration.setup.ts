@@ -21,4 +21,10 @@ process.env.ENABLE_SWAGGER ??= 'false';
 process.env.PAYMENTS_V2_ENABLED_MERCHANTS ??= '*';
 process.env.PAYMENTS_PROVIDER_ORDER ??= 'mock,stripe';
 process.env.PAYMENTS_ALLOW_MOCK ??= 'true';
+if (!process.env.STRIPE_WEBHOOK_SECRET) {
+  process.env.STRIPE_WEBHOOK_SECRET = 'whsec_integration_test_secret';
+}
+if (!process.env.STRIPE_WEBHOOK_TOLERANCE_SEC) {
+  process.env.STRIPE_WEBHOOK_TOLERANCE_SEC = '300';
+}
 process.env.WEBHOOK_WORKER_ENABLED ??= 'false';

@@ -10,7 +10,7 @@
     "lint": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.spec.json --noEmit",
     "test": "jest",
     "test:integration": "jest --config jest.integration.config.js --runInBand",
-    "test:integration:critical": "jest --config jest.integration.config.js --runInBand test/integration/payments-v2.integration.spec.ts test/integration/internal-webhooks.integration.spec.ts",
+    "test:integration:critical": "jest --config jest.integration.config.js --runInBand test/integration/payments-v2.integration.spec.ts test/integration/internal-webhooks.integration.spec.ts test/integration/stripe-webhooks.integration.spec.ts test/integration/stripe-webhooks-outbound.integration.spec.ts",
     "test:smoke:sandbox": "jest --config jest.smoke.config.js --runInBand",
     "test:smoke:stripe": "jest --config jest.smoke.config.js --runInBand test/smoke/stripe.smoke.spec.ts",
     "test:smoke:ops": "jest --config jest.smoke.config.js --runInBand test/smoke/orchestrator.integration.spec.ts",
