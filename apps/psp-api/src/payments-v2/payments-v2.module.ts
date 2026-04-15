@@ -9,10 +9,11 @@ import { PaymentsV2Service } from './payments-v2.service';
 import { MockProviderAdapter } from './providers/mock-provider.adapter';
 import { ProviderRegistryService } from './providers/provider-registry.service';
 import { StripeProviderAdapter } from './providers/stripe-provider.adapter';
+import { StripeWebhookController } from './stripe-webhook.controller';
 
 @Module({
   imports: [LedgerModule, WebhooksModule, PaymentLinksModule],
-  controllers: [PaymentsV2Controller, PaymentsV2InternalController],
+  controllers: [PaymentsV2Controller, PaymentsV2InternalController, StripeWebhookController],
   providers: [
     PaymentsV2Service,
     PaymentsV2ObservabilityService,

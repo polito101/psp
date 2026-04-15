@@ -1001,4 +1001,187 @@ describe('PaymentsV2Service', () => {
     expect(prisma.paymentOperation.create).toHaveBeenCalled();
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.SUCCEEDED);
   });
+
+  it('stripe webhook devuelve missing_provider_ref cuando no puede extraer providerRef', async () => {
+    const result = await service.applyStripeWebhookEvent('charge.refunded', {
+      id: 'ch_1',
+      refunded: true,
+      // payment_intent ausente
+    });
+
+    expect(result).toEqual({ handled: false, reason: 'missing_provider_ref' });
+    expect(prisma.payment.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('stripe webhook devuelve payment_not_found para providerRef desconocido', async () => {
+    prisma.payment.findFirst.mockResolvedValue(null);
+
+    const result = await service.applyStripeWebhookEvent('payment_intent.succeeded', {
+      id: 'pi_unknown',
+      object: 'payment_intent',
+    });
+
+    expect(result).toEqual({ handled: false, reason: 'payment_not_found' });
+  });
+
+  it('stripe webhook payment_failed NO marca FAILED si el pago está AUTHORIZED; preserva status y setea reason', async () => {
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_webhook_failed',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'stripe',
+      providerRef: 'pi_failed',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+
+    const result = await service.applyStripeWebhookEvent('payment_intent.payment_failed', {
+      id: 'pi_failed',
+      last_payment_error: { type: 'card_error' },
+    });
+
+    expect(result).toEqual({ handled: true, paymentId: 'pay_webhook_failed' });
+    expect(prisma.payment.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'pay_webhook_failed', status: PAYMENT_V2_STATUS.AUTHORIZED },
+        data: expect.objectContaining({
+          status: PAYMENT_V2_STATUS.AUTHORIZED,
+          statusReason: 'provider_declined',
+        }),
+      }),
+    );
+  });
+
+  it('stripe webhook payment_failed traduce estados no finales a PENDING y conserva reason', async () => {
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_webhook_pending',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.PROCESSING,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'stripe',
+      providerRef: 'pi_processing',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+
+    const result = await service.applyStripeWebhookEvent('payment_intent.payment_failed', {
+      id: 'pi_processing',
+      last_payment_error: { type: 'card_error' },
+    });
+
+    expect(result).toEqual({ handled: true, paymentId: 'pay_webhook_pending' });
+    expect(prisma.payment.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: 'pay_webhook_pending',
+          status: { in: [PAYMENT_V2_STATUS.PROCESSING, PAYMENT_V2_STATUS.PENDING, PAYMENT_V2_STATUS.REQUIRES_ACTION] },
+        },
+        data: expect.objectContaining({
+          status: PAYMENT_V2_STATUS.PENDING,
+          statusReason: 'provider_declined',
+          failedAt: null,
+        }),
+      }),
+    );
+  });
+
+  it('stripe webhook unsupported event devuelve handled=false con paymentId', async () => {
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_unsupported',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'stripe',
+      providerRef: 'pi_unsupported',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+
+    const result = await service.applyStripeWebhookEvent('payment_intent.processing', {
+      id: 'pi_unsupported',
+    });
+
+    expect(result).toEqual({
+      handled: false,
+      paymentId: 'pay_unsupported',
+      reason: 'unsupported_event_type',
+    });
+  });
+
+  it('stripe webhook charge.refunded fully refunded hace CAS y ledger refund', async () => {
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_refunded',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.SUCCEEDED,
+      amountMinor: 2000,
+      currency: 'EUR',
+      selectedProvider: 'stripe',
+      providerRef: 'pi_refunded',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    const tx = {
+      payment: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    prisma.$transaction.mockImplementationOnce(async (fn: (trx: unknown) => Promise<unknown>) => fn(tx));
+
+    const result = await service.applyStripeWebhookEvent('charge.refunded', {
+      id: 'ch_1',
+      payment_intent: 'pi_refunded',
+      refunded: true,
+      amount_refunded: 1200,
+    });
+
+    expect(result).toEqual({ handled: true, paymentId: 'pay_refunded' });
+    expect(tx.payment.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'pay_refunded', status: PAYMENT_V2_STATUS.SUCCEEDED },
+      }),
+    );
+    expect(ledger.recordSuccessfulRefund).toHaveBeenCalledWith(tx, {
+      merchantId: 'm_1',
+      paymentId: 'pay_refunded',
+      amountMinor: 1200,
+      currency: 'EUR',
+    });
+  });
+
+  it('stripe webhook payment_intent.succeeded delega en captureSucceeded', async () => {
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_succeeded',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 999,
+      currency: 'EUR',
+      selectedProvider: 'stripe',
+      providerRef: 'pi_ok',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    const captureSpy = jest
+      .spyOn(service as unknown as { captureSucceeded: (...args: unknown[]) => Promise<unknown> }, 'captureSucceeded')
+      .mockResolvedValue({
+        id: 'pay_succeeded',
+        merchantId: 'm_1',
+        status: PAYMENT_V2_STATUS.SUCCEEDED,
+      });
+
+    const result = await service.applyStripeWebhookEvent('payment_intent.succeeded', {
+      id: 'pi_ok',
+    });
+
+    expect(result).toEqual({ handled: true, paymentId: 'pay_succeeded' });
+    expect(captureSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'pay_succeeded' }),
+      'stripe',
+      expect.objectContaining({ status: PAYMENT_V2_STATUS.SUCCEEDED, providerPaymentId: 'pi_ok' }),
+    );
+    captureSpy.mockRestore();
+  });
 });
