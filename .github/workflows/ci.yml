@@ -57,11 +57,14 @@ jobs:
         run: npm run lint
       - name: Unit tests
         run: npm run test
-      - name: Integration tests (critical subset, non-blocking bootstrap)
-        continue-on-error: true
+      - name: Ops metrics CI hardening tests
+        run: npm run test:ci:ops-metrics
+      - name: Integration tests (critical subset, blocking)
         run: npm run test:integration:critical
       - name: Build
         run: npm run build
+      - name: Build Docker image (CI validation)
+        run: docker build -t psp-api:ci .
 
   terraform-validate:
     runs-on: ubuntu-latest
@@ -83,13 +86,7 @@ jobs:
   sandbox-deploy:
     if: >-
       github.event_name == 'push' &&
-      github.ref == 'refs/heads/sandbox' &&
-      secrets.SANDBOX_DEPLOY_HOOK_URL != '' &&
-      secrets.SANDBOX_DATABASE_URL != '' &&
-      secrets.SANDBOX_REDIS_URL != '' &&
-      secrets.SANDBOX_INTERNAL_API_SECRET != '' &&
-      secrets.SANDBOX_APP_ENCRYPTION_KEY != '' &&
-      vars.SANDBOX_BASE_URL != ''
+      github.ref == 'refs/heads/sandbox'
     needs: [api-ci]
     runs-on: ubuntu-latest
     environment: sandbox
@@ -102,22 +99,66 @@ jobs:
       INTERNAL_API_SECRET: ${{ secrets.SANDBOX_INTERNAL_API_SECRET }}
       APP_ENCRYPTION_KEY: ${{ secrets.SANDBOX_APP_ENCRYPTION_KEY }}
       SMOKE_BASE_URL: ${{ vars.SANDBOX_BASE_URL }}
+      READINESS_MAX_WEBHOOK_PENDING: "40"
+      READINESS_MAX_WEBHOOK_PROCESSING: "20"
+      READINESS_MAX_WEBHOOK_FAILED: "10"
+      READINESS_MAX_WEBHOOK_OLDEST_PENDING_MS: "180000"
+      READINESS_MAX_ATTEMPT_PERSIST_FAILED: "3"
+      READINESS_MIN_SAMPLES_FOR_FAIL_RATE: "20"
+      READINESS_MAX_PROVIDER_FAIL_RATE: "0.35"
     steps:
+      - name: Gate sandbox deploy (requires env secrets/vars)
+        id: gate
+        env:
+          SANDBOX_DEPLOY_HOOK_URL: ${{ secrets.SANDBOX_DEPLOY_HOOK_URL }}
+          SANDBOX_DATABASE_URL: ${{ secrets.SANDBOX_DATABASE_URL }}
+          SANDBOX_REDIS_URL: ${{ secrets.SANDBOX_REDIS_URL }}
+          SANDBOX_INTERNAL_API_SECRET: ${{ secrets.SANDBOX_INTERNAL_API_SECRET }}
+          SANDBOX_APP_ENCRYPTION_KEY: ${{ secrets.SANDBOX_APP_ENCRYPTION_KEY }}
+          SANDBOX_BASE_URL: ${{ vars.SANDBOX_BASE_URL }}
+          SANDBOX_SMOKE_API_KEY_STRIPE: ${{ secrets.SANDBOX_SMOKE_API_KEY_STRIPE }}
+          SANDBOX_STRIPE_PAYMENT_METHOD_ID: ${{ secrets.SANDBOX_STRIPE_PAYMENT_METHOD_ID }}
+        run: |
+          missing=0
+          for v in SANDBOX_DEPLOY_HOOK_URL SANDBOX_DATABASE_URL SANDBOX_REDIS_URL SANDBOX_INTERNAL_API_SECRET SANDBOX_APP_ENCRYPTION_KEY SANDBOX_BASE_URL; do
+            if [ -z "${!v}" ]; then
+              echo "Missing required sandbox config: $v"
+              missing=1
+            fi
+          done
+          if [ "$missing" -eq 1 ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "stripe_smoke_enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          if [ -n "$SANDBOX_SMOKE_API_KEY_STRIPE" ] && [ -n "$SANDBOX_STRIPE_PAYMENT_METHOD_ID" ]; then
+            echo "stripe_smoke_enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "stripe_smoke_enabled=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.gate.outputs.enabled == 'true'
       - uses: actions/setup-node@v4
+        if: steps.gate.outputs.enabled == 'true'
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: apps/psp-api/package-lock.json
       - name: Install dependencies
+        if: steps.gate.outputs.enabled == 'true'
         run: npm ci
       - name: Build Docker image (sandbox validation only)
+        if: steps.gate.outputs.enabled == 'true'
         run: docker build -t psp-api:sandbox .
       - name: Prisma generate
+        if: steps.gate.outputs.enabled == 'true'
         run: npx prisma generate
       - name: Prisma migrate deploy
+        if: steps.gate.outputs.enabled == 'true'
         run: npx prisma migrate deploy
       - name: Trigger sandbox deploy hook
+        if: steps.gate.outputs.enabled == 'true'
         env:
           SANDBOX_DEPLOY_HOOK_URL: ${{ secrets.SANDBOX_DEPLOY_HOOK_URL }}
         run: |
@@ -127,6 +168,7 @@ jobs:
           fi
           curl -fsSL --connect-timeout 5 --max-time 30 --retry 3 --retry-delay 2 -X POST "$SANDBOX_DEPLOY_HOOK_URL"
       - name: Wait for sandbox readiness (`status=ok` + db/redis ok)
+        if: steps.gate.outputs.enabled == 'true'
         run: |
           if [ -z "$SMOKE_BASE_URL" ]; then
             echo "Missing SANDBOX_BASE_URL environment variable"
@@ -142,6 +184,7 @@ jobs:
           echo "Sandbox readiness check timed out"
           exit 1
       - name: Wait for ops metrics readiness gate
+        if: steps.gate.outputs.enabled == 'true'
         run: |
           for i in {1..18}; do
             node scripts/ci/check-ops-metrics.mjs && exit 0
@@ -150,11 +193,10 @@ jobs:
           echo "Ops metrics readiness check timed out"
           exit 1
       - name: Run smoke tests against sandbox
+        if: steps.gate.outputs.enabled == 'true'
         run: npm run test:smoke:sandbox
       - name: Run Stripe smoke tests against sandbox (optional)
-        if: >-
-          secrets.SANDBOX_SMOKE_API_KEY_STRIPE != '' &&
-          secrets.SANDBOX_STRIPE_PAYMENT_METHOD_ID != ''
+        if: steps.gate.outputs.enabled == 'true' && steps.gate.outputs.stripe_smoke_enabled == 'true'
         env:
           SMOKE_STRIPE_ENABLED: "true"
           SMOKE_API_KEY: ${{ secrets.SANDBOX_SMOKE_API_KEY_STRIPE }}

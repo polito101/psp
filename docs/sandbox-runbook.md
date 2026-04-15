@@ -9,9 +9,22 @@
    - `Prisma migrate deploy` (antes de deploy hook, con migraciones backward-compatible).
    - Trigger de deploy (hook).
    - Readiness gate: `/health` con `status=ok`, `checks.db=ok`, `checks.redis=ok`.
-   - Readiness gate operativo: `/api/v2/payments/ops/metrics` (webhooks backlog, circuit breakers, error rate por provider).
+   - Readiness gate operativo: `/api/v2/payments/ops/metrics` con umbrales CI calibrados:
+     - `READINESS_MAX_WEBHOOK_PENDING=40`
+     - `READINESS_MAX_WEBHOOK_PROCESSING=20`
+     - `READINESS_MAX_WEBHOOK_FAILED=10`
+     - `READINESS_MAX_WEBHOOK_OLDEST_PENDING_MS=180000`
+     - `READINESS_MAX_ATTEMPT_PERSIST_FAILED=3`
+     - `READINESS_MIN_SAMPLES_FOR_FAIL_RATE=20`
+     - `READINESS_MAX_PROVIDER_FAIL_RATE=0.35`
    - `test:smoke:sandbox`.
    - `test:smoke:stripe` (opcional, cuando existan secretos Stripe de smoke).
+
+### 1.1 Política de señal en CI
+
+- `test:integration:critical` es bloqueante.
+- `test:ci:ops-metrics` (hardening del gate interno) es bloqueante dentro de `api-ci`.
+- Si alguno falla, no avanzar a deploy de `sandbox`.
 
 ## 2. Rollback
 

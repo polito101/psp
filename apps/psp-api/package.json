@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "postinstall": "prisma generate",
     "build": "nest build",
     "start": "nest start",
     "start:dev": "nest start --watch",
@@ -15,6 +14,7 @@
     "test:smoke:sandbox": "jest --config jest.smoke.config.js --runInBand",
     "test:smoke:stripe": "jest --config jest.smoke.config.js --runInBand test/smoke/stripe.smoke.spec.ts",
     "test:smoke:ops": "jest --config jest.smoke.config.js --runInBand test/smoke/orchestrator.integration.spec.ts",
+    "test:ci:ops-metrics": "jest --config jest.smoke.config.js --runInBand test/smoke/check-ops-metrics-ci.spec.ts",
     "test:watch": "jest --watch",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev && prisma generate",

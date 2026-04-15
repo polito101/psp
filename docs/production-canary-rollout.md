@@ -11,6 +11,18 @@ Activar `payments-v2` en producción de forma gradual y reversible, con observab
 - Secrets de Stripe productivos validados (`STRIPE_SECRET_KEY`) y `STRIPE_API_BASE_URL` en valor seguro por defecto.
 - Runbook de incidentes actualizado y ownership on-call definido.
 
+## Plantilla operativa previa al canary (rellenar antes de activar)
+
+- **Merchants canary iniciales (1-2):** `<merchantId1>, <merchantId2>`
+- **Ventana de observación fase 1:** `<inicio UTC> -> <fin UTC>`
+- **SLO de promoción acordado:**
+  - `health`: `status=ok`, `db=ok`, `redis=ok` sostenido.
+  - `circuitBreakers`: sin `open` sostenido.
+  - `webhooks`: `pending <= 40`, `processing <= 20`, `failed <= 10`, `oldestPendingAgeMs <= 180000`.
+  - `payments`: con `total >= 20`, `failRate <= 0.35` por provider/operación.
+- **Dueño técnico on-call:** `<nombre>`
+- **Aprobador go/no-go:** `<nombre>`
+
 ## Fases de activación
 
 1. **Canary cerrado (1-2 merchants)**
@@ -65,3 +77,20 @@ Si Stripe degrada o se abre circuit breaker de forma sostenida:
 - Ventana temporal observada.
 - Snapshot de métricas y decisión (go/no-go).
 - Responsable técnico que aprobó.
+
+### Formato mínimo de evidencia (copiar/pegar por fase)
+
+```md
+## Fase <cerrado|ampliado|general> - <fecha>
+
+- Config aplicada: `<commit/config>`
+- Merchants habilitados: `<lista>`
+- Ventana observada: `<inicio UTC> -> <fin UTC>`
+- Snapshot health: `<ok|no>`
+- Snapshot ops metrics:
+  - circuitBreakers abiertos: `<ninguno|detalle>`
+  - webhooks pending/processing/failed/oldestMs: `<valores>`
+  - failRate por provider/operación (si total>=20): `<valores>`
+- Decisión: `<GO|NO-GO>`
+- Responsable: `<nombre>`
+```

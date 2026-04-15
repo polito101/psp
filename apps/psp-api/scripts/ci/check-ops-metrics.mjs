@@ -10,6 +10,7 @@ if (!internalSecret) {
   fail('Missing INTERNAL_API_SECRET');
 }
 
+const metricsUrl = buildValidatedMetricsUrl(baseUrl);
 const maxPending = readPositiveInt('READINESS_MAX_WEBHOOK_PENDING', 200);
 const maxProcessing = readPositiveInt('READINESS_MAX_WEBHOOK_PROCESSING', 100);
 const maxFailed = readPositiveInt('READINESS_MAX_WEBHOOK_FAILED', 100);
@@ -29,8 +30,9 @@ const timeout = setTimeout(() => controller.abort(), 5000);
 
 let response;
 try {
-  response = await fetch(`${baseUrl}/api/v2/payments/ops/metrics`, {
+  response = await fetch(metricsUrl, {
     method: 'GET',
+    redirect: 'manual',
     headers: {
       'X-Internal-Secret': internalSecret,
     },
@@ -41,6 +43,13 @@ try {
   fail(`Ops metrics request failed: ${message}`);
 } finally {
   clearTimeout(timeout);
+}
+
+if (response.status >= 300 && response.status < 400) {
+  const location = response.headers.get('location') ?? '<missing>';
+  fail(
+    `Ops metrics endpoint returned redirect (${response.status}) to "${location}". Redirects are not allowed for readiness checks with internal secrets.`,
+  );
 }
 
 if (!response.ok) {
@@ -162,6 +171,30 @@ function readNumber(value, label) {
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function buildValidatedMetricsUrl(rawBaseUrl) {
+  let parsedBaseUrl;
+  try {
+    parsedBaseUrl = new URL(rawBaseUrl);
+  } catch {
+    fail(
+      'SMOKE_BASE_URL is invalid. Expected an absolute URL (e.g. https://example.com or http://localhost:3000).',
+    );
+  }
+
+  const isLocalhostException =
+    parsedBaseUrl.hostname === 'localhost' ||
+    parsedBaseUrl.hostname === '127.0.0.1' ||
+    parsedBaseUrl.hostname === '::1';
+
+  if (parsedBaseUrl.protocol !== 'https:' && !(parsedBaseUrl.protocol === 'http:' && isLocalhostException)) {
+    fail(
+      `Refusing SMOKE_BASE_URL with protocol "${parsedBaseUrl.protocol}". Use https, or http only for localhost/127.0.0.1.`,
+    );
+  }
+
+  return new URL('/api/v2/payments/ops/metrics', parsedBaseUrl.origin).toString();
 }
 
 function fail(message) {

@@ -23,7 +23,7 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 | `ledger` | Si | Si | Si | Cubierto | Unit de servicio + integration/smoke de `/api/v1/balance`. |
 | `health` | Si | Si | Si | Cubierto | Unit + integration `/health` + smoke readiness. |
 | `webhooks` | Si | Si | Si | Cubierto | Unit worker/outbox + integration retry interno + smoke backlog/métricas. |
-| `internal endpoints` | Si (guards) | Si | Si | Cubierto | `/api/v2/payments/ops/metrics` y guard `X-Internal-Secret`. |
+| `internal endpoints` | Si (guards) | Si | Si | Cubierto | `/api/v2/payments/ops/metrics`, guard `X-Internal-Secret`, hardening del script CI ante redirects/URL insegura y spec dedicada bloqueante en `api-ci`. |
 
 ## Inventario actual de archivos
 
@@ -43,6 +43,7 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 - `test/smoke/sandbox.smoke.spec.ts`
 - `test/smoke/stripe.smoke.spec.ts`
 - `test/smoke/orchestrator.integration.spec.ts`
+- `test/smoke/check-ops-metrics-ci.spec.ts`
 
 ## Comandos de verificacion
 
@@ -52,6 +53,7 @@ Desde `apps/psp-api`:
 - `npm run test`
 - `npm run test:integration`
 - `npm run test:integration:critical`
+- `npm run test:ci:ops-metrics`
 - `npm run test:smoke:sandbox`
 - `npm run test:smoke:stripe`
 
