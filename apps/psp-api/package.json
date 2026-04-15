@@ -18,7 +18,8 @@
     "test:watch": "jest --watch",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev && prisma generate",
-    "prisma:migrate:deploy": "prisma migrate deploy && prisma generate"
+    "prisma:ops:indexes": "prisma db execute --schema prisma/schema.prisma --file prisma/ops/create-indexes-concurrently.sql",
+    "prisma:migrate:deploy": "prisma migrate deploy && npm run prisma:ops:indexes && prisma generate"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.18",

@@ -1,2 +1,7 @@
 -- CreateIndex
-CREATE INDEX "Payment_selected_provider_provider_ref_idx" ON "Payment"("selected_provider", "provider_ref");
+-- NOTE:
+-- We intentionally do NOT create this index here because `prisma migrate deploy` wraps migrations in a
+-- transaction on PostgreSQL, and `CREATE INDEX CONCURRENTLY` cannot run inside a transaction block.
+--
+-- Operational step (post-migrate, non-transactional):
+--   npm -w apps/psp-api run prisma:ops:indexes
