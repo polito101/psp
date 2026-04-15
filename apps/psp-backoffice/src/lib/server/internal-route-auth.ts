@@ -6,12 +6,12 @@ const ADMIN_COOKIE_NAME = "backoffice_admin_token";
 const AUTH_SCHEME = "Bearer";
 
 function secureCompare(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left);
-  const rightBuffer = Buffer.from(right);
-  if (leftBuffer.length !== rightBuffer.length) {
-    return false;
-  }
-  return timingSafeEqual(leftBuffer, rightBuffer);
+  const expectedBuf = Buffer.from(right);
+  const providedBuf = Buffer.from(left);
+  const sameLength = expectedBuf.length === providedBuf.length;
+  const cmpBuf = sameLength ? providedBuf : Buffer.alloc(expectedBuf.length);
+  const isEqual = timingSafeEqual(expectedBuf, cmpBuf);
+  return sameLength && isEqual;
 }
 
 function getAdminSecret(): string {

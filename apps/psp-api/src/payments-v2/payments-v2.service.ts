@@ -618,35 +618,58 @@ export class PaymentsV2Service {
         const first = normalized[0];
         const last = normalized[normalized.length - 1];
 
-        const prevWhere: Prisma.PaymentWhereInput = {
-          AND: [
-            where,
-            {
-              OR: [
-                { createdAt: { gt: first.createdAt } },
-                { createdAt: first.createdAt, id: { gt: first.id } },
-              ],
-            },
-          ],
-        };
-        const nextWhere: Prisma.PaymentWhereInput = {
-          AND: [
-            where,
-            {
-              OR: [
-                { createdAt: { lt: last.createdAt } },
-                { createdAt: last.createdAt, id: { lt: last.id } },
-              ],
-            },
-          ],
-        };
+        // En modo polling (includeTotal=false) evitamos queries extra: inferimos por dirección y cursor.
+        if (!includeTotal) {
+          prevExists = direction === 'prev' ? hasMoreInDirection : Boolean(cursorCreatedAt && cursorId);
+          nextExists = direction === 'next' ? hasMoreInDirection : Boolean(cursorCreatedAt && cursorId);
+        } else if (direction === 'next') {
+          // Ya hacemos `take: pageSize + 1`, así que `hasMoreInDirection` implica next page.
+          nextExists = hasMoreInDirection;
 
-        const [prevRow, nextRow] = await Promise.all([
-          tx.payment.findFirst({ where: prevWhere, select: { id: true } }),
-          tx.payment.findFirst({ where: nextWhere, select: { id: true } }),
-        ]);
-        prevExists = Boolean(prevRow);
-        nextExists = Boolean(nextRow);
+          const prevWhere: Prisma.PaymentWhereInput = {
+            AND: [
+              where,
+              {
+                OR: [
+                  { createdAt: { gt: first.createdAt } },
+                  { createdAt: first.createdAt, id: { gt: first.id } },
+                ],
+              },
+            ],
+          };
+          const prevRow = await tx.payment.findFirst({ where: prevWhere, select: { id: true } });
+          prevExists = Boolean(prevRow);
+        } else {
+          const prevWhere: Prisma.PaymentWhereInput = {
+            AND: [
+              where,
+              {
+                OR: [
+                  { createdAt: { gt: first.createdAt } },
+                  { createdAt: first.createdAt, id: { gt: first.id } },
+                ],
+              },
+            ],
+          };
+          const nextWhere: Prisma.PaymentWhereInput = {
+            AND: [
+              where,
+              {
+                OR: [
+                  { createdAt: { lt: last.createdAt } },
+                  { createdAt: last.createdAt, id: { lt: last.id } },
+                ],
+              },
+            ],
+          };
+
+          const [prevRow, nextRow] = await Promise.all([
+            tx.payment.findFirst({ where: prevWhere, select: { id: true } }),
+            tx.payment.findFirst({ where: nextWhere, select: { id: true } }),
+          ]);
+          prevExists = Boolean(prevRow);
+          nextExists = Boolean(nextRow);
+        }
       }
 
       if (includeTotal && totalCountPromise) {
