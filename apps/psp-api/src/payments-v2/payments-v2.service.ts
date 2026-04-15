@@ -41,6 +41,12 @@ type OperationResult = {
   nextAction: ProviderResult['nextAction'] | null;
 };
 
+type StripeWebhookApplyResult = {
+  handled: boolean;
+  paymentId?: string;
+  reason?: string;
+};
+
 /**
  * Fallo del proveedor en refund: el pago sigue `succeeded`; el servicio lo mapea a `ConflictException` al caller.
  * Permite liberar lock/idempotencia y reintentar.
@@ -457,6 +463,148 @@ export class PaymentsV2Service {
     };
   }
 
+  /**
+   * Aplica cambios de estado desde eventos inbound de Stripe usando CAS por estado para idempotencia.
+   * No duplica ledger aunque Stripe reintente el mismo evento.
+   */
+  async applyStripeWebhookEvent(
+    eventType: string,
+    eventObject: Record<string, unknown>,
+  ): Promise<StripeWebhookApplyResult> {
+    const providerRef = this.extractStripeProviderRef(eventType, eventObject);
+    if (!providerRef) {
+      return { handled: false, reason: 'missing_provider_ref' };
+    }
+
+    const payment = await this.prisma.payment.findFirst({
+      where: { selectedProvider: 'stripe', providerRef },
+      select: {
+        id: true,
+        merchantId: true,
+        status: true,
+        amountMinor: true,
+        currency: true,
+        selectedProvider: true,
+        providerRef: true,
+        statusReason: true,
+        paymentLinkId: true,
+      },
+    });
+    if (!payment) {
+      this.log.warn(
+        JSON.stringify({
+          event: 'payments_v2.stripe_webhook.payment_not_found',
+          eventType,
+          providerRef,
+        }),
+      );
+      return { handled: false, reason: 'payment_not_found' };
+    }
+
+    if (eventType === 'payment_intent.succeeded') {
+      await this.captureSucceeded(payment, 'stripe', {
+        status: PAYMENT_V2_STATUS.SUCCEEDED,
+        providerPaymentId: providerRef,
+      });
+      return { handled: true, paymentId: payment.id };
+    }
+
+    if (eventType === 'payment_intent.canceled') {
+      const terminalStatuses = [
+        PAYMENT_V2_STATUS.SUCCEEDED,
+        PAYMENT_V2_STATUS.REFUNDED,
+        PAYMENT_V2_STATUS.CANCELED,
+      ];
+      await this.prisma.payment.updateMany({
+        where: {
+          id: payment.id,
+          status: { notIn: terminalStatuses },
+        },
+        data: {
+          status: PAYMENT_V2_STATUS.CANCELED,
+          canceledAt: new Date(),
+          selectedProvider: 'stripe',
+          providerRef,
+          statusReason: null,
+          failedAt: null,
+          lastAttemptAt: new Date(),
+        },
+      });
+      return { handled: true, paymentId: payment.id };
+    }
+
+    if (eventType === 'payment_intent.payment_failed') {
+      const reasonCode = this.toStripeWebhookFailureReasonCode(eventObject);
+      if (payment.status === PAYMENT_V2_STATUS.AUTHORIZED) {
+        // Un `payment_failed` no debe bloquear capturas futuras si ya está `requires_capture`.
+        await this.prisma.payment.updateMany({
+          where: { id: payment.id, status: PAYMENT_V2_STATUS.AUTHORIZED },
+          data: {
+            status: PAYMENT_V2_STATUS.AUTHORIZED,
+            statusReason: reasonCode,
+            failedAt: null,
+            selectedProvider: 'stripe',
+            providerRef,
+            lastAttemptAt: new Date(),
+          },
+        });
+        return { handled: true, paymentId: payment.id };
+      }
+
+      await this.prisma.payment.updateMany({
+        where: {
+          id: payment.id,
+          status: {
+            in: [PAYMENT_V2_STATUS.PROCESSING, PAYMENT_V2_STATUS.PENDING, PAYMENT_V2_STATUS.REQUIRES_ACTION],
+          },
+        },
+        data: {
+          status: PAYMENT_V2_STATUS.PENDING,
+          statusReason: reasonCode,
+          failedAt: null,
+          selectedProvider: 'stripe',
+          providerRef,
+          lastAttemptAt: new Date(),
+        },
+      });
+      return { handled: true, paymentId: payment.id };
+    }
+
+    if (eventType === 'charge.refunded') {
+      const refunded = eventObject.refunded === true;
+      if (!refunded) {
+        return { handled: false, paymentId: payment.id, reason: 'charge_not_fully_refunded' };
+      }
+      const amountMinor = this.toStripeRefundAmount(eventObject, payment.amountMinor);
+      if (amountMinor <= 0) {
+        return { handled: false, paymentId: payment.id, reason: 'invalid_refund_amount' };
+      }
+      await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+        const cas = await tx.payment.updateMany({
+          where: { id: payment.id, status: PAYMENT_V2_STATUS.SUCCEEDED },
+          data: {
+            status: PAYMENT_V2_STATUS.REFUNDED,
+            selectedProvider: 'stripe',
+            statusReason: null,
+            failedAt: null,
+            providerRef,
+            lastAttemptAt: new Date(),
+          },
+        });
+        if (cas.count === 0) return;
+        await this.ledger.recordSuccessfulRefund(tx, {
+          merchantId: payment.merchantId,
+          paymentId: payment.id,
+          amountMinor,
+          currency: payment.currency,
+        });
+      });
+      return { handled: true, paymentId: payment.id };
+    }
+
+    return { handled: false, paymentId: payment.id, reason: 'unsupported_event_type' };
+  }
+
   private async executeProviderOperation(
     payment: OperationResult['payment'],
     operation: PaymentOperation,
@@ -797,6 +945,34 @@ export class PaymentsV2Service {
       return value as Record<string, unknown>;
     }
     return null;
+  }
+
+  private extractStripeProviderRef(eventType: string, eventObject: Record<string, unknown>): string | null {
+    if (eventType.startsWith('payment_intent.')) {
+      return this.safeGetString(eventObject.id) ?? null;
+    }
+    if (eventType === 'charge.refunded') {
+      return this.safeGetString(eventObject.payment_intent) ?? null;
+    }
+    return null;
+  }
+
+  private toStripeWebhookFailureReasonCode(eventObject: Record<string, unknown>): PaymentReasonCode {
+    const lastPaymentError = this.safeGetObject(eventObject.last_payment_error);
+    const type = this.safeGetString(lastPaymentError?.type);
+    if (type === 'card_error') return 'provider_declined';
+    if (type === 'invalid_request_error') return 'provider_validation_error';
+    if (type === 'api_connection_error' || type === 'api_error') return 'provider_unavailable';
+    return 'provider_error';
+  }
+
+  private toStripeRefundAmount(eventObject: Record<string, unknown>, fallbackAmountMinor: number): number {
+    const amount = eventObject.amount_refunded;
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
+      return fallbackAmountMinor;
+    }
+    const rounded = Math.floor(amount);
+    return rounded <= fallbackAmountMinor ? rounded : fallbackAmountMinor;
   }
 
   private safeGetString(value: unknown): string | undefined {

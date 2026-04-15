@@ -33,3 +33,4 @@ Este documento fija las decisiones de arquitectura para **reducir el alcance** d
 ## Acción requerida antes de producción
 
 - Contratar **revisión QSA** o consultor PCI para mapear el flujo real (proveedor de adquirente elegido, diagramas de red) y asignar el **SAQ** definitivo y el programa de remediación.
+  

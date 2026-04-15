@@ -23,7 +23,7 @@ export async function createIntegrationApp(): Promise<{
     imports: [AppModule],
   }).compile();
 
-  const app = moduleRef.createNestApplication();
+  const app = moduleRef.createNestApplication({ rawBody: true });
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,

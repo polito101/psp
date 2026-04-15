@@ -6,7 +6,7 @@ import { AppModule } from './app.module';
 import { parseCorsAllowedOrigins } from './config/env.validation';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   app.use(helmet({ contentSecurityPolicy: false }));
   const nodeEnv = process.env.NODE_ENV ?? 'development';
