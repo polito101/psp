@@ -17,7 +17,7 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 
 | Dominio | Unit | Integration local | Smoke | Estado | Notas |
 | --- | --- | --- | --- | --- | --- |
-| `payments-v2` | Si | Si | Si | Cubierto | Flujos create/get/capture/cancel/refund + idempotencia + rechazo de `paymentLink` no activo/expirado + concurrencia/ops en smoke + webhook inbound Stripe (succeeded/failed/canceled/refund) y worker outbound E2E. |
+| `payments-v2` | Si | Si | Si | Cubierto | Flujos create/get/capture/cancel/refund + idempotencia + rechazo de `paymentLink` no activo/expirado + concurrencia/ops en smoke + webhook inbound Stripe (succeeded/payment_failed→no terminal/canceled/refund) y worker outbound E2E. |
 | `merchants` | No | Si | Parcial | Parcial | Integration cubre create+guard y ciclo revoke/rotate via servicio. Falta spec unitario del controller/service. |
 | `payment-links` | No | Si | No | Parcial | Sin endpoint HTTP activo; cobertura via `PaymentLinksService.findForMerchant`. |
 | `ledger` | Si | Si | Si | Cubierto | Unit de servicio + integration/smoke de `/api/v1/balance`. |

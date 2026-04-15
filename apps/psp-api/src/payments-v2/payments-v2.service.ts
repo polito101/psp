@@ -535,17 +535,33 @@ export class PaymentsV2Service {
 
     if (eventType === 'payment_intent.payment_failed') {
       const reasonCode = this.toStripeWebhookFailureReasonCode(eventObject);
+      if (payment.status === PAYMENT_V2_STATUS.AUTHORIZED) {
+        // Un `payment_failed` no debe bloquear capturas futuras si ya está `requires_capture`.
+        await this.prisma.payment.updateMany({
+          where: { id: payment.id, status: PAYMENT_V2_STATUS.AUTHORIZED },
+          data: {
+            status: PAYMENT_V2_STATUS.AUTHORIZED,
+            statusReason: reasonCode,
+            failedAt: null,
+            selectedProvider: 'stripe',
+            providerRef,
+            lastAttemptAt: new Date(),
+          },
+        });
+        return { handled: true, paymentId: payment.id };
+      }
+
       await this.prisma.payment.updateMany({
         where: {
           id: payment.id,
           status: {
-            notIn: [PAYMENT_V2_STATUS.SUCCEEDED, PAYMENT_V2_STATUS.REFUNDED, PAYMENT_V2_STATUS.CANCELED],
+            in: [PAYMENT_V2_STATUS.PROCESSING, PAYMENT_V2_STATUS.PENDING, PAYMENT_V2_STATUS.REQUIRES_ACTION],
           },
         },
         data: {
-          status: PAYMENT_V2_STATUS.FAILED,
+          status: PAYMENT_V2_STATUS.PENDING,
           statusReason: reasonCode,
-          failedAt: new Date(),
+          failedAt: null,
           selectedProvider: 'stripe',
           providerRef,
           lastAttemptAt: new Date(),

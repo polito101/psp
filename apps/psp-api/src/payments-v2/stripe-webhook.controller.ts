@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { SkipThrottle } from '@nestjs/throttler';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { Request } from 'express';
 import { PaymentsV2Service } from './payments-v2.service';
@@ -40,6 +41,7 @@ export class StripeWebhookController {
   }
 
   @Post('webhook')
+  @SkipThrottle()
   @HttpCode(200)
   @ApiOperation({
     summary: 'Inbound Stripe webhook (firma Stripe-Signature)',

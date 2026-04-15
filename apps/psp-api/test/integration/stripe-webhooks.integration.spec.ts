@@ -128,7 +128,7 @@ describe('stripe inbound webhooks integration', () => {
     expect(ledgerLines).toBe(0);
   });
 
-  it('marks payment as failed for payment_intent.payment_failed and keeps reason on replay', async () => {
+  it('payment_intent.payment_failed NO bloquea capturas: mantiene AUTHORIZED y setea reason (idempotente)', async () => {
     const merchant = await createMerchantViaHttp(app);
     const providerRef = `pi_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
     const payment = await prisma.payment.create({
@@ -162,7 +162,7 @@ describe('stripe inbound webhooks integration', () => {
       where: { id: payment.id },
       select: { status: true, statusReason: true },
     });
-    expect(updated.status).toBe('failed');
+    expect(updated.status).toBe('authorized');
     expect(updated.statusReason).toBe('provider_declined');
   });
 
