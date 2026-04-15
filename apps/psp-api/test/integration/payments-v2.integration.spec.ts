@@ -66,6 +66,49 @@ describe('payments-v2 integration', () => {
     expect(conflict.body.message).toContain('Idempotency key');
   });
 
+  it('rejects create intent when payment link is not active', async () => {
+    const merchant = await createMerchantViaHttp(app);
+    const link = await prisma.paymentLink.create({
+      data: {
+        merchantId: merchant.id,
+        slug: `lnk-used-${Date.now()}`,
+        amountMinor: 1999,
+        currency: 'EUR',
+        status: 'used',
+      },
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .send({ amountMinor: 1999, currency: 'EUR', provider: 'mock', paymentLinkId: link.id })
+      .expect(400);
+
+    expect(response.body.message).toContain('Payment link is not active');
+  });
+
+  it('rejects create intent when payment link is expired', async () => {
+    const merchant = await createMerchantViaHttp(app);
+    const link = await prisma.paymentLink.create({
+      data: {
+        merchantId: merchant.id,
+        slug: `lnk-expired-${Date.now()}`,
+        amountMinor: 1999,
+        currency: 'EUR',
+        status: 'active',
+        expiresAt: new Date(Date.now() - 60_000),
+      },
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .send({ amountMinor: 1999, currency: 'EUR', provider: 'mock', paymentLinkId: link.id })
+      .expect(400);
+
+    expect(response.body.message).toContain('Payment link has expired');
+  });
+
   it('runs create -> capture -> refund and persists final status', async () => {
     const merchant = await createMerchantViaHttp(app);
     const created = await request(app.getHttpServer())

@@ -1392,7 +1392,7 @@ export class PaymentsV2Service {
     currency: string,
   ) {
     if (!paymentLinkId) return;
-    const link = await this.links.findForMerchant(merchantId, paymentLinkId);
+    const link = await this.links.findForMerchant(merchantId, paymentLinkId, { requireUsable: true });
     if (link.amountMinor !== amountMinor || link.currency !== currency.toUpperCase()) {
       throw new BadRequestException('Amount/currency must match payment link');
     }

@@ -110,6 +110,7 @@ jobs:
       - name: Gate sandbox deploy (requires env secrets/vars)
         id: gate
         env:
+          IS_FORK: ${{ github.event.repository.fork }}
           SANDBOX_DEPLOY_HOOK_URL: ${{ secrets.SANDBOX_DEPLOY_HOOK_URL }}
           SANDBOX_DATABASE_URL: ${{ secrets.SANDBOX_DATABASE_URL }}
           SANDBOX_REDIS_URL: ${{ secrets.SANDBOX_REDIS_URL }}
@@ -129,7 +130,12 @@ jobs:
           if [ "$missing" -eq 1 ]; then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
             echo "stripe_smoke_enabled=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            if [ "$IS_FORK" = "true" ]; then
+              echo "Fork detected; skipping sandbox deploy without failing."
+              exit 0
+            fi
+            echo "Required sandbox secrets/vars are missing in the main repo; failing."
+            exit 1
           fi
           echo "enabled=true" >> "$GITHUB_OUTPUT"
           if [ -n "$SANDBOX_SMOKE_API_KEY_STRIPE" ] && [ -n "$SANDBOX_STRIPE_PAYMENT_METHOD_ID" ]; then
