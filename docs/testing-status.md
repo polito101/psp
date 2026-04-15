@@ -17,13 +17,15 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 
 | Dominio | Unit | Integration local | Smoke | Estado | Notas |
 | --- | --- | --- | --- | --- | --- |
-| `payments-v2` | Si | Si | Si | Cubierto | Flujos create/get/capture/cancel/refund + idempotencia + rechazo de `paymentLink` no activo/expirado + concurrencia/ops en smoke. |
+| `payments-v2` | Si | Si | Si | Cubierto | Flujos create/get/capture/cancel/refund + idempotencia + rechazo de `paymentLink` no activo/expirado + concurrencia/ops en smoke + webhook inbound Stripe (succeeded/payment_failed→no terminal/canceled/refund) y worker outbound E2E. |
 | `merchants` | No | Si | Parcial | Parcial | Integration cubre create+guard y ciclo revoke/rotate via servicio. Falta spec unitario del controller/service. |
 | `payment-links` | No | Si | No | Parcial | Sin endpoint HTTP activo; cobertura via `PaymentLinksService.findForMerchant`. |
 | `ledger` | Si | Si | Si | Cubierto | Unit de servicio + integration/smoke de `/api/v1/balance`. |
 | `health` | Si | Si | Si | Cubierto | Unit + integration `/health` + smoke readiness. |
 | `webhooks` | Si | Si | Si | Cubierto | Unit worker/outbox + integration retry interno + smoke backlog/métricas. |
 | `internal endpoints` | Si (guards) | Si | Si | Cubierto | `/api/v2/payments/ops/metrics` + `/api/v2/payments/ops/transactions`, guard `X-Internal-Secret`, hardening del script CI ante redirects/URL insegura y spec dedicada bloqueante en `api-ci`. |
+| `webhooks` | Si | Si | Si | Cubierto | Unit worker/outbox + integration retry interno + inbound Stripe firmado (firma/tolerancia/json/payload) + outbound a receptor real con worker + smoke backlog/métricas. |
+| `internal endpoints` | Si (guards) | Si | Si | Cubierto | `/api/v2/payments/ops/metrics`, guard `X-Internal-Secret`, hardening del script CI ante redirects/URL insegura y spec dedicada bloqueante en `api-ci`. |
 
 ## Inventario actual de archivos
 
@@ -34,9 +36,16 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 - `test/integration/payments-v2.integration.spec.ts`
 - `test/integration/ledger.integration.spec.ts`
 - `test/integration/internal-webhooks.integration.spec.ts`
+- `test/integration/stripe-webhooks.integration.spec.ts`
+- `test/integration/stripe-webhooks-outbound.integration.spec.ts`
 - `test/integration/payment-links.integration.spec.ts`
 - `test/integration/helpers/integration-app.ts`
 - `test/integration/jest.integration.setup.ts`
+
+### Unit relevantes (`src`)
+
+- `src/payments-v2/payments-v2.service.spec.ts`
+- `src/payments-v2/stripe-webhook.controller.spec.ts`
 
 ### Smoke (`test/smoke`)
 

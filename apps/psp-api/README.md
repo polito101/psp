@@ -108,6 +108,7 @@ Invoke-RestMethod -Method Get "http://localhost:3000/api/v1/balance" `
 - `POST /api/v2/payments/{id}/cancel`
 - `POST /api/v2/payments/{id}/refund`
 - `GET /api/v2/payments/ops/metrics` (interno, requiere `X-Internal-Secret`; incluye payments/circuit breakers/webhooks)
+- `POST /api/v1/stripe/webhook` (inbound Stripe, valida `Stripe-Signature`)
 
 ## Idempotencia (v2)
 
@@ -132,6 +133,12 @@ Invoke-RestMethod -Method Get "http://localhost:3000/api/v1/balance" `
 - Worker controlable por `WEBHOOK_WORKER_ENABLED` (`false` desactiva procesamiento en esa réplica).
 - Retry operativo:
   - `POST /api/v1/webhooks/deliveries/{id}/retry` (requiere `X-Internal-Secret`)
+- Inbound Stripe:
+  - `POST /api/v1/stripe/webhook` valida `Stripe-Signature` con `STRIPE_WEBHOOK_SECRET`.
+  - Eventos soportados: `payment_intent.succeeded`, `payment_intent.payment_failed`, `payment_intent.canceled`, `charge.refunded`.
+  - Prueba local con Stripe CLI:
+    - `stripe listen --forward-to http://localhost:3000/api/v1/stripe/webhook`
+    - usar el `whsec_...` mostrado por CLI en `STRIPE_WEBHOOK_SECRET`.
 
 ## Troubleshooting rapido
 
@@ -188,6 +195,8 @@ Ver `.env.example`. Claves relevantes:
 - `PAYMENTS_PROVIDER_MAX_RETRIES`
 - `PAYMENTS_PROVIDER_CB_FAILURES`
 - `PAYMENTS_PROVIDER_CB_COOLDOWN_MS`
+- `STRIPE_WEBHOOK_SECRET`
+- `STRIPE_WEBHOOK_TOLERANCE_SEC`
 - `WEBHOOK_WORKER_ENABLED`
 
 Matriz operativa sandbox: `docs/sandbox-env.md`.

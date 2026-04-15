@@ -70,6 +70,7 @@ model Payment {
   @@unique([merchantId, idempotencyKey])
   @@index([merchantId, status])
   @@index([merchantId, selectedProvider])
+  @@index([selectedProvider, providerRef])
 }
 
 // `merchantId` debe coincidir con `Payment.merchantId` del mismo `paymentId`; el servicio valida ownership antes del lock y purga filas incoherentes en `claimPaymentOperation`.
