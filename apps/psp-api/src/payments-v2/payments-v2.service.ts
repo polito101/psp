@@ -15,6 +15,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { CreatePaymentIntentDto } from './dto/create-payment-intent.dto';
+import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
 import {
   PAYMENT_V2_STATUS,
   PaymentOperation,
@@ -39,6 +40,36 @@ type OperationResult = {
     paymentLinkId: string | null;
   };
   nextAction: ProviderResult['nextAction'] | null;
+};
+
+type OpsTransactionsItem = {
+  id: string;
+  merchantId: string;
+  merchantName: string;
+  status: string;
+  statusReason: string | null;
+  amountMinor: number;
+  currency: string;
+  selectedProvider: string | null;
+  providerRef: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  lastAttemptAt: Date | null;
+  succeededAt: Date | null;
+  failedAt: Date | null;
+  canceledAt: Date | null;
+  routingReasonCode: string | null;
+  lastAttempt: {
+    id: string;
+    operation: string;
+    provider: string;
+    attemptNo: number;
+    status: string;
+    errorCode: string | null;
+    errorMessage: string | null;
+    latencyMs: number | null;
+    createdAt: Date;
+  } | null;
 };
 
 /**
@@ -454,6 +485,111 @@ export class PaymentsV2Service {
       payments: this.observability.snapshot(),
       circuitBreakers: this.getCircuitBreakerSnapshot(),
       webhooks: await this.webhooks.getQueueSnapshot(),
+    };
+  }
+
+  /**
+   * Lista transacciones para monitoreo interno con filtros operativos y último intento de provider.
+   */
+  async listOpsTransactions(query: ListOpsTransactionsDto) {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 25;
+    const skip = (page - 1) * pageSize;
+    const createdAt: Prisma.DateTimeFilter = {};
+    if (query.createdFrom) {
+      createdAt.gte = new Date(query.createdFrom);
+    }
+    if (query.createdTo) {
+      createdAt.lte = new Date(query.createdTo);
+    }
+
+    const where: Prisma.PaymentWhereInput = {
+      ...(query.merchantId ? { merchantId: query.merchantId } : {}),
+      ...(query.paymentId ? { id: { contains: query.paymentId, mode: 'insensitive' } } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.provider ? { selectedProvider: query.provider } : {}),
+      ...(Object.keys(createdAt).length > 0 ? { createdAt } : {}),
+    };
+
+    const [total, rows] = await this.prisma.$transaction([
+      this.prisma.payment.count({ where }),
+      this.prisma.payment.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize,
+        select: {
+          id: true,
+          merchantId: true,
+          status: true,
+          statusReason: true,
+          amountMinor: true,
+          currency: true,
+          selectedProvider: true,
+          providerRef: true,
+          createdAt: true,
+          updatedAt: true,
+          lastAttemptAt: true,
+          succeededAt: true,
+          failedAt: true,
+          canceledAt: true,
+          merchant: {
+            select: {
+              name: true,
+            },
+          },
+          attempts: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: {
+              id: true,
+              operation: true,
+              provider: true,
+              attemptNo: true,
+              status: true,
+              errorCode: true,
+              errorMessage: true,
+              latencyMs: true,
+              createdAt: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const items: OpsTransactionsItem[] = rows.map((row) => {
+      const lastAttempt = row.attempts[0] ?? null;
+      return {
+        id: row.id,
+        merchantId: row.merchantId,
+        merchantName: row.merchant.name,
+        status: row.status,
+        statusReason: row.statusReason,
+        amountMinor: row.amountMinor,
+        currency: row.currency,
+        selectedProvider: row.selectedProvider,
+        providerRef: row.providerRef,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        lastAttemptAt: row.lastAttemptAt,
+        succeededAt: row.succeededAt,
+        failedAt: row.failedAt,
+        canceledAt: row.canceledAt,
+        routingReasonCode: row.statusReason ?? lastAttempt?.errorCode ?? null,
+        lastAttempt,
+      };
+    });
+
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    return {
+      items,
+      page: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+        hasNextPage: page < totalPages,
+      },
     };
   }
 

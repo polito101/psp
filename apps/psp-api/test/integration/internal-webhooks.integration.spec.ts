@@ -37,6 +37,36 @@ describe('internal/webhooks integration', () => {
     expect(response.body.circuitBreakers).toBeDefined();
   });
 
+  it('returns internal transaction monitor list with filters and last attempt', async () => {
+    const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
+    const merchant = await createMerchantViaHttp(app);
+
+    await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .send({ amountMinor: 1999, currency: 'EUR', provider: 'mock' })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .send({ amountMinor: 2500, currency: 'EUR', provider: 'mock' })
+      .expect(201);
+
+    const response = await request(app.getHttpServer())
+      .get('/api/v2/payments/ops/transactions')
+      .set('X-Internal-Secret', internalSecret)
+      .query({ merchantId: merchant.id, page: 1, pageSize: 5, provider: 'mock' })
+      .expect(200);
+
+    expect(Array.isArray(response.body.items)).toBe(true);
+    expect(response.body.items.length).toBeGreaterThanOrEqual(2);
+    expect(response.body.page.total).toBeGreaterThanOrEqual(2);
+    expect(response.body.items[0].merchantId).toBe(merchant.id);
+    expect(response.body.items[0].lastAttempt).toBeDefined();
+    expect(response.body.items[0].selectedProvider).toBe('mock');
+  });
+
   it('requeues failed webhook deliveries from internal endpoint', async () => {
     const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
     const merchant = await createMerchantViaHttp(app);

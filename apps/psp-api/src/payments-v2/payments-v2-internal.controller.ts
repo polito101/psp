@@ -1,6 +1,7 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { InternalSecretGuard } from '../common/guards/internal-secret.guard';
+import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
 import { PaymentsV2Service } from './payments-v2.service';
 
 @ApiTags('payments-v2')
@@ -16,5 +17,13 @@ export class PaymentsV2InternalController {
   })
   async metrics() {
     return this.payments.getMetricsSnapshot();
+  }
+
+  @Get('ops/transactions')
+  @ApiOperation({
+    summary: 'Listado operativo interno de transacciones con último intento de proveedor',
+  })
+  async listTransactions(@Query() query: ListOpsTransactionsDto) {
+    return this.payments.listOpsTransactions(query);
   }
 }
