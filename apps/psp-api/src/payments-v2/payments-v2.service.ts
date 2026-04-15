@@ -449,8 +449,12 @@ export class PaymentsV2Service {
     }
   }
 
-  getMetricsSnapshot() {
-    return this.observability.snapshot();
+  async getMetricsSnapshot() {
+    return {
+      payments: this.observability.snapshot(),
+      circuitBreakers: this.getCircuitBreakerSnapshot(),
+      webhooks: await this.webhooks.getQueueSnapshot(),
+    };
   }
 
   private async executeProviderOperation(
@@ -1388,7 +1392,7 @@ export class PaymentsV2Service {
     currency: string,
   ) {
     if (!paymentLinkId) return;
-    const link = await this.links.findForMerchant(merchantId, paymentLinkId);
+    const link = await this.links.findForMerchant(merchantId, paymentLinkId, { requireUsable: true });
     if (link.amountMinor !== amountMinor || link.currency !== currency.toUpperCase()) {
       throw new BadRequestException('Amount/currency must match payment link');
     }
@@ -1475,6 +1479,23 @@ export class PaymentsV2Service {
 
   private resetProviderFailure(providerName: PaymentProviderName) {
     this.cbState.set(providerName, { failures: 0, openedUntil: 0 });
+  }
+
+  private getCircuitBreakerSnapshot(): Record<PaymentProviderName, { failures: number; open: boolean; openedUntil: number }> {
+    const now = Date.now();
+    const providers: PaymentProviderName[] = ['stripe', 'mock'];
+    return providers.reduce(
+      (acc, provider) => {
+        const state = this.cbState.get(provider) ?? { failures: 0, openedUntil: 0 };
+        acc[provider] = {
+          failures: state.failures,
+          open: state.openedUntil > now,
+          openedUntil: state.openedUntil,
+        };
+        return acc;
+      },
+      {} as Record<PaymentProviderName, { failures: number; open: boolean; openedUntil: number }>,
+    );
   }
 
   private async markPaymentFailed(

@@ -16,11 +16,11 @@ describe('HttpLoggingInterceptor path helpers', () => {
     it('parses comma-separated prefixes and normalizes leading slash', () => {
       expect(parseSkipPrefixes('')).toEqual([]);
       expect(parseSkipPrefixes('  ')).toEqual([]);
-      expect(parseSkipPrefixes('/api/v1/pay,/api/v1/webhooks')).toEqual([
-        '/api/v1/pay',
+      expect(parseSkipPrefixes('/api/v2/payments,/api/v1/webhooks')).toEqual([
+        '/api/v2/payments',
         '/api/v1/webhooks',
       ]);
-      expect(parseSkipPrefixes('api/v1/pay')).toEqual(['/api/v1/pay']);
+      expect(parseSkipPrefixes('api/v2/payments')).toEqual(['/api/v2/payments']);
     });
 
     it('strips trailing slashes except for root', () => {
@@ -46,20 +46,14 @@ describe('HttpLoggingInterceptor path helpers', () => {
     });
 
     it('ignores root prefix / to avoid accidental skip-all', () => {
-      expect(pathMatchesSkipList('/api/v1/pay', ['/'])).toBe(false);
+      expect(pathMatchesSkipList('/api/v2/payments', ['/'])).toBe(false);
       expect(pathMatchesSkipList('/', ['/'])).toBe(false);
     });
   });
 
   describe('redactSensitivePath', () => {
-    it('redacts paths under /api/v1/pay/*', () => {
-      expect(redactSensitivePath('/api/v1/pay/secret-slug')).toBe('/api/v1/pay/[redacted]');
-      expect(redactSensitivePath('/api/v1/pay/secret/sub')).toBe('/api/v1/pay/[redacted]');
-    });
-
     it('redacts other sensitive API subtrees when no template is available', () => {
-      expect(redactSensitivePath('/api/v1/payments/pay_1')).toBe('/api/v1/payments/[redacted]');
-      expect(redactSensitivePath('/api/v1/payment-links/pl_1')).toBe('/api/v1/payment-links/[redacted]');
+      expect(redactSensitivePath('/api/v2/payments/pay_1')).toBe('/api/v2/payments/[redacted]');
       expect(redactSensitivePath('/api/v1/merchants/m_1/rotate-key')).toBe(
         '/api/v1/merchants/[redacted]',
       );
@@ -67,13 +61,13 @@ describe('HttpLoggingInterceptor path helpers', () => {
 
     it('does not redact unrelated paths', () => {
       expect(redactSensitivePath('/api/v1/balance')).toBe('/api/v1/balance');
-      expect(redactSensitivePath('/api/v1/pay')).toBe('/api/v1/pay');
+      expect(redactSensitivePath('/api/v1/health')).toBe('/api/v1/health');
     });
   });
 
   describe('tryExpressRouteTemplate', () => {
     it('returns undefined when route is not set', () => {
-      expect(tryExpressRouteTemplate({ originalUrl: '/api/v1/pay/x' })).toBeUndefined();
+      expect(tryExpressRouteTemplate({ originalUrl: '/api/v2/payments/x' })).toBeUndefined();
     });
   });
 
@@ -81,28 +75,28 @@ describe('HttpLoggingInterceptor path helpers', () => {
     it('prefers Express route template when route.path is set', () => {
       expect(
         resolveLoggablePath({
-          originalUrl: '/api/v1/pay/real-slug',
-          baseUrl: '/api/v1/pay',
-          route: { path: '/:slug' },
+          originalUrl: '/api/v2/payments/pay_1/capture',
+          baseUrl: '/api/v2/payments',
+          route: { path: '/:id/capture' },
         }),
-      ).toBe('/api/v1/pay/:slug');
+      ).toBe('/api/v2/payments/:id/capture');
     });
 
     it('uses Nest template when Express template is absent', () => {
       expect(
         resolveLoggablePath(
-          { originalUrl: '/api/v1/payments/pay_secret' },
-          '/api/v1/payments/:id',
+          { originalUrl: '/api/v2/payments/pay_secret' },
+          '/api/v2/payments/:id',
         ),
-      ).toBe('/api/v1/payments/:id');
+      ).toBe('/api/v2/payments/:id');
     });
 
     it('falls back to redaction when no template is available', () => {
       expect(
         resolveLoggablePath({
-          originalUrl: '/api/v1/pay/token123',
+          originalUrl: '/api/v2/payments/token123',
         }),
-      ).toBe('/api/v1/pay/[redacted]');
+      ).toBe('/api/v2/payments/[redacted]');
     });
   });
 
@@ -139,9 +133,9 @@ describe('HttpLoggingInterceptor path helpers', () => {
   });
 
   describe('mergeSkipPrefixes', () => {
-    it('adds default /api/v1/pay in sandbox and production', () => {
-      expect(mergeSkipPrefixes([], 'sandbox')).toEqual(['/api/v1/pay']);
-      expect(mergeSkipPrefixes([], 'production')).toEqual(['/api/v1/pay']);
+    it('adds default /api/v2/payments in sandbox and production', () => {
+      expect(mergeSkipPrefixes([], 'sandbox')).toEqual(['/api/v2/payments']);
+      expect(mergeSkipPrefixes([], 'production')).toEqual(['/api/v2/payments']);
     });
 
     it('does not add defaults in development', () => {
@@ -150,10 +144,10 @@ describe('HttpLoggingInterceptor path helpers', () => {
 
     it('merges env prefixes with defaults and dedupes', () => {
       expect(mergeSkipPrefixes(['/api/v1/webhooks'], 'production')).toEqual([
-        '/api/v1/pay',
+        '/api/v2/payments',
         '/api/v1/webhooks',
       ]);
-      expect(mergeSkipPrefixes(['/api/v1/pay'], 'production')).toEqual(['/api/v1/pay']);
+      expect(mergeSkipPrefixes(['/api/v2/payments'], 'production')).toEqual(['/api/v2/payments']);
     });
   });
 });

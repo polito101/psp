@@ -18,6 +18,7 @@ En la raíz del proyecto existe un archivo llamado `PROJECT_CONTEXT.md`. Este do
    - Se instale una nueva dependencia clave.
    - Se cree una nueva entidad, modelo de base de datos o ruta principal.
    - Tomemos una nueva decisión de diseño (ej. "a partir de ahora usaremos Server Actions en lugar de API routes").
+   - Se añadan/modifiquen/eliminen tests o configuración de tests: actualizar también `docs/testing-status.md` en el mismo cambio.
 3. **Guardia de Patrones:** Si el usuario (yo) te pide escribir código que rompe las reglas establecidas en el contexto, adviértelo brevemente antes de escribir el código.
 
 # Estilo de Respuesta (Vibe)

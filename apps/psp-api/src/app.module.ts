@@ -5,10 +5,8 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { PrismaModule } from './prisma/prisma.module';
 import { MerchantsModule } from './merchants/merchants.module';
 import { PaymentLinksModule } from './payment-links/payment-links.module';
-import { PaymentsModule } from './payments/payments.module';
 import { LedgerModule } from './ledger/ledger.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
-import { CheckoutModule } from './checkout/checkout.module';
 import { RedisModule } from './redis/redis.module';
 import { HealthModule } from './health/health.module';
 import { validateEnv } from './config/env.validation';
@@ -28,10 +26,8 @@ import { PaymentsV2Module } from './payments-v2/payments-v2.module';
     RedisModule,
     MerchantsModule,
     PaymentLinksModule,
-    PaymentsModule,
     LedgerModule,
     WebhooksModule,
-    CheckoutModule,
     HealthModule,
     PaymentsV2Module,
   ],

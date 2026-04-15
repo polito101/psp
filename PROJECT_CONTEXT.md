@@ -1,18 +1,18 @@
 # PROJECT_CONTEXT
 
-Ultima actualizacion: 2026-04-14
+Ultima actualizacion: 2026-04-15
 
 ## 1) Resumen del proyecto
 
 Repositorio backend-first de un PSP (pasarela de pagos), con API principal en `apps/psp-api`.
 
-La API esta construida con NestJS y expone REST versionado por URI bajo `/api/v1`, con foco en flujo sandbox fiat:
+La API esta construida con NestJS y expone REST versionado por URI, con foco operativo en `/api/v2/payments` (orquestador):
 - onboarding de merchants
 - creacion de payment links
-- creacion/captura de pagos con idempotencia
+- create/capture/cancel/refund de pagos con idempotencia por operacion
 - ledger/balance
 - webhooks asincronos
-- checkout y health checks
+- health checks
 
 Ademas del servicio API, el repo incluye:
 - infraestructura en `infra/terraform`
@@ -30,7 +30,7 @@ Ademas del servicio API, el repo incluye:
 - Seguridad y hardening: `helmet`, CORS, throttling global
 - Validacion de entrada: `class-validator` + `class-transformer`
 - Documentacion API: Swagger (`@nestjs/swagger`)
-- Testing: Jest + ts-jest
+- Testing: Jest + ts-jest + Supertest (integration-local)
 - CI/CD: GitHub Actions (`.github/workflows/ci.yml`) + deploy sandbox por hook
 
 ## 3) Estructura principal de carpetas
@@ -48,6 +48,7 @@ C:/AA psp/
 │       │   └── migrations/
 │       ├── scripts/
 │       ├── test/
+│       │   ├── integration/
 │       │   └── smoke/
 │       ├── src/
 │       │   ├── main.ts
@@ -60,10 +61,9 @@ C:/AA psp/
 │       │   ├── redis/
 │       │   ├── merchants/
 │       │   ├── payment-links/
-│       │   ├── payments/
 │       │   ├── ledger/
 │       │   ├── webhooks/
-│       │   ├── checkout/
+│       │   ├── payments-v2/
 │       │   ├── health/
 │       │   ├── crypto/
 │       │   └── generated/   (salida de prisma generate)
@@ -84,7 +84,7 @@ C:/AA psp/
 └── prisma_migration_v7
 ```
 
-En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc` y **`agent-behavior.mdc`**: guías de comportamiento del agente (aclarar supuestos ante ambigüedad, simplicidad, cambios mínimos, criterios de éxito verificables).
+En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc`, `testing-status.mdc` y **`agent-behavior.mdc`**: guías de comportamiento del agente (aclarar supuestos ante ambigüedad, simplicidad, cambios mínimos, criterios de éxito verificables) y mantenimiento vivo de cobertura de tests.
 
 ## 4) Patrones de diseno y convenciones detectadas
 
@@ -102,7 +102,8 @@ En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc` y **
 - Contrato providers v2: `ProviderResult` es discriminado; si `status !== failed`, `providerPaymentId` es obligatorio. Guardrail en orquestador: si un provider retorna “éxito” sin id y el pago no tenía `providerRef`, se loggea `payments_v2.provider_success_missing_id` y se marca el pago como `failed` con `statusReason=provider_error` (nunca se fabrica `providerRef`).
 - Hardening Stripe: `STRIPE_API_BASE_URL` se valida fail-fast y se normaliza a `https://api.stripe.com/v1` para evitar enviar el Bearer token a hosts arbitrarios por mala configuracion.
 - Stripe create v2: sin `stripePaymentMethodId` el PI se crea con `automatic_payment_methods[enabled]=true` (sin `confirm`); la respuesta expone `nextAction` con `client_secret` (`confirm_with_stripe_js`) mientras el PI está `pending`. Con `stripePaymentMethodId` se envía `confirm=true` (y `stripeReturnUrl` opcional para redirects). `capture` solo admite pago en estado `authorized` (Stripe `requires_capture`). Repetición idempotente de `create` con Stripe en `pending`/`requires_action` hace GET al PI para devolver `client_secret`/`next_action` actualizados.
-- El endpoint de observabilidad `GET /api/v2/payments/ops/metrics` es interno y se protege con `InternalSecretGuard` (`X-Internal-Secret`) para evitar exponer agregados globales por merchant API key.
+- El endpoint de observabilidad `GET /api/v2/payments/ops/metrics` es interno y se protege con `InternalSecretGuard` (`X-Internal-Secret`) para evitar exponer agregados globales por merchant API key; el snapshot combina métricas v2 por proveedor, estado de circuit breakers en memoria y backlog de la cola de webhooks (`pending/processing/failed` + antigüedad de pending más vieja).
+- El script CI de readiness operativo `scripts/ci/check-ops-metrics.mjs` endurece seguridad: valida `SMOKE_BASE_URL` (https, o http solo localhost), usa `origin` al construir URL final y rechaza redirects para no reenviar `X-Internal-Secret` fuera del host esperado.
 - Nuevo modelo `PaymentAttempt` para trazabilidad por operacion/proveedor (`create/capture/cancel/refund`) con status, error taxonomy, latencia y payload de respuesta.
 - `PaymentAttempt.attemptNo` se asigna de forma atomica con `MAX(attemptNo)+1` dentro de transaccion serializable y retry para `P2002`/`P2034`, manteniendo `@@unique([paymentId, operation, attemptNo])`.
 - Concurrencia en operaciones v2: `PaymentOperation` (lock por `paymentId+operation`) evita ejecutar dos veces `capture/refund/cancel` bajo carrera; la fila se crea/actualiza a `processing` y se marca `done` solo cuando `capture`/`cancel`/`refund` terminan **sin excepción** tras adquirir el lock. Errores inesperados (o fallo de proveedor en refund) eliminan la fila y, si hubo `Idempotency-Key` de operación, la clave Redis `payv2op:*`, para reintento inmediato — no se usa `finally` que marque `done` al propagar errores. `capture` y `cancel` validan ownership con `findMerchantPayment` **antes** de reclamar el lock (evita filas `done`/`processing` con `merchantId` erroneo que bloqueaban al dueño). En `claimPaymentOperation`, si el lock existente tiene `merchantId` distinto al solicitante, se elimina y se reintenta (log `payments_v2.operation_lock_merchant_mismatch`); en takeover por lock stale se reescribe `merchantId`. Con lock en `processing`, si llega otra peticion con `payloadHash` distinto (p. ej. otro monto en `refund`), se responde `409 Conflict` con metadata `{ message, paymentId, operation }` en lugar de `proceed: false` silencioso. Si el hash coincide y no es stale, se devuelve `proceed: false` (espera idempotente); si es stale, takeover con CAS (`updateMany` con `status: processing`, mismo `payloadHash`, `processingAt` anterior al umbral stale); solo una peticion obtiene `count===1`; si `count===0` se reintenta el bucle (otra peticion renovo el lock).
@@ -114,18 +115,27 @@ En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc` y **
 - Swagger condicionado por `ENABLE_SWAGGER`; CORS por `CORS_ALLOWED_ORIGINS` (obligatorio en `production`; en dev/sandbox sin lista se usa `origin: true` como compatibilidad). Cada entrada se valida como URL http(s) sin path/query/hash y se normaliza a `URL.origin` (p. ej. barra final eliminada).
 - Logs HTTP en JSON por petición (`HttpLoggingInterceptor` como `APP_INTERCEPTOR`): excluye `GET /health`; el campo `path` es plantilla (prioridad: Express `baseUrl`+`route.path`, si no metadata Nest `@Controller`/handler, si no redacción por prefijos sensibles bajo `/api/v1/pay/`, `/api/v1/payments/`, etc.); modo por env (`HTTP_LOG_MODE`: default `errors` en `production`, `all` en el resto; `sample`/`off`; `HTTP_LOG_SKIP_PATH_PREFIXES` con prefijos normalizados sin barra final) + prefijo por defecto `/api/v1/pay` en `sandbox`/`production` — esos prefijos omiten solo respuestas exitosas; 4xx/5xx se registran siempre. Guardrail activo: `"/"` en `HTTP_LOG_SKIP_PATH_PREFIXES` se ignora y genera `warn` al arranque para evitar un skip-all accidental de logs 2xx.
 - Testing co-localizado por dominio (`*.spec.ts` junto al codigo del modulo).
+- Integration-local con Supertest en `apps/psp-api/test/integration/` para contratos HTTP y servicios con DB real.
 - Smoke tests de sandbox en `test/smoke/sandbox.smoke.spec.ts`.
+- Estado vivo de cobertura en `docs/testing-status.md` (actualización obligatoria al cambiar tests/config de tests).
 
 ## 5) Estado actual (que estamos haciendo ahora)
 
-- Se consolidó CI en `.github/workflows/ci.yml` (lint/test/build + deploy sandbox + migrate + health + smoke).
+- Se consolidó CI en `.github/workflows/ci.yml` (lint/test/build + deploy sandbox + migrate + readiness estricto de `/health` [status/db/redis en `ok`] + gate de métricas operativas en `/api/v2/payments/ops/metrics` + smoke).
+- `api-ci` ahora trata `test:integration:critical` como bloqueante, agrega `test:ci:ops-metrics` para hardening del gate de métricas internas y valida build Docker (`psp-api:ci`) en cada corrida.
+- `sandbox-deploy` define umbrales explícitos de readiness operativo (`READINESS_*`) para reducir falsos verdes y alinear promoción con SLO operativo de canary.
 - Se agrego contenedorizacion de API (`Dockerfile`, `.dockerignore`) para ejecucion reproducible.
 - Se agregaron documentos operativos para sandbox:
   - `docs/sandbox-env.md`
   - `docs/sandbox-runbook.md`
   - `docs/sandbox-go-live-checklist.md`
+- Se reforzó cobertura smoke de sandbox:
+  - `test/smoke/sandbox.smoke.spec.ts` ahora valida también conflicto de idempotencia (`409`), `cancel` y ruta `requires_action` (mock).
+  - `test/smoke/stripe.smoke.spec.ts` agrega smoke opcional con Stripe real de test mode (gated por variables/secretos en CI).
+- Se agregó runbook de rollout productivo gradual en `docs/production-canary-rollout.md` (canary, fallback y rollback).
 - Se agrego el dominio `payments-v2/` con contrato no retrocompatible para evolucionar de gateway simple a orquestador multi-proveedor.
 - Se extendio `Payment` con campos de lifecycle de orquestacion (`selected_provider`, `status_reason`, timestamps por estado) y se incorporo `PaymentAttempt`.
+- Se retiro la superficie v1 de pagos y checkout (`src/payments/*`, `src/checkout/*`) del bootstrap y del codigo para mantener una estrategia v2-only en el API.
 
 ## Regla de mantenimiento vivo (activo desde hoy)
 

@@ -1,0 +1,19 @@
+---
+description: Mantener actualizado docs/testing-status.md cuando cambie la suite de tests.
+globs:
+  - "**/*.spec.ts"
+  - "apps/**/test/**"
+  - "**/jest*.config.js"
+---
+
+# Regla de mantenimiento de estado de tests
+
+Si el cambio toca tests o configuración de tests, actualizar `docs/testing-status.md` en el mismo diff.
+
+## Mínimos obligatorios
+
+1. Reflejar cambios en la matriz por dominio (`cubierto`/`parcial`/`pendiente`).
+2. Actualizar inventario de archivos de tests.
+3. Actualizar la fecha de "Ultima actualizacion".
+
+No dejar cambios en tests con `docs/testing-status.md` desactualizado.
