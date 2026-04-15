@@ -15,6 +15,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { CreatePaymentIntentDto } from './dto/create-payment-intent.dto';
+import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
 import {
   PAYMENT_V2_STATUS,
   PaymentOperation,
@@ -39,6 +40,36 @@ type OperationResult = {
     paymentLinkId: string | null;
   };
   nextAction: ProviderResult['nextAction'] | null;
+};
+
+type OpsTransactionsItem = {
+  id: string;
+  merchantId: string;
+  merchantName: string;
+  status: string;
+  statusReason: string | null;
+  amountMinor: number;
+  currency: string;
+  selectedProvider: string | null;
+  providerRef: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  lastAttemptAt: Date | null;
+  succeededAt: Date | null;
+  failedAt: Date | null;
+  canceledAt: Date | null;
+  routingReasonCode: string | null;
+  lastAttempt: {
+    id: string;
+    operation: string;
+    provider: string;
+    attemptNo: number;
+    status: string;
+    errorCode: string | null;
+    errorMessage: string | null;
+    latencyMs: number | null;
+    createdAt: Date;
+  } | null;
 };
 
 type StripeWebhookApplyResult = {
@@ -460,6 +491,242 @@ export class PaymentsV2Service {
       payments: this.observability.snapshot(),
       circuitBreakers: this.getCircuitBreakerSnapshot(),
       webhooks: await this.webhooks.getQueueSnapshot(),
+    };
+  }
+
+  /**
+   * Lista transacciones para monitoreo interno con filtros operativos y último intento de provider.
+   *
+   * @param query.includeTotal - Por defecto `true`. Con `false` no se ejecuta `count()`; `page.total` y `page.totalPages` serán `null`.
+   */
+  async listOpsTransactions(query: ListOpsTransactionsDto) {
+    const includeTotal = query.includeTotal !== false;
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 25;
+
+    if (page > 1) {
+      throw new BadRequestException({
+        message: 'Pagination is cursor-based. Use cursorCreatedAt + cursorId (+ direction) instead of page>1.',
+        hint: 'Call first page with page=1 (or omit), then pass the returned cursor to navigate.',
+      });
+    }
+
+    const direction: 'next' | 'prev' = query.direction ?? 'next';
+    const cursorCreatedAt = query.cursorCreatedAt ? new Date(query.cursorCreatedAt) : null;
+    const cursorId = query.cursorId ?? null;
+    if ((cursorCreatedAt && !cursorId) || (!cursorCreatedAt && cursorId)) {
+      throw new BadRequestException('cursorCreatedAt and cursorId must be provided together');
+    }
+    if (cursorCreatedAt && Number.isNaN(cursorCreatedAt.valueOf())) {
+      throw new BadRequestException('Invalid cursorCreatedAt');
+    }
+    const createdAt: Prisma.DateTimeFilter = {};
+    if (query.createdFrom) {
+      createdAt.gte = new Date(query.createdFrom);
+    }
+    if (query.createdTo) {
+      createdAt.lte = new Date(query.createdTo);
+    }
+
+    const where: Prisma.PaymentWhereInput = {
+      ...(query.merchantId ? { merchantId: query.merchantId } : {}),
+      ...(query.paymentId ? { id: { contains: query.paymentId, mode: 'insensitive' } } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.provider ? { selectedProvider: query.provider } : {}),
+      ...(Object.keys(createdAt).length > 0 ? { createdAt } : {}),
+    };
+
+    const orderBy: Prisma.PaymentOrderByWithRelationInput[] = [{ createdAt: 'desc' }, { id: 'desc' }];
+
+    const [total, rowsPlusOne, hasPrevPage, hasNextPage] = await this.prisma.$transaction(async (tx) => {
+      const totalCountPromise = includeTotal ? tx.payment.count({ where }) : null;
+
+      let keysetWhere: Prisma.PaymentWhereInput = where;
+      if (cursorCreatedAt && cursorId) {
+        const boundaryClause: Prisma.PaymentWhereInput =
+          direction === 'next'
+            ? {
+                OR: [
+                  { createdAt: { lt: cursorCreatedAt } },
+                  { createdAt: cursorCreatedAt, id: { lt: cursorId } },
+                ],
+              }
+            : {
+                OR: [
+                  { createdAt: { gt: cursorCreatedAt } },
+                  { createdAt: cursorCreatedAt, id: { gt: cursorId } },
+                ],
+              };
+
+        keysetWhere = {
+          AND: [where, boundaryClause],
+        };
+      }
+
+      const queryOrderBy: Prisma.PaymentOrderByWithRelationInput[] =
+        direction === 'next' ? orderBy : [{ createdAt: 'asc' }, { id: 'asc' }];
+
+      const rows = await tx.payment.findMany({
+        where: keysetWhere,
+        orderBy: queryOrderBy,
+        take: pageSize + 1,
+        select: {
+          id: true,
+          merchantId: true,
+          status: true,
+          statusReason: true,
+          amountMinor: true,
+          currency: true,
+          selectedProvider: true,
+          providerRef: true,
+          createdAt: true,
+          updatedAt: true,
+          lastAttemptAt: true,
+          succeededAt: true,
+          failedAt: true,
+          canceledAt: true,
+          merchant: {
+            select: {
+              name: true,
+            },
+          },
+          attempts: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: {
+              id: true,
+              operation: true,
+              provider: true,
+              attemptNo: true,
+              status: true,
+              errorCode: true,
+              errorMessage: true,
+              latencyMs: true,
+              createdAt: true,
+            },
+          },
+        },
+      });
+
+      const hasMoreInDirection = rows.length > pageSize;
+      const trimmed = hasMoreInDirection ? rows.slice(0, pageSize) : rows;
+      const normalized = direction === 'next' ? trimmed : trimmed.slice().reverse();
+
+      let prevExists = false;
+      let nextExists = false;
+      // En modo polling (includeTotal=false) evitamos queries extra: inferimos por dirección y cursor.
+      // Importante: esto debe funcionar aunque la página quede vacía (p.ej. cursor fuera de rango por purgas concurrentes).
+      if (!includeTotal) {
+        const hasCursor = Boolean(cursorCreatedAt && cursorId);
+        prevExists = direction === 'prev' ? hasMoreInDirection : hasCursor;
+        nextExists = direction === 'next' ? hasMoreInDirection : hasCursor;
+      }
+      if (normalized.length > 0) {
+        const first = normalized[0];
+        const last = normalized[normalized.length - 1];
+
+        if (includeTotal && direction === 'next') {
+          // Ya hacemos `take: pageSize + 1`, así que `hasMoreInDirection` implica next page.
+          nextExists = hasMoreInDirection;
+
+          const prevWhere: Prisma.PaymentWhereInput = {
+            AND: [
+              where,
+              {
+                OR: [
+                  { createdAt: { gt: first.createdAt } },
+                  { createdAt: first.createdAt, id: { gt: first.id } },
+                ],
+              },
+            ],
+          };
+          const prevRow = await tx.payment.findFirst({ where: prevWhere, select: { id: true } });
+          prevExists = Boolean(prevRow);
+        } else {
+          const prevWhere: Prisma.PaymentWhereInput = {
+            AND: [
+              where,
+              {
+                OR: [
+                  { createdAt: { gt: first.createdAt } },
+                  { createdAt: first.createdAt, id: { gt: first.id } },
+                ],
+              },
+            ],
+          };
+          const nextWhere: Prisma.PaymentWhereInput = {
+            AND: [
+              where,
+              {
+                OR: [
+                  { createdAt: { lt: last.createdAt } },
+                  { createdAt: last.createdAt, id: { lt: last.id } },
+                ],
+              },
+            ],
+          };
+
+          const [prevRow, nextRow] = await Promise.all([
+            tx.payment.findFirst({ where: prevWhere, select: { id: true } }),
+            tx.payment.findFirst({ where: nextWhere, select: { id: true } }),
+          ]);
+          prevExists = Boolean(prevRow);
+          nextExists = Boolean(nextRow);
+        }
+      }
+
+      if (includeTotal && totalCountPromise) {
+        const totalCount = await totalCountPromise;
+        return [totalCount, normalized, prevExists, nextExists] as const;
+      }
+      return [null, normalized, prevExists, nextExists] as const;
+    });
+
+    const rows = rowsPlusOne;
+
+    const items: OpsTransactionsItem[] = rows.map((row) => {
+      const lastAttempt = row.attempts[0] ?? null;
+      return {
+        id: row.id,
+        merchantId: row.merchantId,
+        merchantName: row.merchant.name,
+        status: row.status,
+        statusReason: row.statusReason,
+        amountMinor: row.amountMinor,
+        currency: row.currency,
+        selectedProvider: row.selectedProvider,
+        providerRef: row.providerRef,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        lastAttemptAt: row.lastAttemptAt,
+        succeededAt: row.succeededAt,
+        failedAt: row.failedAt,
+        canceledAt: row.canceledAt,
+        routingReasonCode: row.statusReason ?? lastAttempt?.errorCode ?? null,
+        lastAttempt,
+      };
+    });
+
+    const totalPages = total != null ? Math.max(1, Math.ceil(total / pageSize)) : null;
+    const prevCursor =
+      items.length > 0 ? { createdAt: items[0].createdAt.toISOString(), id: items[0].id } : null;
+    const nextCursor =
+      items.length > 0
+        ? { createdAt: items[items.length - 1].createdAt.toISOString(), id: items[items.length - 1].id }
+        : null;
+    return {
+      items,
+      page: {
+        pageSize,
+        total,
+        totalPages,
+        hasPrevPage,
+        hasNextPage,
+      },
+      cursors: {
+        prev: prevCursor,
+        next: nextCursor,
+      },
     };
   }
 

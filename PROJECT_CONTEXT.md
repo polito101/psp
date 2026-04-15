@@ -24,12 +24,14 @@ Ademas del servicio API, el repo incluye:
 - Runtime: Node.js LTS (README/CI recomiendan Node 22)
 - Lenguaje: TypeScript estricto (`noImplicitAny`, `strictNullChecks`)
 - Framework backend: NestJS 11
+- Framework frontend administrativo: Next.js 16 (App Router)
 - ORM/acceso a datos: Prisma ORM 7 + `@prisma/adapter-pg` + `pg`
 - Base de datos principal: PostgreSQL
 - Cache/soporte operativo: Redis (`ioredis`)
 - Seguridad y hardening: `helmet`, CORS, throttling global
 - Validacion de entrada: `class-validator` + `class-transformer`
 - Documentacion API: Swagger (`@nestjs/swagger`)
+- UI backoffice: Tailwind CSS + componentes estilo shadcn + TanStack Query/Table
 - Testing: Jest + ts-jest + Supertest (integration-local)
 - CI/CD: GitHub Actions (`.github/workflows/ci.yml`) + deploy sandbox por hook
 
@@ -42,37 +44,45 @@ C:/AA psp/
 ├── .github/
 │   └── workflows/
 ├── apps/
-│   └── psp-api/
-│       ├── prisma/
-│       │   ├── schema.prisma
-│       │   └── migrations/
-│       ├── scripts/
-│       ├── test/
-│       │   ├── integration/
-│       │   └── smoke/
+│   ├── psp-api/
+│   │   ├── prisma/
+│   │   │   ├── schema.prisma
+│   │   │   └── migrations/
+│   │   ├── scripts/
+│   │   ├── test/
+│   │   │   ├── integration/
+│   │   │   └── smoke/
+│   │   ├── src/
+│   │   │   ├── main.ts
+│   │   │   ├── app.module.ts
+│   │   │   ├── common/
+│   │   │   │   ├── decorators/
+│   │   │   │   ├── guards/
+│   │   │   │   └── interceptors/
+│   │   │   ├── prisma/
+│   │   │   ├── redis/
+│   │   │   ├── merchants/
+│   │   │   ├── payment-links/
+│   │   │   ├── ledger/
+│   │   │   ├── webhooks/
+│   │   │   ├── payments-v2/
+│   │   │   ├── health/
+│   │   │   ├── crypto/
+│   │   │   └── generated/   (salida de prisma generate)
+│   │   ├── package.json
+│   │   ├── Dockerfile
+│   │   ├── .dockerignore
+│   │   ├── jest.smoke.config.js
+│   │   ├── prisma.config.ts
+│   │   ├── nest-cli.json
+│   │   └── README.md
+│   └── psp-backoffice/
 │       ├── src/
-│       │   ├── main.ts
-│       │   ├── app.module.ts
-│       │   ├── common/
-│       │   │   ├── decorators/
-│       │   │   ├── guards/
-│       │   │   └── interceptors/
-│       │   ├── prisma/
-│       │   ├── redis/
-│       │   ├── merchants/
-│       │   ├── payment-links/
-│       │   ├── ledger/
-│       │   ├── webhooks/
-│       │   ├── payments-v2/
-│       │   ├── health/
-│       │   ├── crypto/
-│       │   └── generated/   (salida de prisma generate)
+│       │   ├── app/ (Next App Router + BFF routes internas)
+│       │   ├── components/
+│       │   └── lib/
 │       ├── package.json
-│       ├── Dockerfile
-│       ├── .dockerignore
-│       ├── jest.smoke.config.js
-│       ├── prisma.config.ts
-│       ├── nest-cli.json
+│       ├── components.json
 │       └── README.md
 ├── docs/
 ├── infra/
@@ -103,6 +113,9 @@ En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc`, `te
 - Hardening Stripe: `STRIPE_API_BASE_URL` se valida fail-fast y se normaliza a `https://api.stripe.com/v1` para evitar enviar el Bearer token a hosts arbitrarios por mala configuracion.
 - Stripe create v2: sin `stripePaymentMethodId` el PI se crea con `automatic_payment_methods[enabled]=true` (sin `confirm`); la respuesta expone `nextAction` con `client_secret` (`confirm_with_stripe_js`) mientras el PI está `pending`. Con `stripePaymentMethodId` se envía `confirm=true` (y `stripeReturnUrl` opcional para redirects). `capture` solo admite pago en estado `authorized` (Stripe `requires_capture`). Repetición idempotente de `create` con Stripe en `pending`/`requires_action` hace GET al PI para devolver `client_secret`/`next_action` actualizados.
 - El endpoint de observabilidad `GET /api/v2/payments/ops/metrics` es interno y se protege con `InternalSecretGuard` (`X-Internal-Secret`) para evitar exponer agregados globales por merchant API key; el snapshot combina métricas v2 por proveedor, estado de circuit breakers en memoria y backlog de la cola de webhooks (`pending/processing/failed` + antigüedad de pending más vieja).
+- Nuevo endpoint interno `GET /api/v2/payments/ops/transactions` para monitor operativo filtrable (merchant, estado, provider, rango de fechas) con último `PaymentAttempt` y `routingReasonCode`. Paginación **por cursor real** (keyset estable `createdAt desc, id desc`) vía `cursorCreatedAt + cursorId` (y `direction` opcional); `page>1` ya no se soporta para evitar O(offset) en páginas profundas. Query opcional `includeTotal=false` omite el `COUNT` global (`total`/`totalPages` en `null`) para reducir carga en DB con polling; el backoffice lo usa en auto-refresh y pide totales al cambiar filtros o al pulsar Refrescar.
+- Backoffice MVP en `apps/psp-backoffice`: arquitectura BFF con route handlers (`/api/internal/*`) que inyectan `X-Internal-Secret` en server-side y evitan exponer secretos al navegador.
+- Hardening backoffice: `/api/internal/*` ahora requiere auth explícita por request (`Authorization: Bearer BACKOFFICE_ADMIN_SECRET` o cookie HttpOnly `backoffice_admin_token`) y devuelve `401/403` en ausencia/credencial inválida; `BACKOFFICE_ADMIN_SECRET` debe ser distinto de `PSP_INTERNAL_API_SECRET` para defensa en profundidad.
 - El script CI de readiness operativo `scripts/ci/check-ops-metrics.mjs` endurece seguridad: valida `SMOKE_BASE_URL` (https, o http solo localhost), usa `origin` al construir URL final y rechaza redirects para no reenviar `X-Internal-Secret` fuera del host esperado.
 - Nuevo modelo `PaymentAttempt` para trazabilidad por operacion/proveedor (`create/capture/cancel/refund`) con status, error taxonomy, latencia y payload de respuesta.
 - `PaymentAttempt.attemptNo` se asigna de forma atomica con `MAX(attemptNo)+1` dentro de transaccion serializable y retry para `P2002`/`P2034`, manteniendo `@@unique([paymentId, operation, attemptNo])`.
@@ -146,6 +159,8 @@ En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc`, `te
   - Smoke real Stripe: corrida validada con `SMOKE_STRIPE_ENABLED=true` en `test/smoke/stripe.smoke.spec.ts`.
 - Se extendio `Payment` con campos de lifecycle de orquestacion (`selected_provider`, `status_reason`, timestamps por estado) y se incorporo `PaymentAttempt`.
 - Se retiro la superficie v1 de pagos y checkout (`src/payments/*`, `src/checkout/*`) del bootstrap y del codigo para mantener una estrategia v2-only en el API.
+- Se incorporo `apps/psp-backoffice` (Next.js 16 + Tailwind + Query/Table) con primera pantalla de `Transacciones` (filtros, paginacion, auto-refresh y detalle operativo).
+- Se agrego en API el endpoint interno `GET /api/v2/payments/ops/transactions` para consumo del backoffice y monitoreo de ruteo/intentos.
 
 ## Regla de mantenimiento vivo (activo desde hoy)
 

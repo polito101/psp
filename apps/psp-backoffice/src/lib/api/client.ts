@@ -1,0 +1,54 @@
+import type {
+  OpsTransactionsResponse,
+  ProviderHealthResponse,
+  TransactionsFilters,
+} from "@/lib/api/contracts";
+
+function toSearchParams(filters: TransactionsFilters): URLSearchParams {
+  const params = new URLSearchParams();
+  params.set("pageSize", String(filters.pageSize));
+  if (filters.direction) params.set("direction", filters.direction);
+  if (filters.cursorCreatedAt) params.set("cursorCreatedAt", filters.cursorCreatedAt);
+  if (filters.cursorId) params.set("cursorId", filters.cursorId);
+  if (filters.merchantId) params.set("merchantId", filters.merchantId);
+  if (filters.paymentId) params.set("paymentId", filters.paymentId);
+  if (filters.status) params.set("status", filters.status);
+  if (filters.provider) params.set("provider", filters.provider);
+  if (filters.createdFrom) params.set("createdFrom", filters.createdFrom);
+  if (filters.createdTo) params.set("createdTo", filters.createdTo);
+  if (filters.includeTotal === false) params.set("includeTotal", "false");
+  if (filters.includeTotal === true) params.set("includeTotal", "true");
+  return params;
+}
+
+async function parseResponse<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    let message = "Unexpected API error";
+    try {
+      const payload = (await response.json()) as { message?: string };
+      if (payload?.message) message = payload.message;
+    } catch {
+      // no-op
+    }
+    throw new Error(message);
+  }
+
+  return (await response.json()) as T;
+}
+
+export async function fetchOpsTransactions(filters: TransactionsFilters): Promise<OpsTransactionsResponse> {
+  const params = toSearchParams(filters).toString();
+  const response = await fetch(`/api/internal/transactions?${params}`, {
+    method: "GET",
+    cache: "no-store",
+  });
+  return parseResponse<OpsTransactionsResponse>(response);
+}
+
+export async function fetchProviderHealth(): Promise<ProviderHealthResponse> {
+  const response = await fetch("/api/internal/provider-health", {
+    method: "GET",
+    cache: "no-store",
+  });
+  return parseResponse<ProviderHealthResponse>(response);
+}
