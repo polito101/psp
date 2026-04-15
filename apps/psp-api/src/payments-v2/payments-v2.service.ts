@@ -614,15 +614,18 @@ export class PaymentsV2Service {
 
       let prevExists = false;
       let nextExists = false;
+      // En modo polling (includeTotal=false) evitamos queries extra: inferimos por dirección y cursor.
+      // Importante: esto debe funcionar aunque la página quede vacía (p.ej. cursor fuera de rango por purgas concurrentes).
+      if (!includeTotal) {
+        const hasCursor = Boolean(cursorCreatedAt && cursorId);
+        prevExists = direction === 'prev' ? hasMoreInDirection : hasCursor;
+        nextExists = direction === 'next' ? hasMoreInDirection : hasCursor;
+      }
       if (normalized.length > 0) {
         const first = normalized[0];
         const last = normalized[normalized.length - 1];
 
-        // En modo polling (includeTotal=false) evitamos queries extra: inferimos por dirección y cursor.
-        if (!includeTotal) {
-          prevExists = direction === 'prev' ? hasMoreInDirection : Boolean(cursorCreatedAt && cursorId);
-          nextExists = direction === 'next' ? hasMoreInDirection : Boolean(cursorCreatedAt && cursorId);
-        } else if (direction === 'next') {
+        if (includeTotal && direction === 'next') {
           // Ya hacemos `take: pageSize + 1`, así que `hasMoreInDirection` implica next page.
           nextExists = hasMoreInDirection;
 
