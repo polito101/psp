@@ -511,13 +511,45 @@ export class PaymentsV2Service {
       ...(Object.keys(createdAt).length > 0 ? { createdAt } : {}),
     };
 
-    const [total, rows] = await this.prisma.$transaction([
-      this.prisma.payment.count({ where }),
-      this.prisma.payment.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: pageSize,
+    const orderBy: Prisma.PaymentOrderByWithRelationInput[] = [{ createdAt: 'desc' }, { id: 'desc' }];
+
+    const [total, rowsPlusOne] = await this.prisma.$transaction(async (tx) => {
+      const totalCountPromise = tx.payment.count({ where });
+
+      // Evitar `skip` sobre filas "anchas" (select + joins) en páginas profundas:
+      // - resolvemos un cursor liviano (createdAt/id) para la última fila de la página anterior
+      // - luego hacemos keyset pagination estable por (createdAt desc, id desc)
+      let keysetWhere: Prisma.PaymentWhereInput = where;
+      if (page > 1) {
+        const cursorRow = await tx.payment.findFirst({
+          where,
+          orderBy,
+          skip: skip - 1,
+          take: 1,
+          select: { createdAt: true, id: true },
+        });
+        if (!cursorRow) {
+          const totalCount = await totalCountPromise;
+          return [totalCount, [] as const] as const;
+        }
+
+        keysetWhere = {
+          AND: [
+            where,
+            {
+              OR: [
+                { createdAt: { lt: cursorRow.createdAt } },
+                { createdAt: cursorRow.createdAt, id: { lt: cursorRow.id } },
+              ],
+            },
+          ],
+        };
+      }
+
+      const rows = await tx.payment.findMany({
+        where: keysetWhere,
+        orderBy,
+        take: pageSize + 1,
         select: {
           id: true,
           merchantId: true,
@@ -554,8 +586,14 @@ export class PaymentsV2Service {
             },
           },
         },
-      }),
-    ]);
+      });
+
+      const totalCount = await totalCountPromise;
+      return [totalCount, rows] as const;
+    });
+
+    const hasNextPage = rowsPlusOne.length > pageSize;
+    const rows = hasNextPage ? rowsPlusOne.slice(0, pageSize) : rowsPlusOne;
 
     const items: OpsTransactionsItem[] = rows.map((row) => {
       const lastAttempt = row.attempts[0] ?? null;
@@ -588,7 +626,7 @@ export class PaymentsV2Service {
         pageSize,
         total,
         totalPages,
-        hasNextPage: page < totalPages,
+        hasNextPage,
       },
     };
   }

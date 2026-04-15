@@ -70,6 +70,11 @@ model Payment {
   @@unique([merchantId, idempotencyKey])
   @@index([merchantId, status])
   @@index([merchantId, selectedProvider])
+  // Acceso operativo (ops/transactions): orden estable por createdAt/id y filtros globales sin merchantId.
+  @@index([createdAt, id])
+  @@index([status, createdAt, id])
+  @@index([selectedProvider, createdAt, id])
+  @@index([merchantId, createdAt, id])
 }
 
 // `merchantId` debe coincidir con `Payment.merchantId` del mismo `paymentId`; el servicio valida ownership antes del lock y purga filas incoherentes en `claimPaymentOperation`.

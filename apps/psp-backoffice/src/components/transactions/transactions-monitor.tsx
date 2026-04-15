@@ -36,7 +36,17 @@ import {
   THead,
 } from "@/components/ui/table";
 
-const REFRESH_INTERVAL_MS = Number(process.env.NEXT_PUBLIC_TRANSACTIONS_REFRESH_MS ?? 8_000);
+const DEFAULT_REFRESH_INTERVAL_MS = 8_000;
+const MIN_REFRESH_INTERVAL_MS = 2_000;
+const MAX_REFRESH_INTERVAL_MS = 60_000;
+
+function parseRefreshIntervalMs(raw: string | undefined): number {
+  const parsed = raw ? Number(raw) : DEFAULT_REFRESH_INTERVAL_MS;
+  const safe = Number.isFinite(parsed) ? parsed : DEFAULT_REFRESH_INTERVAL_MS;
+  return Math.min(MAX_REFRESH_INTERVAL_MS, Math.max(MIN_REFRESH_INTERVAL_MS, safe));
+}
+
+const REFRESH_INTERVAL_MS = parseRefreshIntervalMs(process.env.NEXT_PUBLIC_TRANSACTIONS_REFRESH_MS);
 const DEFAULT_PAGE_SIZE = 25;
 
 type FilterDraft = {
@@ -264,7 +274,9 @@ export function TransactionsMonitor() {
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2 text-xs text-slate-500">
               <Clock3 size={14} />
-              Auto-refresh cada {Math.floor(REFRESH_INTERVAL_MS / 1000)}s
+              {Number.isFinite(REFRESH_INTERVAL_MS)
+                ? `Auto-refresh cada ${Math.floor(REFRESH_INTERVAL_MS / 1000)}s`
+                : "Auto-refresh"}
             </div>
             <Button
               size="sm"

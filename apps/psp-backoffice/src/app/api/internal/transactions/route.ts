@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import type { OpsTransactionsResponse } from "@/lib/api/contracts";
 import { mapProxyError, proxyInternalGet } from "@/lib/server/backoffice-api";
+import { enforceInternalRouteAuth } from "@/lib/server/internal-route-auth";
 
 const querySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -26,6 +27,11 @@ const querySchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
+  const unauthorizedResponse = enforceInternalRouteAuth(request);
+  if (unauthorizedResponse) {
+    return unauthorizedResponse;
+  }
+
   const parse = querySchema.safeParse(Object.fromEntries(request.nextUrl.searchParams.entries()));
   if (!parse.success) {
     return NextResponse.json(
