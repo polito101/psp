@@ -1,5 +1,5 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
-import { ApiOperation, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import { BadRequestException, Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import { ApiOperation, ApiParam, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { InternalSecretGuard } from '../common/guards/internal-secret.guard';
 import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
 import { PaymentsV2Service } from './payments-v2.service';
@@ -50,5 +50,22 @@ export class PaymentsV2InternalController {
   })
   async listTransactions(@Query() query: ListOpsTransactionsDto) {
     return this.payments.listOpsTransactions(query);
+  }
+
+  @Get('ops/payments/:paymentId')
+  @ApiOperation({
+    summary: 'Detalle operativo interno de un pago con historial completo de PaymentAttempt',
+  })
+  @ApiParam({
+    name: 'paymentId',
+    description: 'ID interno del pago (`Payment.id`)',
+    schema: { type: 'string', maxLength: 64 },
+  })
+  async getOpsPayment(@Param('paymentId') paymentId: string) {
+    const id = paymentId?.trim();
+    if (!id || id.length > 64) {
+      throw new BadRequestException('Invalid paymentId');
+    }
+    return this.payments.getOpsPaymentDetail(id);
   }
 }

@@ -731,6 +731,93 @@ export class PaymentsV2Service {
   }
 
   /**
+   * Detalle operativo interno: pago por id interno con todos los intentos de proveedor (cronológico).
+   *
+   * @param paymentId - `Payment.id` (cuid u otro id persistido).
+   * @returns Agregado listo para JSON (Nest serializa `Date` en ISO).
+   * @throws NotFoundException si no existe el pago.
+   */
+  async getOpsPaymentDetail(paymentId: string) {
+    const row = await this.prisma.payment.findUnique({
+      where: { id: paymentId },
+      select: {
+        id: true,
+        merchantId: true,
+        status: true,
+        statusReason: true,
+        amountMinor: true,
+        currency: true,
+        selectedProvider: true,
+        providerRef: true,
+        idempotencyKey: true,
+        paymentLinkId: true,
+        rail: true,
+        createdAt: true,
+        updatedAt: true,
+        lastAttemptAt: true,
+        succeededAt: true,
+        failedAt: true,
+        canceledAt: true,
+        merchant: { select: { name: true } },
+        attempts: {
+          orderBy: { createdAt: 'asc' },
+          select: {
+            id: true,
+            operation: true,
+            provider: true,
+            attemptNo: true,
+            status: true,
+            errorCode: true,
+            errorMessage: true,
+            latencyMs: true,
+            providerPaymentId: true,
+            createdAt: true,
+            responsePayload: true,
+          },
+        },
+      },
+    });
+
+    if (!row) {
+      throw new NotFoundException({ message: 'Payment not found', paymentId });
+    }
+
+    return {
+      id: row.id,
+      merchantId: row.merchantId,
+      merchantName: row.merchant.name,
+      status: row.status,
+      statusReason: row.statusReason,
+      amountMinor: row.amountMinor,
+      currency: row.currency,
+      selectedProvider: row.selectedProvider,
+      providerRef: row.providerRef,
+      idempotencyKey: row.idempotencyKey,
+      paymentLinkId: row.paymentLinkId,
+      rail: row.rail,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      lastAttemptAt: row.lastAttemptAt,
+      succeededAt: row.succeededAt,
+      failedAt: row.failedAt,
+      canceledAt: row.canceledAt,
+      attempts: row.attempts.map((a) => ({
+        id: a.id,
+        operation: a.operation,
+        provider: a.provider,
+        attemptNo: a.attemptNo,
+        status: a.status,
+        errorCode: a.errorCode,
+        errorMessage: a.errorMessage,
+        latencyMs: a.latencyMs,
+        providerPaymentId: a.providerPaymentId,
+        createdAt: a.createdAt,
+        responsePayload: a.responsePayload,
+      })),
+    };
+  }
+
+  /**
    * Aplica cambios de estado desde eventos inbound de Stripe usando CAS por estado para idempotencia.
    * No duplica ledger aunque Stripe reintente el mismo evento.
    */

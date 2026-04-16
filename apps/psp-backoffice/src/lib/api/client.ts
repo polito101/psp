@@ -1,4 +1,5 @@
 import type {
+  OpsPaymentDetailResponse,
   OpsTransactionsResponse,
   ProviderHealthResponse,
   TransactionsFilters,
@@ -43,6 +44,15 @@ export async function fetchOpsTransactions(filters: TransactionsFilters): Promis
     cache: "no-store",
   });
   return parseResponse<OpsTransactionsResponse>(response);
+}
+
+export async function fetchOpsPaymentDetail(paymentId: string): Promise<OpsPaymentDetailResponse> {
+  const encoded = encodeURIComponent(paymentId);
+  const response = await fetch(`/api/internal/payments/${encoded}`, {
+    method: "GET",
+    cache: "no-store",
+  });
+  return parseResponse<OpsPaymentDetailResponse>(response);
 }
 
 export async function fetchProviderHealth(): Promise<ProviderHealthResponse> {

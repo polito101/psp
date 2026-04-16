@@ -1,6 +1,6 @@
 # PROJECT_CONTEXT
 
-Ultima actualizacion: 2026-04-15
+Ultima actualizacion: 2026-04-16
 
 ## 1) Resumen del proyecto
 
@@ -15,6 +15,7 @@ La API esta construida con NestJS y expone REST versionado por URI, con foco ope
 - health checks
 
 Ademas del servicio API, el repo incluye:
+- panel administrativo Next.js en `apps/psp-backoffice` (detalle en **`apps/psp-backoffice/BACKOFFICE_CONTEXT.md`**; aqui solo el resumen operativo)
 - infraestructura en `infra/terraform`
 - entorno local con PostgreSQL + Redis via `docker-compose.yml`
 - documentacion operativa en `docs/` y `apps/psp-api/README.md`
@@ -31,7 +32,7 @@ Ademas del servicio API, el repo incluye:
 - Seguridad y hardening: `helmet`, CORS, throttling global
 - Validacion de entrada: `class-validator` + `class-transformer`
 - Documentacion API: Swagger (`@nestjs/swagger`)
-- UI backoffice: Tailwind CSS + componentes estilo shadcn + TanStack Query/Table
+- UI backoffice: Tailwind CSS 4 + componentes estilo shadcn + TanStack Query/Table; acento de marca `--primary: #635bff` (panel demo); fuente principal Inter (`next/font`)
 - Testing: Jest + ts-jest + Supertest (integration-local)
 - CI/CD: GitHub Actions (`.github/workflows/ci.yml`) + deploy sandbox por hook
 
@@ -78,11 +79,12 @@ C:/AA psp/
 │   │   └── README.md
 │   └── psp-backoffice/
 │       ├── src/
-│       │   ├── app/ (Next App Router + BFF routes internas)
+│       │   ├── app/ (Next App Router: `/` panel transacciones, `/monitor`, `/payments/[paymentId]`; BFF `/api/internal/*`)
 │       │   ├── components/
 │       │   └── lib/
 │       ├── package.json
 │       ├── components.json
+│       ├── BACKOFFICE_CONTEXT.md   (SSOT del app backoffice)
 │       └── README.md
 ├── docs/
 ├── infra/
@@ -94,7 +96,7 @@ C:/AA psp/
 └── prisma_migration_v7
 ```
 
-En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc`, `testing-status.mdc` y **`agent-behavior.mdc`**: guías de comportamiento del agente (aclarar supuestos ante ambigüedad, simplicidad, cambios mínimos, criterios de éxito verificables) y mantenimiento vivo de cobertura de tests.
+En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc`, `testing-status.mdc`, **`psp-backoffice-context.mdc`** (al editar `apps/psp-backoffice/**`) y **`agent-behavior.mdc`**: guías de comportamiento del agente (aclarar supuestos ante ambigüedad, simplicidad, cambios mínimos, criterios de éxito verificables) y mantenimiento vivo de cobertura de tests.
 
 ## 4) Patrones de diseno y convenciones detectadas
 
@@ -114,6 +116,7 @@ En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc`, `te
 - Stripe create v2: sin `stripePaymentMethodId` el PI se crea con `automatic_payment_methods[enabled]=true` (sin `confirm`); la respuesta expone `nextAction` con `client_secret` (`confirm_with_stripe_js`) mientras el PI está `pending`. Con `stripePaymentMethodId` se envía `confirm=true` (y `stripeReturnUrl` opcional para redirects). `capture` solo admite pago en estado `authorized` (Stripe `requires_capture`). Repetición idempotente de `create` con Stripe en `pending`/`requires_action` hace GET al PI para devolver `client_secret`/`next_action` actualizados.
 - El endpoint de observabilidad `GET /api/v2/payments/ops/metrics` es interno y se protege con `InternalSecretGuard` (`X-Internal-Secret`) para evitar exponer agregados globales por merchant API key; el snapshot combina métricas v2 por proveedor, estado de circuit breakers en memoria y backlog de la cola de webhooks (`pending/processing/failed` + antigüedad de pending más vieja).
 - Nuevo endpoint interno `GET /api/v2/payments/ops/transactions` para monitor operativo filtrable (merchant, estado, provider, rango de fechas) con último `PaymentAttempt` y `routingReasonCode`. Paginación **por cursor real** (keyset estable `createdAt desc, id desc`) vía `cursorCreatedAt + cursorId` (y `direction` opcional); `page>1` ya no se soporta para evitar O(offset) en páginas profundas. Query opcional `includeTotal=false` omite el `COUNT` global (`total`/`totalPages` en `null`) para reducir carga en DB con polling; el backoffice lo usa en auto-refresh y pide totales al cambiar filtros o al pulsar Refrescar.
+- Endpoint interno `GET /api/v2/payments/ops/payments/:paymentId`: detalle operativo de un pago por id interno con todos los `PaymentAttempt` (orden cronológico) y metadatos (`idempotencyKey`, `paymentLinkId`, `rail`, timestamps). Consumido por el backoffice vía BFF `GET /api/internal/payments/:paymentId`.
 - Backoffice MVP en `apps/psp-backoffice`: arquitectura BFF con route handlers (`/api/internal/*`) que inyectan `X-Internal-Secret` en server-side y evitan exponer secretos al navegador.
 - Hardening backoffice: `/api/internal/*` ahora requiere auth explícita por request (`Authorization: Bearer BACKOFFICE_ADMIN_SECRET` o cookie HttpOnly `backoffice_admin_token`) y devuelve `401/403` en ausencia/credencial inválida; `BACKOFFICE_ADMIN_SECRET` debe ser distinto de `PSP_INTERNAL_API_SECRET` para defensa en profundidad.
 - El script CI de readiness operativo `scripts/ci/check-ops-metrics.mjs` endurece seguridad: valida `SMOKE_BASE_URL` (https, o http solo localhost), usa `origin` al construir URL final y rechaza redirects para no reenviar `X-Internal-Secret` fuera del host esperado.
@@ -159,7 +162,7 @@ En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc`, `te
   - Smoke real Stripe: corrida validada con `SMOKE_STRIPE_ENABLED=true` en `test/smoke/stripe.smoke.spec.ts`.
 - Se extendio `Payment` con campos de lifecycle de orquestacion (`selected_provider`, `status_reason`, timestamps por estado) y se incorporo `PaymentAttempt`.
 - Se retiro la superficie v1 de pagos y checkout (`src/payments/*`, `src/checkout/*`) del bootstrap y del codigo para mantener una estrategia v2-only en el API.
-- Se incorporo `apps/psp-backoffice` (Next.js 16 + Tailwind + Query/Table) con primera pantalla de `Transacciones` (filtros, paginacion, auto-refresh y detalle operativo).
+- Se incorporo `apps/psp-backoffice` (Next.js 16 + Tailwind + Query/Table). La ruta `/` muestra el **panel de transacciones** conectado a `GET .../ops/transactions` vía BFF (tabla, tarjetas de conteo por estado, cursores, export CSV de la página visible, filtros servidor en fecha/merchant/paymentId/proveedor y filtros locales opcionales en importe/divisa sobre la página cargada). El **monitor técnico** (misma API, vista compacta + health) sigue en `/monitor`. Detalle de pago en `/payments/[paymentId]` (clic en fila o enlace): importe, estado, actividad por intentos y panel lateral con datos reales del pago (`providerRef`, método enmascarado heurístico, idempotencia / link, merchant en extracto simulado, proveedor, fondos si hay `succeededAt`, enlace «Ver saldos» a inicio).
 - Se agrego en API el endpoint interno `GET /api/v2/payments/ops/transactions` para consumo del backoffice y monitoreo de ruteo/intentos.
 
 ## Regla de mantenimiento vivo (activo desde hoy)
@@ -171,3 +174,5 @@ Este archivo se actualiza en cada cambio estructural relevante, sin esperar pedi
 - decision de arquitectura transversal
 
 Objetivo operativo: archivo breve, factual y alineado al estado real del codigo.
+
+El backoffice mantiene su propio **`apps/psp-backoffice/BACKOFFICE_CONTEXT.md`**; al cambiar rutas, BFF, auth o stack UI del panel, actualizar ese archivo en el mismo diff y reflejar aqui solo lo que deba ser visible a nivel monorepo (API, seguridad cruzada, resumen de rutas).

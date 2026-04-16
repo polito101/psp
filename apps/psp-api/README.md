@@ -94,7 +94,7 @@ Invoke-RestMethod -Method Post "http://localhost:3000/api/v2/payments/PEGAR_PAYM
 
 ```powershell
 Invoke-RestMethod -Method Get "http://localhost:3000/api/v2/payments/PEGAR_PAYMENT_ID" `
-  -Headers @{ "X-API-Key"="PEGAR_APIKEY_COMERCIO" }
+  -Headers @{ "X-API-Key"="psp.cmo15b24p0034jwkgwrr2irqg.AtB4R56D4wroVnxBjEIqFa1PFSaLCl_1cVMNDu6V93E" }
 
 Invoke-RestMethod -Method Get "http://localhost:3000/api/v1/balance" `
   -Headers @{ "X-API-Key"="PEGAR_APIKEY_COMERCIO" }

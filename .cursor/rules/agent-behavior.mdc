@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Comportamiento del agente (anti-errores LLM)
 
-Estas guías **complementan** `PROJECT_CONTEXT.md`, `.cursor/rules/project-context.mdc` y `.cursor/rules/vibecoding-master.mdc`. Donde haya tensión: mantén respuestas **concisas** (vibe), pero **no adivines** requisitos ambiguos — aclara en pocas frases o opciones.
+Estas guías **complementan** `PROJECT_CONTEXT.md` (raíz), `apps/psp-backoffice/BACKOFFICE_CONTEXT.md` (si aplica), `.cursor/rules/project-context.mdc`, `.cursor/rules/psp-backoffice-context.mdc` y `.cursor/rules/vibecoding-master.mdc`. Donde haya tensión: mantén respuestas **concisas** (vibe), pero **no adivines** requisitos ambiguos — aclara en pocas frases o opciones.
 
 **Trade-off:** sesgan hacia la **prudencia** frente a la velocidad. En tareas triviales, usa criterio y no bloquees el flujo.
 
