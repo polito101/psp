@@ -591,6 +591,8 @@ export class PaymentsV2Service {
    * Volumen acumulado por hora (UTC) de pagos `succeeded` para hoy y ayer, para comparar en un mismo eje 0–23h.
    * Agrupa y filtra por `succeeded_at` (momento de captura/éxito), no por `created_at`, para alinear el volumen
    * con el día UTC en que el pago pasó a `succeeded` (índice `@@index([status, currency, succeededAt])` en `Payment`).
+   * En JSON, acumulados por hora y totales se serializan como **strings** (enteros en `amount_minor`) para no perder
+   * precisión fuera de `Number.MAX_SAFE_INTEGER`.
    */
   async getOpsVolumeHourlySeries(query: OpsVolumeHourlyQueryDto) {
     const currency = (query.currency ?? 'EUR').toUpperCase();

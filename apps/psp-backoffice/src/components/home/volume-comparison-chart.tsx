@@ -2,22 +2,39 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { OpsVolumeHourlyResponse } from "@/lib/api/contracts";
-import { formatAmountMinor } from "@/lib/ops-transaction-display";
+import { amountMinorToBigInt, formatAmountMinor } from "@/lib/ops-transaction-display";
 
 const PAD = { t: 16, r: 12, b: 40, l: 48 };
 const MIN_CHART_W = 280;
 const ASPECT = 0.34;
 
+/**
+ * Aproxima num/den en coma flotante sin hacer `Number(num)` cuando el acumulado puede
+ * superar `MAX_SAFE_INTEGER` (evita distorsión del trazado SVG).
+ */
+function bigintRatioToNumber(num: bigint, den: bigint): number {
+  if (den === 0n) return 0;
+  if (num === 0n) return 0;
+  let scale = 1_000_000_000n;
+  for (let i = 0; i < 48; i++) {
+    const q = (num * scale) / den;
+    if (q !== 0n) return Number(q) / Number(scale);
+    scale *= 10n;
+  }
+  return 0;
+}
+
 function buildPath(
-  series: (number | null)[],
-  yMax: number,
+  series: (bigint | null)[],
+  yMax: bigint,
   w: number,
   h: number,
 ): { d: string; lastIndex: number } {
   const innerW = w - PAD.l - PAD.r;
   const innerH = h - PAD.t - PAD.b;
   const toX = (i: number) => PAD.l + (i / 23) * innerW;
-  const toY = (v: number) => PAD.t + innerH - (yMax <= 0 ? 0 : (v / yMax) * innerH);
+  const toY = (v: bigint) =>
+    PAD.t + innerH - (yMax <= 0n ? 0 : bigintRatioToNumber(v, yMax) * innerH);
   let d = "";
   let penUp = true;
   let lastIndex = -1;
@@ -36,28 +53,37 @@ function buildPath(
   return { d, lastIndex };
 }
 
-function formatAxisMinor(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-  return String(Math.round(n));
+function formatAxisMinorUnits(n: bigint): string {
+  const abs = n < 0n ? -n : n;
+  if (abs >= 1_000_000n) {
+    const whole = abs / 1_000_000n;
+    const frac = (abs % 1_000_000n) / 100_000n;
+    return frac === 0n ? `${whole}M` : `${whole}.${frac}M`;
+  }
+  if (abs >= 1000n) {
+    const whole = abs / 1000n;
+    const frac = (abs % 1000n) / 100n;
+    return frac === 0n ? `${whole}k` : `${whole}.${frac}k`;
+  }
+  return abs.toString();
 }
 
 /** Volumen bruto del intervalo [h,h) a partir de serie acumulada (minor). */
-function hourlyFromCumulative(cumulative: number[]): number[] {
+function hourlyFromCumulative(cumulative: bigint[]): bigint[] {
   return cumulative.map((v, h) => (h === 0 ? v : v - cumulative[h - 1]));
 }
 
 function hourlyTodayFromCumulative(
-  cumulative: (number | null)[],
+  cumulative: (bigint | null)[],
   maxHour: number,
-): (number | null)[] {
-  const out: (number | null)[] = Array(24).fill(null);
+): (bigint | null)[] {
+  const out: (bigint | null)[] = Array(24).fill(null);
   if (maxHour < 0) return out;
   for (let h = 0; h <= maxHour; h++) {
     const cur = cumulative[h];
     if (cur == null) continue;
-    const prev = h === 0 ? 0 : cumulative[h - 1];
-    out[h] = h === 0 ? cur : cur - (prev as number);
+    const prev = h === 0 ? 0n : cumulative[h - 1];
+    out[h] = h === 0 ? cur : cur - (prev ?? 0n);
   }
   return out;
 }
@@ -92,12 +118,12 @@ function formatUtcClock(): string {
   }).format(new Date());
 }
 
-function hourOverHourPct(todayMinor: number, yesterdayMinor: number): number | null {
-  if (yesterdayMinor === 0) {
-    if (todayMinor === 0) return 0;
+function hourOverHourPct(todayMinor: bigint, yesterdayMinor: bigint): number | null {
+  if (yesterdayMinor === 0n) {
+    if (todayMinor === 0n) return 0;
     return null;
   }
-  return ((todayMinor - yesterdayMinor) / yesterdayMinor) * 100;
+  return Number(((todayMinor - yesterdayMinor) * 10000n) / yesterdayMinor) / 100;
 }
 
 function formatPct(p: number | null): { text: string; tone: "up" | "down" | "flat" | "na" } {
@@ -145,6 +171,19 @@ export function VolumeComparisonChart({ data }: Props) {
 
   const chartH = Math.max(200, Math.round(chartW * ASPECT));
 
+  const parsedToday = useMemo(
+    () =>
+      data.todayCumulativeVolumeMinor.map((v) =>
+        v == null ? null : amountMinorToBigInt(v),
+      ),
+    [data.todayCumulativeVolumeMinor],
+  );
+
+  const parsedYest = useMemo(
+    () => data.yesterdayCumulativeVolumeMinor.map((v) => amountMinorToBigInt(v)),
+    [data.yesterdayCumulativeVolumeMinor],
+  );
+
   const maxTodayHour = useMemo(() => {
     let m = -1;
     data.todayCumulativeVolumeMinor.forEach((v, i) => {
@@ -153,44 +192,36 @@ export function VolumeComparisonChart({ data }: Props) {
     return m;
   }, [data.todayCumulativeVolumeMinor]);
 
-  const yesterdayHourly = useMemo(
-    () => hourlyFromCumulative(data.yesterdayCumulativeVolumeMinor),
-    [data.yesterdayCumulativeVolumeMinor],
-  );
+  const yesterdayHourly = useMemo(() => hourlyFromCumulative(parsedYest), [parsedYest]);
 
   const todayHourly = useMemo(
-    () => hourlyTodayFromCumulative(data.todayCumulativeVolumeMinor, maxTodayHour),
-    [data.todayCumulativeVolumeMinor, maxTodayHour],
+    () => hourlyTodayFromCumulative(parsedToday, maxTodayHour),
+    [parsedToday, maxTodayHour],
   );
 
   const yMax = useMemo(() => {
-    const yLast = data.yesterdayCumulativeVolumeMinor[23] ?? 0;
-    let tMax = 0;
-    for (const v of data.todayCumulativeVolumeMinor) {
-      if (typeof v === "number" && v > tMax) tMax = v;
+    const yLast = parsedYest[23] ?? 0n;
+    let tMax = 0n;
+    for (const v of parsedToday) {
+      if (v != null && v > tMax) tMax = v;
     }
-    return Math.max(1, yLast, tMax);
-  }, [data.todayCumulativeVolumeMinor, data.yesterdayCumulativeVolumeMinor]);
+    const m = yLast > tMax ? yLast : tMax;
+    return m > 0n ? m : 1n;
+  }, [parsedToday, parsedYest]);
 
   const yesterdayPath = useMemo(
-    () =>
-      buildPath(
-        data.yesterdayCumulativeVolumeMinor.map((v) => v),
-        yMax,
-        chartW,
-        chartH,
-      ),
-    [data.yesterdayCumulativeVolumeMinor, yMax, chartW, chartH],
+    () => buildPath(parsedYest.map((v) => v), yMax, chartW, chartH),
+    [parsedYest, yMax, chartW, chartH],
   );
 
   const todayPath = useMemo(
-    () => buildPath(data.todayCumulativeVolumeMinor, yMax, chartW, chartH),
-    [data.todayCumulativeVolumeMinor, yMax, chartW, chartH],
+    () => buildPath(parsedToday, yMax, chartW, chartH),
+    [parsedToday, yMax, chartW, chartH],
   );
 
   const yTicks = useMemo(() => {
     const steps = 4;
-    return Array.from({ length: steps + 1 }, (_, i) => Math.round((yMax * i) / steps));
+    return Array.from({ length: steps + 1 }, (_, i) => (yMax * BigInt(i)) / BigInt(steps));
   }, [yMax]);
 
   const innerH = chartH - PAD.t - PAD.b;
@@ -255,14 +286,13 @@ export function VolumeComparisonChart({ data }: Props) {
     setTooltipOffset(null);
   }, []);
 
-  const toY = (v: number) => PAD.t + innerH - (yMax <= 0 ? 0 : (v / yMax) * innerH);
+  const toY = (v: bigint) =>
+    PAD.t + innerH - (yMax <= 0n ? 0 : bigintRatioToNumber(v, yMax) * innerH);
 
-  const hoverYestCum =
-    hoverHour != null ? data.yesterdayCumulativeVolumeMinor[hoverHour] ?? null : null;
-  const hoverTodayCum =
-    hoverHour != null ? data.todayCumulativeVolumeMinor[hoverHour] ?? null : null;
+  const hoverYestCum = hoverHour != null ? parsedYest[hoverHour] ?? null : null;
+  const hoverTodayCum = hoverHour != null ? parsedToday[hoverHour] ?? null : null;
 
-  const hoverYestHourly = hoverHour != null ? yesterdayHourly[hoverHour] ?? 0 : null;
+  const hoverYestHourly = hoverHour != null ? yesterdayHourly[hoverHour] ?? 0n : null;
   const hoverTodayHourly = hoverHour != null ? todayHourly[hoverHour] : null;
 
   const pct =
@@ -304,9 +334,10 @@ export function VolumeComparisonChart({ data }: Props) {
         >
           <rect x="0" y="0" width={chartW} height={chartH} fill="white" rx="8" />
           {yTicks.map((tick) => {
-            const y = PAD.t + innerH - (yMax <= 0 ? 0 : (tick / yMax) * innerH);
+            const y =
+              PAD.t + innerH - (yMax <= 0n ? 0 : bigintRatioToNumber(tick, yMax) * innerH);
             return (
-              <g key={tick}>
+              <g key={tick.toString()}>
                 <line
                   x1={PAD.l}
                   x2={chartW - PAD.r}
@@ -321,7 +352,7 @@ export function VolumeComparisonChart({ data }: Props) {
                   textAnchor="end"
                   className="fill-slate-400 text-[10px]"
                 >
-                  {formatAxisMinor(tick)}
+                  {formatAxisMinorUnits(tick)}
                 </text>
               </g>
             );
@@ -403,7 +434,7 @@ export function VolumeComparisonChart({ data }: Props) {
           ) : null}
           {todayPath.lastIndex >= 0 && hoverHour == null ? (
             (() => {
-              const v = data.todayCumulativeVolumeMinor[todayPath.lastIndex];
+              const v = parsedToday[todayPath.lastIndex];
               if (v == null) return null;
               const x = PAD.l + (todayPath.lastIndex / 23) * innerW;
               const y = toY(v);

@@ -173,6 +173,11 @@ describe('payments-v2 integration', () => {
     expect(vol.body.dayBoundary).toBe('UTC');
     expect(vol.body.currency).toBe('EUR');
     expect(vol.body.todayCumulativeVolumeMinor[bucketH]).toBe('1500');
+    expect(typeof vol.body.totals.todayVolumeMinor).toBe('string');
+    expect(typeof vol.body.totals.yesterdayVolumeMinor).toBe('string');
+    expect(
+      vol.body.yesterdayCumulativeVolumeMinor.every((x: unknown) => typeof x === 'string'),
+    ).toBe(true);
     expect(BigInt(vol.body.totals.todayVolumeMinor)).toBeGreaterThanOrEqual(1500n);
     expect(vol.body.yesterdayCumulativeVolumeMinor).toHaveLength(24);
   });

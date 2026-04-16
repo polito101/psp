@@ -102,12 +102,15 @@ export type OpsVolumeHourlyResponse = {
   currency: string;
   status: string;
   labels: string[];
-  /** Acumulado por hora; `null` en horas futuras del día actual (UTC). */
-  todayCumulativeVolumeMinor: (number | null)[];
-  yesterdayCumulativeVolumeMinor: number[];
+  /**
+   * Acumulado por hora en unidades menores (entero); `null` en horas futuras del día actual (UTC).
+   * Se serializa como string decimal para evitar pérdida de precisión fuera de `MAX_SAFE_INTEGER`.
+   */
+  todayCumulativeVolumeMinor: (string | null)[];
+  yesterdayCumulativeVolumeMinor: string[];
   totals: {
-    todayVolumeMinor: number;
-    yesterdayVolumeMinor: number;
+    todayVolumeMinor: string;
+    yesterdayVolumeMinor: string;
   };
 };
 
