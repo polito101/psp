@@ -31,7 +31,7 @@ import { StripeProviderAdapter } from './providers/stripe-provider.adapter';
 /** Máximo de `PaymentAttempt` en detalle ops: los más recientes, en orden ascendente en la respuesta. */
 const OPS_PAYMENT_DETAIL_ATTEMPTS_MAX = 200;
 
-const opsPaymentDetailAttemptSelect = {
+const opsPaymentDetailAttemptSelectBase = {
   id: true,
   operation: true,
   provider: true,
@@ -42,8 +42,14 @@ const opsPaymentDetailAttemptSelect = {
   latencyMs: true,
   providerPaymentId: true,
   createdAt: true,
-  responsePayload: true,
 } satisfies Prisma.PaymentAttemptSelect;
+
+function opsPaymentDetailAttemptSelect(includePayload: boolean): Prisma.PaymentAttemptSelect {
+  if (!includePayload) {
+    return { ...opsPaymentDetailAttemptSelectBase };
+  }
+  return { ...opsPaymentDetailAttemptSelectBase, responsePayload: true };
+}
 
 type OperationResult = {
   payment: {
@@ -807,10 +813,12 @@ export class PaymentsV2Service {
    * `attemptsTruncated` es true y `attemptsTotal` refleja el conteo completo.
    *
    * @param paymentId - `Payment.id` (cuid u otro id persistido).
+   * @param options.includePayload - Si es true, cada intento incluye `responsePayload` (metadata de proveedor; solo depuración).
    * @returns Agregado listo para JSON (Nest serializa `Date` en ISO).
    * @throws NotFoundException si no existe el pago.
    */
-  async getOpsPaymentDetail(paymentId: string) {
+  async getOpsPaymentDetail(paymentId: string, options?: { includePayload?: boolean }) {
+    const includePayload = options?.includePayload === true;
     const row = await this.prisma.payment.findUnique({
       where: { id: paymentId },
       select: {
@@ -845,7 +853,7 @@ export class PaymentsV2Service {
         where: { paymentId },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: OPS_PAYMENT_DETAIL_ATTEMPTS_MAX,
-        select: opsPaymentDetailAttemptSelect,
+        select: opsPaymentDetailAttemptSelect(includePayload),
       }),
     ]);
 
@@ -872,19 +880,25 @@ export class PaymentsV2Service {
       canceledAt: row.canceledAt,
       attemptsTotal,
       attemptsTruncated: attemptsTotal > OPS_PAYMENT_DETAIL_ATTEMPTS_MAX,
-      attempts: attemptsChronological.map((a) => ({
-        id: a.id,
-        operation: a.operation,
-        provider: a.provider,
-        attemptNo: a.attemptNo,
-        status: a.status,
-        errorCode: a.errorCode,
-        errorMessage: a.errorMessage,
-        latencyMs: a.latencyMs,
-        providerPaymentId: a.providerPaymentId,
-        createdAt: a.createdAt,
-        responsePayload: a.responsePayload,
-      })),
+      attempts: attemptsChronological.map((a) => {
+        const base = {
+          id: a.id,
+          operation: a.operation,
+          provider: a.provider,
+          attemptNo: a.attemptNo,
+          status: a.status,
+          errorCode: a.errorCode,
+          errorMessage: a.errorMessage,
+          latencyMs: a.latencyMs,
+          providerPaymentId: a.providerPaymentId,
+          createdAt: a.createdAt,
+        };
+        if (!includePayload) {
+          return base;
+        }
+        const withPayload = a as typeof base & { responsePayload?: unknown | null };
+        return { ...base, responsePayload: withPayload.responsePayload ?? null };
+      }),
     };
   }
 

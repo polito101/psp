@@ -107,7 +107,8 @@ export type OpsPaymentAttemptDetail = {
   latencyMs: number | null;
   providerPaymentId: string | null;
   createdAt: string;
-  responsePayload: unknown | null;
+  /** Solo presente si la API/BFF se pidió con `includePayload=true` (depuración). */
+  responsePayload?: unknown | null;
 };
 
 export type OpsPaymentDetailResponse = {

@@ -2,6 +2,7 @@ import { BadRequestException, Controller, Get, Param, Query, UseGuards } from '@
 import { ApiOperation, ApiParam, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { InternalSecretGuard } from '../common/guards/internal-secret.guard';
 import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
+import { OpsPaymentDetailQueryDto } from './dto/ops-payment-detail-query.dto';
 import { OpsTransactionCountsQueryDto } from './dto/ops-transaction-counts-query.dto';
 import { PaymentsV2Service } from './payments-v2.service';
 
@@ -72,11 +73,18 @@ export class PaymentsV2InternalController {
     description: 'ID interno del pago (`Payment.id`)',
     schema: { type: 'string', maxLength: 64 },
   })
-  async getOpsPayment(@Param('paymentId') paymentId: string) {
+  @ApiQuery({
+    name: 'includePayload',
+    required: false,
+    description:
+      'Si es true, cada intento incluye `responsePayload` (respuesta cruda de proveedor; solo depuración). Por defecto omitido.',
+    schema: { type: 'boolean', default: false },
+  })
+  async getOpsPayment(@Param('paymentId') paymentId: string, @Query() query: OpsPaymentDetailQueryDto) {
     const id = paymentId?.trim();
     if (!id || id.length > 64) {
       throw new BadRequestException('Invalid paymentId');
     }
-    return this.payments.getOpsPaymentDetail(id);
+    return this.payments.getOpsPaymentDetail(id, { includePayload: query.includePayload === true });
   }
 }

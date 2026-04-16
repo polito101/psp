@@ -658,8 +658,8 @@ export function TransactionsDashboard() {
               disabled={activeTab === "pagos" && summaryKey === "disputed"}
               onClick={() => {
                 forceIncludeTotalRef.current = true;
-                void transactionsQuery.refetch();
-                void countsQuery.refetch();
+                if (listEnabled) void transactionsQuery.refetch();
+                if (activeTab === "pagos") void countsQuery.refetch();
               }}
             >
               <RefreshCw className="size-4" aria-hidden />

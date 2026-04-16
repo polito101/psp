@@ -10,14 +10,14 @@ const paramSchema = z.object({
 
 export async function GET(
   request: NextRequest,
-  context: RouteContext<"/api/internal/payments/[paymentId]">,
+  { params }: { params: Promise<{ paymentId: string }> },
 ) {
   const unauthorizedResponse = enforceInternalRouteAuth(request);
   if (unauthorizedResponse) {
     return unauthorizedResponse;
   }
 
-  const { paymentId } = await context.params;
+  const { paymentId } = await params;
   const parsed = paramSchema.safeParse({ paymentId });
   if (!parsed.success) {
     return NextResponse.json({ message: "Invalid paymentId" }, { status: 400 });
@@ -25,8 +25,13 @@ export async function GET(
 
   try {
     const encoded = encodeURIComponent(parsed.data.paymentId);
+    const searchParams = new URLSearchParams();
+    if (request.nextUrl.searchParams.get("includePayload") === "true") {
+      searchParams.set("includePayload", "true");
+    }
     const data = await proxyInternalGet<OpsPaymentDetailResponse>({
       path: `/api/v2/payments/ops/payments/${encoded}`,
+      searchParams: searchParams.size > 0 ? searchParams : undefined,
     });
     return NextResponse.json(data);
   } catch (error) {
