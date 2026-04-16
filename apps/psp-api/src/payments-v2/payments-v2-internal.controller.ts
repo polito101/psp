@@ -2,6 +2,7 @@ import { BadRequestException, Controller, Get, Param, Query, UseGuards } from '@
 import { ApiOperation, ApiParam, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { InternalSecretGuard } from '../common/guards/internal-secret.guard';
 import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
+import { OpsTransactionCountsQueryDto } from './dto/ops-transaction-counts-query.dto';
 import { PaymentsV2Service } from './payments-v2.service';
 
 @ApiTags('payments-v2')
@@ -17,6 +18,15 @@ export class PaymentsV2InternalController {
   })
   async metrics() {
     return this.payments.getMetricsSnapshot();
+  }
+
+  @Get('ops/transactions/counts')
+  @ApiOperation({
+    summary:
+      'Conteos por estado en una sola respuesta (groupBy) con los mismos filtros base que el listado ops (sin filtro por status)',
+  })
+  async transactionCounts(@Query() query: OpsTransactionCountsQueryDto) {
+    return this.payments.getOpsTransactionCounts(query);
   }
 
   @Get('ops/transactions')
@@ -54,7 +64,8 @@ export class PaymentsV2InternalController {
 
   @Get('ops/payments/:paymentId')
   @ApiOperation({
-    summary: 'Detalle operativo interno de un pago con historial completo de PaymentAttempt',
+    summary:
+      'Detalle operativo interno de un pago con PaymentAttempt (hasta 200 más recientes, orden cronológico; `attemptsTotal`/`attemptsTruncated` si hay más)',
   })
   @ApiParam({
     name: 'paymentId',

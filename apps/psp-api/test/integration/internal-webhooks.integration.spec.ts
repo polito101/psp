@@ -68,6 +68,29 @@ describe('internal/webhooks integration', () => {
     expect(response.body.cursors).toBeDefined();
   });
 
+  it('returns grouped status counts in one response for ops transactions', async () => {
+    const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
+    const merchant = await createMerchantViaHttp(app);
+
+    await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .send({ amountMinor: 100, currency: 'EUR', provider: 'mock' })
+      .expect(201);
+
+    const response = await request(app.getHttpServer())
+      .get('/api/v2/payments/ops/transactions/counts')
+      .set('X-Internal-Secret', internalSecret)
+      .query({ merchantId: merchant.id })
+      .expect(200);
+
+    expect(typeof response.body.total).toBe('number');
+    expect(response.body.total).toBeGreaterThanOrEqual(1);
+    expect(response.body.byStatus).toBeDefined();
+    const sum = Object.values(response.body.byStatus as Record<string, number>).reduce((a, b) => a + b, 0);
+    expect(sum).toBe(response.body.total);
+  });
+
   it('returns null totals when includeTotal=false', async () => {
     const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
     const merchant = await createMerchantViaHttp(app);

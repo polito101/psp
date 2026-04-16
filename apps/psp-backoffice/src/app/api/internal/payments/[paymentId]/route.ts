@@ -10,7 +10,7 @@ const paramSchema = z.object({
 
 export async function GET(
   request: NextRequest,
-  context: { params: Promise<{ paymentId: string }> },
+  context: RouteContext<"/api/internal/payments/[paymentId]">,
 ) {
   const unauthorizedResponse = enforceInternalRouteAuth(request);
   if (unauthorizedResponse) {

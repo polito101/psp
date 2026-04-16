@@ -31,6 +31,7 @@ src/
 │   ├── payments/[paymentId]/page.tsx # detalle pago
 │   └── api/internal/                 # BFF (solo servidor)
 │       ├── transactions/route.ts
+│       ├── transactions/counts/route.ts
 │       ├── payments/[paymentId]/route.ts
 │       └── provider-health/route.ts
 ├── components/                       # UI por feature
@@ -54,11 +55,11 @@ Definidas en `.env.example`; copia a `.env.local`.
 
 - **`/`** — Dashboard de transacciones (lista ops, filtros, export CSV de pagina visible, conteos por estado, cursores).
 - **`/monitor`** — Vista compacta + health de proveedores.
-- **`/payments/[paymentId]`** — Detalle de pago (intentos, metadatos, enlaces operativos).
+- **`/payments/[paymentId]`** — Detalle de pago (intentos acotados a los 200 más recientes si el historial crece; aviso en UI si `attemptsTruncated`), metadatos, enlaces operativos.
 
 ## 6) BFF y seguridad
 
-- Las rutas `app/api/internal/*` reenvian a endpoints internos de Nest (`/api/v2/payments/ops/...`, health, etc.) con `X-Internal-Secret` solo en servidor.
+- Las rutas `app/api/internal/*` reenvian a endpoints internos de Nest (`/api/v2/payments/ops/...`, health, etc.) con `X-Internal-Secret` solo en servidor. El listado ops va a `.../ops/transactions`; los conteos agregados por estado del dashboard a `.../ops/transactions/counts` (`GET /api/internal/transactions/counts`).
 - Cada request al BFF debe llevar auth explícita: header `Authorization: Bearer <BACKOFFICE_ADMIN_SECRET>` o cookie HttpOnly `backoffice_admin_token` (valor igual al secreto configurado). Sin eso: `401`/`403`.
 - No leer secretos desde `NEXT_PUBLIC_*` salvo decision documentada; el patron actual mantiene secretos server-only.
 

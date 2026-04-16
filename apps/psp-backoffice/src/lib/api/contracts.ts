@@ -84,6 +84,18 @@ export type TransactionsFilters = {
   includeTotal?: boolean;
 };
 
+/** Filtros base del listado ops (sin paginación ni estado) para el agregado de conteos por status. */
+export type OpsTransactionCountsFilters = Pick<
+  TransactionsFilters,
+  "merchantId" | "paymentId" | "provider" | "createdFrom" | "createdTo"
+>;
+
+export type OpsTransactionCountsResponse = {
+  total: number;
+  /** Claves = valores de `Payment.status` en DB. */
+  byStatus: Record<string, number>;
+};
+
 export type OpsPaymentAttemptDetail = {
   id: string;
   operation: string;
@@ -117,5 +129,9 @@ export type OpsPaymentDetailResponse = {
   succeededAt: string | null;
   failedAt: string | null;
   canceledAt: string | null;
+  /** Total de intentos persistidos para este pago. */
+  attemptsTotal: number;
+  /** True si la lista `attempts` está acotada (solo los más recientes). */
+  attemptsTruncated: boolean;
   attempts: OpsPaymentAttemptDetail[];
 };

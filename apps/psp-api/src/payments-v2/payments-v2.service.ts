@@ -16,6 +16,7 @@ import { RedisService } from '../redis/redis.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { CreatePaymentIntentDto } from './dto/create-payment-intent.dto';
 import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
+import { OpsTransactionCountsQueryDto } from './dto/ops-transaction-counts-query.dto';
 import {
   PAYMENT_V2_STATUS,
   PaymentOperation,
@@ -26,6 +27,23 @@ import { PaymentsV2ObservabilityService } from './payments-v2-observability.serv
 import { ProviderRegistryService } from './providers/provider-registry.service';
 import { ProviderContext, ProviderResult } from './providers/payment-provider.interface';
 import { StripeProviderAdapter } from './providers/stripe-provider.adapter';
+
+/** Máximo de `PaymentAttempt` en detalle ops: los más recientes, en orden ascendente en la respuesta. */
+const OPS_PAYMENT_DETAIL_ATTEMPTS_MAX = 200;
+
+const opsPaymentDetailAttemptSelect = {
+  id: true,
+  operation: true,
+  provider: true,
+  attemptNo: true,
+  status: true,
+  errorCode: true,
+  errorMessage: true,
+  latencyMs: true,
+  providerPaymentId: true,
+  createdAt: true,
+  responsePayload: true,
+} satisfies Prisma.PaymentAttemptSelect;
 
 type OperationResult = {
   payment: {
@@ -495,6 +513,65 @@ export class PaymentsV2Service {
   }
 
   /**
+   * Construye el `where` de Prisma para listados y agregados ops sobre `Payment`.
+   *
+   * @param params.status - Si se omite, el conjunto no se restringe por estado (p. ej. conteos agrupados).
+   */
+  private buildOpsPaymentListWhere(params: {
+    merchantId?: string;
+    paymentId?: string;
+    status?: string;
+    provider?: 'stripe' | 'mock';
+    createdFrom?: string;
+    createdTo?: string;
+  }): Prisma.PaymentWhereInput {
+    const createdAt: Prisma.DateTimeFilter = {};
+    if (params.createdFrom) {
+      createdAt.gte = new Date(params.createdFrom);
+    }
+    if (params.createdTo) {
+      createdAt.lte = new Date(params.createdTo);
+    }
+
+    return {
+      ...(params.merchantId ? { merchantId: params.merchantId } : {}),
+      ...(params.paymentId ? { id: { contains: params.paymentId, mode: 'insensitive' } } : {}),
+      ...(params.status ? { status: params.status } : {}),
+      ...(params.provider ? { selectedProvider: params.provider } : {}),
+      ...(Object.keys(createdAt).length > 0 ? { createdAt } : {}),
+    };
+  }
+
+  /**
+   * Conteos por `status` para el panel ops: mismos filtros base que `listOpsTransactions` sin `status` en el where.
+   * Una sola consulta `groupBy` sustituye múltiples `count()` del listado con `includeTotal`.
+   */
+  async getOpsTransactionCounts(query: OpsTransactionCountsQueryDto) {
+    const where = this.buildOpsPaymentListWhere({
+      merchantId: query.merchantId,
+      paymentId: query.paymentId,
+      provider: query.provider,
+      createdFrom: query.createdFrom,
+      createdTo: query.createdTo,
+    });
+
+    const rows = await this.prisma.payment.groupBy({
+      by: ['status'],
+      where,
+      _count: { _all: true },
+    });
+
+    const byStatus: Record<string, number> = {};
+    let total = 0;
+    for (const row of rows) {
+      const c = row._count._all;
+      byStatus[row.status] = c;
+      total += c;
+    }
+    return { total, byStatus };
+  }
+
+  /**
    * Lista transacciones para monitoreo interno con filtros operativos y último intento de provider.
    *
    * @param query.includeTotal - Por defecto `true`. Con `false` no se ejecuta `count()`; `page.total` y `page.totalPages` serán `null`.
@@ -520,21 +597,15 @@ export class PaymentsV2Service {
     if (cursorCreatedAt && Number.isNaN(cursorCreatedAt.valueOf())) {
       throw new BadRequestException('Invalid cursorCreatedAt');
     }
-    const createdAt: Prisma.DateTimeFilter = {};
-    if (query.createdFrom) {
-      createdAt.gte = new Date(query.createdFrom);
-    }
-    if (query.createdTo) {
-      createdAt.lte = new Date(query.createdTo);
-    }
 
-    const where: Prisma.PaymentWhereInput = {
-      ...(query.merchantId ? { merchantId: query.merchantId } : {}),
-      ...(query.paymentId ? { id: { contains: query.paymentId, mode: 'insensitive' } } : {}),
-      ...(query.status ? { status: query.status } : {}),
-      ...(query.provider ? { selectedProvider: query.provider } : {}),
-      ...(Object.keys(createdAt).length > 0 ? { createdAt } : {}),
-    };
+    const where = this.buildOpsPaymentListWhere({
+      merchantId: query.merchantId,
+      paymentId: query.paymentId,
+      status: query.status,
+      provider: query.provider,
+      createdFrom: query.createdFrom,
+      createdTo: query.createdTo,
+    });
 
     const orderBy: Prisma.PaymentOrderByWithRelationInput[] = [{ createdAt: 'desc' }, { id: 'desc' }];
 
@@ -731,7 +802,9 @@ export class PaymentsV2Service {
   }
 
   /**
-   * Detalle operativo interno: pago por id interno con todos los intentos de proveedor (cronológico).
+   * Detalle operativo interno: pago por id interno con intentos de proveedor (cronológico ascendente).
+   * Carga como máximo `OPS_PAYMENT_DETAIL_ATTEMPTS_MAX` (200) intentos **más recientes**; si hay más,
+   * `attemptsTruncated` es true y `attemptsTotal` refleja el conteo completo.
    *
    * @param paymentId - `Payment.id` (cuid u otro id persistido).
    * @returns Agregado listo para JSON (Nest serializa `Date` en ISO).
@@ -759,28 +832,24 @@ export class PaymentsV2Service {
         failedAt: true,
         canceledAt: true,
         merchant: { select: { name: true } },
-        attempts: {
-          orderBy: { createdAt: 'asc' },
-          select: {
-            id: true,
-            operation: true,
-            provider: true,
-            attemptNo: true,
-            status: true,
-            errorCode: true,
-            errorMessage: true,
-            latencyMs: true,
-            providerPaymentId: true,
-            createdAt: true,
-            responsePayload: true,
-          },
-        },
       },
     });
 
     if (!row) {
       throw new NotFoundException({ message: 'Payment not found', paymentId });
     }
+
+    const [attemptsTotal, attemptsDesc] = await Promise.all([
+      this.prisma.paymentAttempt.count({ where: { paymentId } }),
+      this.prisma.paymentAttempt.findMany({
+        where: { paymentId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: OPS_PAYMENT_DETAIL_ATTEMPTS_MAX,
+        select: opsPaymentDetailAttemptSelect,
+      }),
+    ]);
+
+    const attemptsChronological = attemptsDesc.slice().reverse();
 
     return {
       id: row.id,
@@ -801,7 +870,9 @@ export class PaymentsV2Service {
       succeededAt: row.succeededAt,
       failedAt: row.failedAt,
       canceledAt: row.canceledAt,
-      attempts: row.attempts.map((a) => ({
+      attemptsTotal,
+      attemptsTruncated: attemptsTotal > OPS_PAYMENT_DETAIL_ATTEMPTS_MAX,
+      attempts: attemptsChronological.map((a) => ({
         id: a.id,
         operation: a.operation,
         provider: a.provider,

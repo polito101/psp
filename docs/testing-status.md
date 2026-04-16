@@ -1,6 +1,6 @@
 # Estado de tests
 
-Ultima actualizacion: 2026-04-15
+Ultima actualizacion: 2026-04-16
 
 ## Objetivo
 
@@ -22,10 +22,8 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 | `payment-links` | No | Si | No | Parcial | Sin endpoint HTTP activo; cobertura via `PaymentLinksService.findForMerchant`. |
 | `ledger` | Si | Si | Si | Cubierto | Unit de servicio + integration/smoke de `/api/v1/balance`. |
 | `health` | Si | Si | Si | Cubierto | Unit + integration `/health` + smoke readiness. |
-| `webhooks` | Si | Si | Si | Cubierto | Unit worker/outbox + integration retry interno + smoke backlog/métricas. |
-| `internal endpoints` | Si (guards) | Si | Si | Cubierto | `/api/v2/payments/ops/metrics` + `/api/v2/payments/ops/transactions` (cursor pagination real por `createdAt/id`; `includeTotal=false` sin COUNT), guard `X-Internal-Secret`, hardening del script CI ante redirects/URL insegura y spec dedicada bloqueante en `api-ci`. |
 | `webhooks` | Si | Si | Si | Cubierto | Unit worker/outbox + integration retry interno + inbound Stripe firmado (firma/tolerancia/json/payload) + outbound a receptor real con worker + smoke backlog/métricas. |
-| `internal endpoints` | Si (guards) | Si | Si | Cubierto | `/api/v2/payments/ops/metrics`, guard `X-Internal-Secret`, hardening del script CI ante redirects/URL insegura y spec dedicada bloqueante en `api-ci`. |
+| `internal endpoints` | Si (guards) | Si | Si | Cubierto | `/api/v2/payments/ops/metrics`, `/api/v2/payments/ops/transactions` (cursor por `createdAt/id`; `includeTotal=false` sin COUNT), `/api/v2/payments/ops/transactions/counts` (`groupBy` status), guard `X-Internal-Secret`, hardening del script CI ante redirects/URL insegura y spec dedicada bloqueante en `api-ci`. |
 
 ## Inventario actual de archivos
 

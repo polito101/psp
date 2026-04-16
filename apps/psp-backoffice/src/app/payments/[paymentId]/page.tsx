@@ -6,7 +6,14 @@ import { PaymentDetailView } from "@/components/transactions/payment-detail-view
 export default function PaymentDetailPage() {
   const params = useParams();
   const raw = params.paymentId;
-  const paymentId = typeof raw === "string" ? decodeURIComponent(raw) : "";
+  let paymentId = "";
+  if (typeof raw === "string") {
+    try {
+      paymentId = decodeURIComponent(raw);
+    } catch {
+      paymentId = "";
+    }
+  }
   if (!paymentId) {
     return (
       <div className="p-6">

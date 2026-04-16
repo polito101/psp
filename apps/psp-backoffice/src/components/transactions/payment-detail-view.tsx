@@ -127,6 +127,12 @@ export function PaymentDetailView({ paymentId }: Props) {
       <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_320px]">
         <section className="min-w-0">
           <h2 className="mb-4 text-sm font-semibold text-slate-900">Actividad del pago</h2>
+          {d.attemptsTruncated ? (
+            <p className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+              Historial acotado: se muestran los {d.attempts.length} intentos más recientes de{" "}
+              <span className="font-semibold">{d.attemptsTotal}</span> en total.
+            </p>
+          ) : null}
           {d.attempts.length === 0 ? (
             <p className="text-sm text-slate-500">Sin intentos registrados en proveedor.</p>
           ) : (

@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery, useQueries } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   type ColumnDef,
   flexRender,
@@ -38,7 +38,7 @@ import {
   TH,
   THead,
 } from "@/components/ui/table";
-import { fetchOpsTransactions } from "@/lib/api/client";
+import { fetchOpsTransactionCounts, fetchOpsTransactions } from "@/lib/api/client";
 import type { TransactionProvider, TransactionStatus, TransactionsFilters } from "@/lib/api/contracts";
 import {
   formatAmountMinor,
@@ -259,6 +259,21 @@ function applyClientRowFilters(rows: TransactionTableRow[], f: AdvancedFilters):
   });
 }
 
+/** Carácter significativo tras espacios iniciales que Excel/Sheets tratan como inicio de fórmula en CSV. */
+const CSV_FORMULA_TRIGGER = /^\s*[=+\-@]/;
+
+/**
+ * Evita CSV injection (fórmulas al abrir en Excel/Sheets) y escapa comillas dobles para el formato RFC 4180.
+ *
+ * @param value Valor bruto de celda antes de envolver en comillas.
+ * @returns Texto seguro para interpolar dentro de `"..."` en una línea CSV.
+ */
+function sanitizeCsvCell(value: unknown): string {
+  const raw = value === null || value === undefined ? "" : String(value);
+  const neutralized = CSV_FORMULA_TRIGGER.test(raw) ? `'${raw}` : raw;
+  return neutralized.replaceAll('"', '""');
+}
+
 function exportCsv(rows: TransactionTableRow[]) {
   const headers = [
     "ID",
@@ -277,16 +292,16 @@ function exportCsv(rows: TransactionTableRow[]) {
       formatAmountMinor(row.amountMinor, row.currency),
       STATUS_LABELS_ES[row.status],
       row.paymentMethodLast4 ? `•••• ${row.paymentMethodLast4}` : "—",
-      (row.description || "").replaceAll('"', '""'),
+      row.description || "",
       row.customer ?? "—",
       formatShortDateTime(row.createdAt),
       row.refundedAt ? formatShortDateTime(row.refundedAt) : "—",
       row.reasonLabel ?? "—",
     ]
-      .map((cell) => `"${String(cell)}"`)
+      .map((cell) => `"${sanitizeCsvCell(cell)}"`)
       .join(","),
   );
-  const csv = [headers.join(","), ...lines].join("\n");
+  const csv = [headers.map((h) => `"${sanitizeCsvCell(h)}"`).join(","), ...lines].join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -306,15 +321,6 @@ const DEFAULT_VISIBILITY: VisibilityState = {
   refundDate: true,
   reason: true,
 };
-
-const COUNT_STATUSES: (TransactionStatus | "none")[] = [
-  "none",
-  "succeeded",
-  "refunded",
-  "failed",
-  "canceled",
-  "authorized",
-];
 
 export function TransactionsDashboard() {
   const router = useRouter();
@@ -397,28 +403,26 @@ export function TransactionsDashboard() {
       ? transactionsQuery.data.page.totalPages
       : lastKnownTotalsRef.current.totalPages;
 
-  const countQueries = useQueries({
-    queries: COUNT_STATUSES.map((st) => {
-      const status = st === "none" ? undefined : st;
-      const key = filtersStableKey({ ...listBase, status });
-      return {
-        queryKey: ["dashboard-ops-count", key, st],
-        queryFn: () =>
-          fetchOpsTransactions({
-            ...listBase,
-            pageSize: 1,
-            includeTotal: true,
-            direction: "next",
-            ...(status ? { status } : {}),
-          }),
-        select: (d: { page: { total: number | null } }) => d.page.total ?? 0,
-        enabled: activeTab === "pagos",
-        staleTime: 15_000,
-      };
-    }),
+  const countsFilterKey = useMemo(() => filtersStableKey(listBase), [listBase]);
+
+  const countsQuery = useQuery({
+    queryKey: ["dashboard-ops-counts", countsFilterKey],
+    queryFn: () => fetchOpsTransactionCounts(listBase),
+    enabled: activeTab === "pagos",
+    staleTime: 15_000,
   });
 
-  const [cAll, cSucceeded, cRefunded, cFailed, cCanceled, cAuthorized] = countQueries.map((q) => q.data ?? null);
+  const countsData = countsQuery.data;
+  const cAll: number | null = countsData !== undefined ? countsData.total : null;
+  const cSucceeded: number | null =
+    countsData !== undefined ? (countsData.byStatus.succeeded ?? 0) : null;
+  const cRefunded: number | null =
+    countsData !== undefined ? (countsData.byStatus.refunded ?? 0) : null;
+  const cFailed: number | null = countsData !== undefined ? (countsData.byStatus.failed ?? 0) : null;
+  const cCanceled: number | null =
+    countsData !== undefined ? (countsData.byStatus.canceled ?? 0) : null;
+  const cAuthorized: number | null =
+    countsData !== undefined ? (countsData.byStatus.authorized ?? 0) : null;
 
   const cardCount = useCallback(
     (key: SummaryCardKey): number | null => {
@@ -655,7 +659,7 @@ export function TransactionsDashboard() {
               onClick={() => {
                 forceIncludeTotalRef.current = true;
                 void transactionsQuery.refetch();
-                void Promise.all(countQueries.map((q) => q.refetch()));
+                void countsQuery.refetch();
               }}
             >
               <RefreshCw className="size-4" aria-hidden />
