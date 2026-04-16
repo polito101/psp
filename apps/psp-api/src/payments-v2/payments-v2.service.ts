@@ -589,6 +589,8 @@ export class PaymentsV2Service {
 
   /**
    * Volumen acumulado por hora (UTC) de pagos `succeeded` para hoy y ayer, para comparar en un mismo eje 0–23h.
+   * Agrupa y filtra por `succeeded_at` (momento de captura/éxito), no por `created_at`, para alinear el volumen
+   * con el día UTC en que el pago pasó a `succeeded` (índice `@@index([status, currency, succeededAt])` en `Payment`).
    */
   async getOpsVolumeHourlySeries(query: OpsVolumeHourlyQueryDto) {
     const currency = (query.currency ?? 'EUR').toUpperCase();
@@ -609,18 +611,19 @@ export class PaymentsV2Service {
       ? Prisma.sql`AND p.selected_provider = ${query.provider}`
       : Prisma.empty;
 
-    const queryHourly = async (rangeStart: Date, rangeEnd: Date): Promise<number[]> => {
-      const hourly = new Array<number>(24).fill(0);
+    const queryHourly = async (rangeStart: Date, rangeEnd: Date): Promise<bigint[]> => {
+      const hourly = new Array<bigint>(24).fill(0n);
       const rows = await this.prisma.$queryRaw<Array<{ hour: number; vol: bigint }>>(
         Prisma.sql`
           SELECT
-            (EXTRACT(HOUR FROM (p.created_at AT TIME ZONE 'UTC')))::int AS hour,
+            (EXTRACT(HOUR FROM (p.succeeded_at AT TIME ZONE 'UTC')))::int AS hour,
             COALESCE(SUM(p.amount_minor), 0)::bigint AS vol
           FROM "Payment" p
           WHERE p.status = ${PAYMENT_V2_STATUS.SUCCEEDED}
             AND p.currency = ${currency}
-            AND p.created_at >= ${rangeStart}
-            AND p.created_at < ${rangeEnd}
+            AND p.succeeded_at IS NOT NULL
+            AND p.succeeded_at >= ${rangeStart}
+            AND p.succeeded_at < ${rangeEnd}
             ${merchantSql}
             ${providerSql}
           GROUP BY 1
@@ -630,7 +633,7 @@ export class PaymentsV2Service {
       for (const row of rows) {
         const h = row.hour;
         if (h >= 0 && h < 24) {
-          hourly[h] = Number(row.vol);
+          hourly[h] = row.vol;
         }
       }
       return hourly;
@@ -641,24 +644,27 @@ export class PaymentsV2Service {
       queryHourly(yesterdayStart, todayStart),
     ]);
 
-    const toCumulative = (hourly: number[]): number[] => {
-      const out: number[] = [];
-      let sum = 0;
+    const toCumulative = (hourly: bigint[]): string[] => {
+      const out: string[] = [];
+      let sum = 0n;
       for (let i = 0; i < 24; i++) {
-        sum += hourly[i] ?? 0;
-        out.push(sum);
+        sum += hourly[i] ?? 0n;
+        out.push(sum.toString());
       }
       return out;
     };
 
     const yesterdayCumulative = toCumulative(yesterdayHourly);
     const todayCumulativeFull = toCumulative(todayHourly);
-    const todayCumulative: (number | null)[] = todayCumulativeFull.map((v, h) =>
+    const todayCumulative: (string | null)[] = todayCumulativeFull.map((v, h) =>
       h > utcHourNow ? null : v,
     );
 
-    const todayVolumeMinor = todayHourly.reduce((acc, v, i) => (i <= utcHourNow ? acc + v : acc), 0);
-    const yesterdayVolumeMinor = yesterdayHourly.reduce((a, b) => a + b, 0);
+    let todayVolumeMinor = 0n;
+    for (let i = 0; i <= utcHourNow; i++) {
+      todayVolumeMinor += todayHourly[i] ?? 0n;
+    }
+    const yesterdayVolumeMinor = yesterdayHourly.reduce((a, b) => a + b, 0n);
 
     const labels = Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2, '0')}:00`);
 
@@ -670,8 +676,8 @@ export class PaymentsV2Service {
       todayCumulativeVolumeMinor: todayCumulative,
       yesterdayCumulativeVolumeMinor: yesterdayCumulative,
       totals: {
-        todayVolumeMinor,
-        yesterdayVolumeMinor,
+        todayVolumeMinor: todayVolumeMinor.toString(),
+        yesterdayVolumeMinor: yesterdayVolumeMinor.toString(),
       },
     };
   }

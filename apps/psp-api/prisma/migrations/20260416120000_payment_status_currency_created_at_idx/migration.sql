@@ -1,0 +1,9 @@
+-- CreateIndex (Payment_status_currency_created_at_idx)
+-- NOTE:
+-- We intentionally do NOT create this index here because `prisma migrate deploy` wraps migrations in a
+-- transaction on PostgreSQL, and `CREATE INDEX CONCURRENTLY` cannot run inside a transaction block.
+--
+-- The index is declared in `schema.prisma` for drift alignment. It is created outside migrations via:
+--   npm -w apps/psp-api run prisma:ops:indexes
+--
+-- (Executed from `prisma/ops/create-indexes-concurrently.sql` on `prisma:migrate:deploy`.)

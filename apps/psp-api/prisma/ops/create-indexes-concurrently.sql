@@ -8,3 +8,8 @@
 CREATE INDEX CONCURRENTLY IF NOT EXISTS "Payment_selected_provider_provider_ref_idx"
   ON "Payment" ("selected_provider", "provider_ref");
 
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "Payment_status_currency_succeeded_at_idx"
+  ON "Payment" ("status", "currency", "succeeded_at");
+
+DROP INDEX CONCURRENTLY IF EXISTS "Payment_status_currency_created_at_idx";
+

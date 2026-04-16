@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
 
 function envInt(name, fallback) {
@@ -38,6 +39,17 @@ function jitter(ms) {
   return Math.round(ms * factor);
 }
 
+/**
+ * Resolves the Prisma CLI entrypoint for `spawn` without a shell.
+ * On Windows, `spawn('prisma', …)` often fails with ENOENT because Node does not
+ * resolve npm `.cmd` shims the way cmd/PowerShell does.
+ */
+function resolvePrismaCliEntrypoint() {
+  const require = createRequire(import.meta.url);
+  const prismaPkgJson = require.resolve('prisma/package.json');
+  return join(dirname(prismaPkgJson), 'build', 'index.js');
+}
+
 function run(cmd, args, opts) {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: 'inherit', shell: false, ...opts });
@@ -57,6 +69,7 @@ async function main() {
   const baseDelayMs = envInt('PSP_PRISMA_INDEX_RETRY_BASE_DELAY_MS', 1000);
 
   const cwd = process.cwd();
+  const prismaCli = resolvePrismaCliEntrypoint();
   const sourceSqlPath = join(cwd, 'prisma', 'ops', 'create-indexes-concurrently.sql');
   const sourceSql = await readFile(sourceSqlPath, 'utf8');
   const finalSql = `SET lock_timeout = ${lockTimeoutMs};\n\n${sourceSql}`;
@@ -72,7 +85,11 @@ async function main() {
     while (true) {
       let exitCode = 1;
       try {
-        exitCode = await run('prisma', ['db', 'execute', '--file', tmpSqlPath], { cwd });
+        exitCode = await run(
+          process.execPath,
+          [prismaCli, 'db', 'execute', '--file', tmpSqlPath],
+          { cwd }
+        );
       } catch (error) {
         const maybeExitCode = Number(error?.exitCode);
         exitCode = Number.isInteger(maybeExitCode) && maybeExitCode > 0 ? maybeExitCode : 1;

@@ -162,7 +162,7 @@ describe('payments-v2 integration', () => {
     const t0 = new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate(), bucketH, 15, 0, 0));
     await prisma.payment.update({
       where: { id: created.body.payment.id },
-      data: { createdAt: t0 },
+      data: { succeededAt: t0 },
     });
 
     const vol = await request(app.getHttpServer())
@@ -172,8 +172,8 @@ describe('payments-v2 integration', () => {
 
     expect(vol.body.dayBoundary).toBe('UTC');
     expect(vol.body.currency).toBe('EUR');
-    expect(vol.body.todayCumulativeVolumeMinor[bucketH]).toBe(1500);
-    expect(vol.body.totals.todayVolumeMinor).toBeGreaterThanOrEqual(1500);
+    expect(vol.body.todayCumulativeVolumeMinor[bucketH]).toBe('1500');
+    expect(BigInt(vol.body.totals.todayVolumeMinor)).toBeGreaterThanOrEqual(1500n);
     expect(vol.body.yesterdayCumulativeVolumeMinor).toHaveLength(24);
   });
 
