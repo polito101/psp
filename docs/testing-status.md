@@ -17,7 +17,7 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 
 | Dominio | Unit | Integration local | Smoke | Estado | Notas |
 | --- | --- | --- | --- | --- | --- |
-| `payments-v2` | Si | Si | Si | Cubierto | Flujos create/get/capture/cancel/refund + idempotencia + rechazo de `paymentLink` no activo/expirado + concurrencia/ops en smoke + webhook inbound Stripe (succeeded/payment_failed→no terminal/canceled/refund/disputas charge.dispute.*) + smoke opcional matriz PM de disputa Stripe (`SMOKE_STRIPE_DISPUTE_PM_MATRIX`) y worker outbound E2E. Integration `volume-hourly`: aserciones de tipo string en totales y serie ayer. |
+| `payments-v2` | Si | Si | Si | Cubierto | Flujos create/get/capture/cancel/refund + idempotencia + rechazo de `paymentLink` no activo/expirado + concurrencia/ops en smoke + webhook inbound Stripe (succeeded/payment_failed→no terminal/canceled/refund/disputas charge.dispute.*) + smoke opcional matriz PM de disputa Stripe (`SMOKE_STRIPE_DISPUTE_PM_MATRIX`) y worker outbound E2E. Unit: circuit breaker v2 (Redis compartido vs fallback sin cliente, conteo/snapshot/reset, log `circuit_opened` solo en transición, degradación si Redis cae con cliente presente: flujo de pago y snapshot). Integration `volume-hourly`: aserciones de tipo string en totales y serie ayer. |
 | `merchants` | No | Si | Parcial | Parcial | Integration cubre create+guard y ciclo revoke/rotate via servicio. Falta spec unitario del controller/service. |
 | `payment-links` | No | Si | No | Parcial | Sin endpoint HTTP activo; cobertura via `PaymentLinksService.findForMerchant`. |
 | `ledger` | Si | Si | Si | Cubierto | Unit de servicio + integration/smoke de `/api/v1/balance`. |
