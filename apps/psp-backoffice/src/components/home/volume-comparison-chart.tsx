@@ -69,8 +69,14 @@ function formatAxisMinorUnits(n: bigint): string {
 }
 
 /** Volumen bruto del intervalo [h,h) a partir de serie acumulada (minor). */
-function hourlyFromCumulative(cumulative: bigint[]): bigint[] {
-  return cumulative.map((v, h) => (h === 0 ? v : v - cumulative[h - 1]));
+function hourlyFromCumulative(cumulative: (bigint | null)[]): (bigint | null)[] {
+  return cumulative.map((v, h) => {
+    if (v == null) return null;
+    if (h === 0) return v;
+    const prev = cumulative[h - 1];
+    if (prev == null) return null;
+    return v - prev;
+  });
 }
 
 function hourlyTodayFromCumulative(
@@ -82,8 +88,16 @@ function hourlyTodayFromCumulative(
   for (let h = 0; h <= maxHour; h++) {
     const cur = cumulative[h];
     if (cur == null) continue;
-    const prev = h === 0 ? 0n : cumulative[h - 1];
-    out[h] = h === 0 ? cur : cur - (prev ?? 0n);
+    if (h === 0) {
+      out[h] = cur;
+      continue;
+    }
+    const prev = cumulative[h - 1];
+    if (prev == null) {
+      out[h] = null;
+      continue;
+    }
+    out[h] = cur - prev;
   }
   return out;
 }
@@ -184,6 +198,14 @@ export function VolumeComparisonChart({ data }: Props) {
     [data.yesterdayCumulativeVolumeMinor],
   );
 
+  const volumeMinorParseInvalid = useMemo(() => {
+    if (data.todayCumulativeVolumeMinor.some((v, i) => v != null && parsedToday[i] == null)) return true;
+    if (parsedYest.some((v) => v == null)) return true;
+    if (amountMinorToBigInt(data.totals.todayVolumeMinor) == null) return true;
+    if (amountMinorToBigInt(data.totals.yesterdayVolumeMinor) == null) return true;
+    return false;
+  }, [data.totals, data.todayCumulativeVolumeMinor, parsedToday, parsedYest]);
+
   const maxTodayHour = useMemo(() => {
     let m = -1;
     data.todayCumulativeVolumeMinor.forEach((v, i) => {
@@ -210,7 +232,7 @@ export function VolumeComparisonChart({ data }: Props) {
   }, [parsedToday, parsedYest]);
 
   const yesterdayPath = useMemo(
-    () => buildPath(parsedYest.map((v) => v), yMax, chartW, chartH),
+    () => buildPath(parsedYest, yMax, chartW, chartH),
     [parsedYest, yMax, chartW, chartH],
   );
 
@@ -292,7 +314,7 @@ export function VolumeComparisonChart({ data }: Props) {
   const hoverYestCum = hoverHour != null ? parsedYest[hoverHour] ?? null : null;
   const hoverTodayCum = hoverHour != null ? parsedToday[hoverHour] ?? null : null;
 
-  const hoverYestHourly = hoverHour != null ? yesterdayHourly[hoverHour] ?? 0n : null;
+  const hoverYestHourly = hoverHour != null ? yesterdayHourly[hoverHour] : null;
   const hoverTodayHourly = hoverHour != null ? todayHourly[hoverHour] : null;
 
   const pct =
@@ -320,6 +342,16 @@ export function VolumeComparisonChart({ data }: Props) {
           </p>
         </div>
       </div>
+
+      {volumeMinorParseInvalid ? (
+        <div
+          className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950"
+          role="alert"
+        >
+          Los importes en unidades menores del payload no son enteros decimales válidos; el gráfico puede
+          aparecer incompleto. Revisa la respuesta de volumen horario.
+        </div>
+      ) : null}
 
       <div ref={chartInteractRef} className="relative">
         <svg

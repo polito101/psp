@@ -61,16 +61,18 @@ export function mapOpsItemToTableRow(item: OpsTransactionItem): TransactionTable
 }
 
 /**
- * Convierte unidades menores desde número, bigint o string decimal entero (p. ej. payload de `volume-hourly`).
- * Cadenas no numéricas enteras devuelven `0n` (defensivo para UI).
+ * Convierte unidades menores desde número, bigint o string con entero decimal (p. ej. payload de `volume-hourly`).
+ *
+ * @returns `null` si la cadena no es un entero decimal válido o el número no es finito.
  */
-export function amountMinorToBigInt(amountMinor: number | bigint | string): bigint {
+export function amountMinorToBigInt(amountMinor: number | bigint | string): bigint | null {
   if (typeof amountMinor === "bigint") return amountMinor;
   if (typeof amountMinor === "string") {
     const t = amountMinor.trim();
-    if (!/^-?\d+$/.test(t)) return 0n;
+    if (!/^-?\d+$/.test(t)) return null;
     return BigInt(t);
   }
+  if (!Number.isFinite(amountMinor)) return null;
   return BigInt(Math.trunc(amountMinor));
 }
 
@@ -81,6 +83,7 @@ export function amountMinorToBigInt(amountMinor: number | bigint | string): bigi
 export function formatAmountMinor(amountMinor: number | bigint | string, currency: string): string {
   const code = currency?.length === 3 ? currency.toUpperCase() : "EUR";
   const minor = amountMinorToBigInt(amountMinor);
+  if (minor == null) return "—";
   const abs = minor < 0n ? -minor : minor;
 
   if (abs <= BigInt(Number.MAX_SAFE_INTEGER)) {
