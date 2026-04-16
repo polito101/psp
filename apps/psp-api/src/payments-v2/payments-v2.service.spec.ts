@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Logger } from '@nestjs/common';
 import { PaymentsV2Service } from './payments-v2.service';
 import { PAYMENT_V2_STATUS } from './domain/payment-status';
 import { ProviderResult } from './providers/payment-provider.interface';
@@ -1408,10 +1408,11 @@ describe('PaymentsV2Service', () => {
     redis.getClient.mockReturnValue({});
     redis.incrementPaymentsV2ProviderCircuitFailure.mockImplementation(async () => {
       state.failures += 1;
+      const openedNow = state.failures === 3 ? 1 : 0;
       if (state.failures >= 3) {
         state.openedUntil = Date.now() + 60_000;
       }
-      return { failures: state.failures, openedUntil: state.openedUntil };
+      return { failures: state.failures, openedUntil: state.openedUntil, openedNow };
     });
     redis.getPaymentsV2ProviderCircuitState.mockImplementation(async () => ({ ...state }));
     redis.resetPaymentsV2ProviderCircuit.mockImplementation(async () => {
@@ -1438,7 +1439,8 @@ describe('PaymentsV2Service', () => {
     redis.incrementPaymentsV2ProviderCircuitFailure.mockImplementation(async () => {
       state.failures += 1;
       if (state.failures >= 3) state.openedUntil = Date.now() + 60_000;
-      return { ...state };
+      const openedNow = state.failures === 3 ? 1 : 0;
+      return { ...state, openedNow };
     });
     redis.getPaymentsV2ProviderCircuitState.mockImplementation(async () => ({ ...state }));
     redis.resetPaymentsV2ProviderCircuit.mockImplementation(async () => {
@@ -1468,5 +1470,116 @@ describe('PaymentsV2Service', () => {
     expect(redis.incrementPaymentsV2ProviderCircuitFailure).not.toHaveBeenCalled();
     expect(redis.resetPaymentsV2ProviderCircuit).not.toHaveBeenCalled();
     expect(snap.mock.failures).toBe(2);
+  });
+
+  it('con Redis: payments_v2.circuit_opened se emite una sola vez por apertura (no spam tras umbral)', async () => {
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    let state = { failures: 0, openedUntil: 0 };
+    redis.getClient.mockReturnValue({});
+    redis.incrementPaymentsV2ProviderCircuitFailure.mockImplementation(async () => {
+      state.failures += 1;
+      const openedNow = state.failures === 3 ? 1 : 0;
+      if (state.failures >= 3) {
+        state.openedUntil = Date.now() + 60_000;
+      }
+      return { failures: state.failures, openedUntil: state.openedUntil, openedNow };
+    });
+    redis.getPaymentsV2ProviderCircuitState.mockImplementation(async () => ({ ...state }));
+    service = buildService();
+    const cb = service as unknown as CbSvc;
+
+    await cb.registerProviderFailure('stripe');
+    await cb.registerProviderFailure('stripe');
+    await cb.registerProviderFailure('stripe');
+    await cb.registerProviderFailure('stripe');
+    await cb.registerProviderFailure('stripe');
+
+    const circuitOpenedCalls = warnSpy.mock.calls.filter(
+      (args) => typeof args[0] === 'string' && args[0].includes('payments_v2.circuit_opened'),
+    );
+    expect(circuitOpenedCalls).toHaveLength(1);
+    warnSpy.mockRestore();
+  });
+
+  it('sin Redis: payments_v2.circuit_opened una sola vez por apertura con fallos posteriores al umbral', async () => {
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    redis.getClient.mockReturnValue(null);
+    service = buildService();
+    const cb = service as unknown as CbSvc;
+
+    await cb.registerProviderFailure('mock');
+    await cb.registerProviderFailure('mock');
+    await cb.registerProviderFailure('mock');
+    await cb.registerProviderFailure('mock');
+
+    const circuitOpenedCalls = warnSpy.mock.calls.filter(
+      (args) => typeof args[0] === 'string' && args[0].includes('payments_v2.circuit_opened'),
+    );
+    expect(circuitOpenedCalls).toHaveLength(1);
+    warnSpy.mockRestore();
+  });
+
+  it('con Redis: si increment del circuit breaker en Redis lanza, createIntent sigue y refleja el fallo del provider', async () => {
+    redis.getClient.mockReturnValue({});
+    redis.getPaymentsV2ProviderCircuitState.mockResolvedValue({ failures: 0, openedUntil: 0 });
+    redis.incrementPaymentsV2ProviderCircuitFailure.mockRejectedValue(new Error('redis unavailable'));
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    prisma.payment.create.mockResolvedValue({
+      id: 'pay_cb_redis_throw',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.PROCESSING,
+      amountMinor: 700,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    mockProvider.run.mockResolvedValue({
+      status: PAYMENT_V2_STATUS.FAILED,
+      reasonCode: 'provider_unavailable',
+      reasonMessage: 'down',
+    });
+    prisma.payment.update.mockResolvedValue({
+      id: 'pay_cb_redis_throw',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.FAILED,
+      amountMinor: 700,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: 'provider_unavailable',
+      paymentLinkId: null,
+    });
+
+    service = buildService();
+
+    const result = await service.createIntent('m_1', {
+      amountMinor: 700,
+      currency: 'EUR',
+      provider: 'mock',
+    });
+
+    expect(result.payment.status).toBe(PAYMENT_V2_STATUS.FAILED);
+    expect(redis.incrementPaymentsV2ProviderCircuitFailure).toHaveBeenCalled();
+    expect(observability.logProviderEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paymentId: 'pay_cb_redis_throw',
+        reasonCode: 'provider_unavailable',
+      }),
+    );
+  });
+
+  it('con Redis: snapshot de CB usa fallback en memoria si Redis falla al leer estado', async () => {
+    redis.getClient.mockReturnValue({});
+    redis.getPaymentsV2ProviderCircuitState.mockRejectedValue(new Error('redis read failed'));
+    service = buildService();
+    const cb = service as unknown as CbSvc;
+
+    const snap = await cb.getCircuitBreakerSnapshot();
+
+    expect(snap.stripe.open).toBe(false);
+    expect(snap.mock.open).toBe(false);
   });
 });

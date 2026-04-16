@@ -7,22 +7,29 @@ import Redis from 'ioredis';
  */
 export const PAYMENTS_V2_CB_HASH_PREFIX = 'payv2:cb';
 
-/** Lua atómico: incrementa fallos y, si alcanza umbral, fija `openedUntil = now + cooldownMs`. */
+/**
+ * Lua atómico: incrementa fallos y, si alcanza umbral, fija `openedUntil = now + cooldownMs`.
+ * Devuelve `openedNow=1` solo en la transición cerrado→abierto (`failures == threshold` tras el INCRBY).
+ */
 const PAYMENTS_V2_CB_LUA_INCREMENT = `
 local key = KEYS[1]
 local threshold = tonumber(ARGV[1])
 local cooldownMs = tonumber(ARGV[2])
 local now = tonumber(ARGV[3])
 local failures = redis.call('HINCRBY', key, 'failures', 1)
+local openedNow = 0
 if failures >= threshold then
   redis.call('HSET', key, 'openedUntil', now + cooldownMs)
+  if failures == threshold then
+    openedNow = 1
+  end
 end
 local openedRaw = redis.call('HGET', key, 'openedUntil')
 local openedUntil = 0
 if openedRaw then
   openedUntil = tonumber(openedRaw) or 0
 end
-return {failures, openedUntil}
+return {failures, openedUntil, openedNow}
 `;
 
 @Injectable()
@@ -66,6 +73,7 @@ export class RedisService implements OnModuleDestroy {
 
   /**
    * Incrementa el contador de fallos del CB v2 para un proveedor y opcionalmente abre/extiende la ventana.
+   * `openedNow` vale 1 solo cuando, en esta llamada, el contador alcanza exactamente el umbral (transición a abierto).
    * Requiere cliente Redis configurado.
    */
   async incrementPaymentsV2ProviderCircuitFailure(
@@ -73,7 +81,7 @@ export class RedisService implements OnModuleDestroy {
     failuresThreshold: number,
     cooldownMs: number,
     nowMs: number,
-  ): Promise<{ failures: number; openedUntil: number }> {
+  ): Promise<{ failures: number; openedUntil: number; openedNow: number }> {
     if (!this.client) {
       throw new Error('Redis client not configured');
     }
@@ -89,7 +97,13 @@ export class RedisService implements OnModuleDestroy {
     if (!Array.isArray(raw) || raw.length < 2) {
       throw new Error('Unexpected Redis eval result for payments v2 circuit breaker');
     }
-    return { failures: Number(raw[0]), openedUntil: Number(raw[1]) };
+    const openedNowRaw = raw.length >= 3 ? raw[2] : 0;
+    const openedNowNum = Number(openedNowRaw);
+    return {
+      failures: Number(raw[0]),
+      openedUntil: Number(raw[1]),
+      openedNow: Number.isFinite(openedNowNum) ? openedNowNum : 0,
+    };
   }
 
   /** Pone el estado del CB v2 del proveedor a cerrado (fallos 0, sin ventana abierta). */

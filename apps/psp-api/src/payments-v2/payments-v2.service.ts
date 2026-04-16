@@ -132,7 +132,10 @@ export class PaymentsV2Service {
   private static readonly IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
 
   private readonly log = new Logger(PaymentsV2Service.name);
-  /** Fallback en proceso únicamente si no hay `REDIS_URL` (cliente Redis ausente). */
+  /**
+   * Estado de circuit breaker en proceso: sin cliente Redis, o degradación cuando Redis
+   * está configurado pero las llamadas al CB fallan (timeout/corte).
+   */
   private readonly cbStateFallback = new Map<PaymentProviderName, CircuitBreakerState>();
   private readonly cbRedisEnabled: boolean;
   private readonly maxRetries: number;
@@ -2273,88 +2276,28 @@ export class PaymentsV2Service {
     );
   }
 
-  private async readCircuitState(providerName: PaymentProviderName): Promise<CircuitBreakerState> {
-    if (this.cbRedisEnabled) {
-      return this.redis.getPaymentsV2ProviderCircuitState(providerName);
-    }
-    this.warnCircuitBreakerRedisUnavailableOnce();
-    return this.cbStateFallback.get(providerName) ?? { failures: 0, openedUntil: 0 };
+  /**
+   * Redis del CB configurado pero no usable: no debe propagar el error al flujo de pago.
+   */
+  private logCircuitBreakerRedisError(
+    op: 'read_state' | 'increment_failure' | 'reset' | 'snapshot',
+    error: unknown,
+    provider?: PaymentProviderName,
+  ): void {
+    this.log.warn(
+      JSON.stringify({
+        event: 'payments_v2.circuit_breaker_redis_error',
+        op,
+        provider: provider ?? null,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
   }
 
-  private async isCircuitOpen(providerName: PaymentProviderName): Promise<boolean> {
-    const state = await this.readCircuitState(providerName);
-    return state.openedUntil > Date.now();
-  }
-
-  private async registerProviderFailure(providerName: PaymentProviderName): Promise<void> {
-    if (this.cbRedisEnabled) {
-      const { failures, openedUntil } = await this.redis.incrementPaymentsV2ProviderCircuitFailure(
-        providerName,
-        this.cbFailures,
-        this.cbCooldownMs,
-        Date.now(),
-      );
-      if (failures >= this.cbFailures) {
-        this.log.warn(
-          JSON.stringify({
-            event: 'payments_v2.circuit_opened',
-            provider: providerName,
-            openedUntil,
-          }),
-        );
-      }
-      return;
-    }
-
-    this.warnCircuitBreakerRedisUnavailableOnce();
-    const current = this.cbStateFallback.get(providerName) ?? { failures: 0, openedUntil: 0 };
-    current.failures += 1;
-    if (current.failures >= this.cbFailures) {
-      current.openedUntil = Date.now() + this.cbCooldownMs;
-      this.log.warn(
-        JSON.stringify({
-          event: 'payments_v2.circuit_opened',
-          provider: providerName,
-          openedUntil: current.openedUntil,
-        }),
-      );
-    }
-    this.cbStateFallback.set(providerName, current);
-  }
-
-  private async resetProviderFailure(providerName: PaymentProviderName): Promise<void> {
-    if (this.cbRedisEnabled) {
-      await this.redis.resetPaymentsV2ProviderCircuit(providerName);
-      return;
-    }
-    this.warnCircuitBreakerRedisUnavailableOnce();
-    this.cbStateFallback.set(providerName, { failures: 0, openedUntil: 0 });
-  }
-
-  private async getCircuitBreakerSnapshot(): Promise<
-    Record<PaymentProviderName, { failures: number; open: boolean; openedUntil: number }>
-  > {
-    const now = Date.now();
+  private circuitBreakerSnapshotFromFallback(
+    now: number,
+  ): Record<PaymentProviderName, { failures: number; open: boolean; openedUntil: number }> {
     const providers: PaymentProviderName[] = ['stripe', 'mock'];
-    if (this.cbRedisEnabled) {
-      const states = await Promise.all(
-        providers.map((provider) => this.redis.getPaymentsV2ProviderCircuitState(provider)),
-      );
-      return providers.reduce(
-        (acc, provider, i) => {
-          const state = states[i] ?? { failures: 0, openedUntil: 0 };
-          acc[provider] = {
-            failures: state.failures,
-            open: state.openedUntil > now,
-            openedUntil: state.openedUntil,
-          };
-          return acc;
-        },
-        {} as Record<PaymentProviderName, { failures: number; open: boolean; openedUntil: number }>,
-      );
-    }
-
-    this.warnCircuitBreakerRedisUnavailableOnce();
     return providers.reduce(
       (acc, provider) => {
         const state = this.cbStateFallback.get(provider) ?? { failures: 0, openedUntil: 0 };
@@ -2367,6 +2310,120 @@ export class PaymentsV2Service {
       },
       {} as Record<PaymentProviderName, { failures: number; open: boolean; openedUntil: number }>,
     );
+  }
+
+  private async readCircuitState(providerName: PaymentProviderName): Promise<CircuitBreakerState> {
+    if (this.cbRedisEnabled) {
+      try {
+        return await this.redis.getPaymentsV2ProviderCircuitState(providerName);
+      } catch (error) {
+        this.logCircuitBreakerRedisError('read_state', error, providerName);
+        // Fallar abierto si no hay estado local: no bloquear pagos por Redis caído.
+        return this.cbStateFallback.get(providerName) ?? { failures: 0, openedUntil: 0 };
+      }
+    }
+    this.warnCircuitBreakerRedisUnavailableOnce();
+    return this.cbStateFallback.get(providerName) ?? { failures: 0, openedUntil: 0 };
+  }
+
+  private async isCircuitOpen(providerName: PaymentProviderName): Promise<boolean> {
+    const state = await this.readCircuitState(providerName);
+    return state.openedUntil > Date.now();
+  }
+
+  private registerProviderFailureInMemory(providerName: PaymentProviderName): void {
+    const current = this.cbStateFallback.get(providerName) ?? { failures: 0, openedUntil: 0 };
+    current.failures += 1;
+    if (current.failures >= this.cbFailures) {
+      current.openedUntil = Date.now() + this.cbCooldownMs;
+      if (current.failures === this.cbFailures) {
+        this.log.warn(
+          JSON.stringify({
+            event: 'payments_v2.circuit_opened',
+            provider: providerName,
+            openedUntil: current.openedUntil,
+          }),
+        );
+      }
+    }
+    this.cbStateFallback.set(providerName, current);
+  }
+
+  private async registerProviderFailure(providerName: PaymentProviderName): Promise<void> {
+    if (this.cbRedisEnabled) {
+      try {
+        const { openedUntil, openedNow } = await this.redis.incrementPaymentsV2ProviderCircuitFailure(
+          providerName,
+          this.cbFailures,
+          this.cbCooldownMs,
+          Date.now(),
+        );
+        if (openedNow === 1) {
+          this.log.warn(
+            JSON.stringify({
+              event: 'payments_v2.circuit_opened',
+              provider: providerName,
+              openedUntil,
+            }),
+          );
+        }
+        return;
+      } catch (error) {
+        this.logCircuitBreakerRedisError('increment_failure', error, providerName);
+        this.registerProviderFailureInMemory(providerName);
+        return;
+      }
+    }
+
+    this.warnCircuitBreakerRedisUnavailableOnce();
+    this.registerProviderFailureInMemory(providerName);
+  }
+
+  private async resetProviderFailure(providerName: PaymentProviderName): Promise<void> {
+    if (this.cbRedisEnabled) {
+      try {
+        await this.redis.resetPaymentsV2ProviderCircuit(providerName);
+        return;
+      } catch (error) {
+        this.logCircuitBreakerRedisError('reset', error, providerName);
+        this.cbStateFallback.set(providerName, { failures: 0, openedUntil: 0 });
+        return;
+      }
+    }
+    this.warnCircuitBreakerRedisUnavailableOnce();
+    this.cbStateFallback.set(providerName, { failures: 0, openedUntil: 0 });
+  }
+
+  private async getCircuitBreakerSnapshot(): Promise<
+    Record<PaymentProviderName, { failures: number; open: boolean; openedUntil: number }>
+  > {
+    const now = Date.now();
+    const providers: PaymentProviderName[] = ['stripe', 'mock'];
+    if (this.cbRedisEnabled) {
+      try {
+        const states = await Promise.all(
+          providers.map((provider) => this.redis.getPaymentsV2ProviderCircuitState(provider)),
+        );
+        return providers.reduce(
+          (acc, provider, i) => {
+            const state = states[i] ?? { failures: 0, openedUntil: 0 };
+            acc[provider] = {
+              failures: state.failures,
+              open: state.openedUntil > now,
+              openedUntil: state.openedUntil,
+            };
+            return acc;
+          },
+          {} as Record<PaymentProviderName, { failures: number; open: boolean; openedUntil: number }>,
+        );
+      } catch (error) {
+        this.logCircuitBreakerRedisError('snapshot', error);
+        return this.circuitBreakerSnapshotFromFallback(now);
+      }
+    }
+
+    this.warnCircuitBreakerRedisUnavailableOnce();
+    return this.circuitBreakerSnapshotFromFallback(now);
   }
 
   private async markPaymentFailed(
