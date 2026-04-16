@@ -1,6 +1,5 @@
 {
-  "dependencies": {
-    "@polymarket/clob-client": "^5.8.1",
-    "ethers": "^6.16.0"
-  }
+  "name": "psp-monorepo",
+  "private": true,
+  "description": "Metadatos del monorepo; dependencias en apps/psp-api y apps/psp-backoffice."
 }

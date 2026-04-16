@@ -66,6 +66,27 @@ jobs:
       - name: Build Docker image (CI validation)
         run: docker build -t psp-api:ci .
 
+  backoffice-ci:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/psp-backoffice
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/psp-backoffice/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+
   terraform-validate:
     runs-on: ubuntu-latest
     steps:
@@ -84,7 +105,7 @@ jobs:
     if: >-
       github.event_name == 'push' &&
       github.ref == 'refs/heads/sandbox'
-    needs: [api-ci]
+    needs: [api-ci, backoffice-ci]
     runs-on: ubuntu-latest
     environment: sandbox
     defaults:
