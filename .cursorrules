@@ -1,8 +1,0 @@
-# Reglas de Cursor
-
-La fuente de verdad para el agente está en **`.cursor/rules/`** (archivos `.mdc` con frontmatter):
-
-- **`project-context.mdc`** — stack, convenciones NestJS/Prisma y reglas para la IA (`alwaysApply: true`).
-- **`daily-async-log-journal.mdc`** — Daily Async Log en `JOURNAL.md` (`alwaysApply: true`).
-
-No dupliques aquí reglas largas; edita los `.mdc` correspondientes.

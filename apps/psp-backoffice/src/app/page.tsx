@@ -1,5 +1,5 @@
-import { TransactionsMonitor } from "@/components/transactions/transactions-monitor";
+import { TransactionsDashboard } from "@/components/transactions/transactions-dashboard";
 
 export default function Home() {
-  return <TransactionsMonitor />;
+  return <TransactionsDashboard />;
 }

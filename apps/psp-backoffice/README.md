@@ -2,10 +2,12 @@
 
 Frontend administrativo (MVP) para operación financiera sobre `psp-api`.
 
+Contexto detallado del app (rutas, BFF, env, convenciones): **`BACKOFFICE_CONTEXT.md`** en este directorio. Vision global del monorepo: **`PROJECT_CONTEXT.md`** en la raiz del repo.
+
 ## Requisitos
 
 - Node.js 22+
-- API Nest corriendo (por defecto en `http://localhost:3000`)
+- API Nest corriendo (por defecto en `http://localhost:3003`)
 
 ## Variables de entorno
 
@@ -22,10 +24,16 @@ Variables:
 - `BACKOFFICE_ADMIN_SECRET`: secreto obligatorio para autorizar requests a `/api/internal/*` (debe ser distinto de `PSP_INTERNAL_API_SECRET`).
 - `NEXT_PUBLIC_TRANSACTIONS_REFRESH_MS`: intervalo de auto-refresh del monitor.
 
+## Rutas principales
+
+- `/` — Panel de transacciones (lista ops contra la API vía BFF, export y filtros).
+- `/monitor` — Monitor operativo compacto (misma fuente + health de proveedores).
+
 ## Comandos
 
 ```bash
 npm install
+# Por defecto corre en http://localhost:3005 para no chocar con psp-api (3003)
 npm run dev
 npm run lint
 npm run typecheck

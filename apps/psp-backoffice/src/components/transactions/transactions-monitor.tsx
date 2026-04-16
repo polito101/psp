@@ -9,6 +9,8 @@ import {
   useReactTable,
 } from "@tanstack/react-table";
 import { AlertCircle, Clock3, RefreshCw } from "lucide-react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type {
   OpsTransactionItem,
   TransactionProvider,
@@ -106,8 +108,9 @@ function filtersStableKey(f: Omit<TransactionsFilters, "pageSize">): string {
 }
 
 export function TransactionsMonitor() {
+  const router = useRouter();
   const [cursorStack, setCursorStack] = useState<({ createdAt: string; id: string } | null)[]>([null]);
-  const [selectedTransaction, setSelectedTransaction] = useState<OpsTransactionItem | null>(null);
+  const [hasMounted, setHasMounted] = useState(false);
   const [draft, setDraft] = useState<FilterDraft>({
     merchantId: "",
     paymentId: "",
@@ -152,6 +155,10 @@ export function TransactionsMonitor() {
   });
 
   useEffect(() => {
+    setHasMounted(true);
+  }, []);
+
+  useEffect(() => {
     const t = transactionsQuery.data?.page.total;
     const tp = transactionsQuery.data?.page.totalPages;
     if (typeof t === "number" && typeof tp === "number") {
@@ -180,13 +187,12 @@ export function TransactionsMonitor() {
         accessorKey: "id",
         header: "Payment",
         cell: ({ row }) => (
-          <button
-            type="button"
-            className="font-medium text-slate-900 underline-offset-4 hover:underline"
-            onClick={() => setSelectedTransaction(row.original)}
+          <Link
+            href={`/payments/${row.original.id}`}
+            className="font-medium text-[var(--primary)] underline-offset-4 hover:underline"
           >
             {row.original.id}
-          </button>
+          </Link>
         ),
       },
       {
@@ -245,7 +251,7 @@ export function TransactionsMonitor() {
         cell: ({ row }) => formatDate(row.original.createdAt),
       },
     ],
-    [],
+    [router],
   );
 
   // eslint-disable-next-line react-hooks/incompatible-library
@@ -272,7 +278,7 @@ export function TransactionsMonitor() {
               forceIncludeTotalRef.current = true;
               void transactionsQuery.refetch();
             }}
-            disabled={transactionsQuery.isFetching}
+            disabled={hasMounted ? transactionsQuery.isFetching : false}
           >
             <RefreshCw className="mr-2 size-4" />
             Refrescar
@@ -380,7 +386,15 @@ export function TransactionsMonitor() {
                   </tr>
                 ) : (
                   table.getRowModel().rows.map((row) => (
-                    <tr key={row.id} className="hover:bg-slate-50">
+                    <tr
+                      key={row.id}
+                      className="cursor-pointer hover:bg-slate-50"
+                      onClick={(event) => {
+                        const el = event.target as HTMLElement;
+                        if (el.closest("a, button, input")) return;
+                        router.push(`/payments/${row.original.id}`);
+                      }}
+                    >
                       {row.getVisibleCells().map((cell) => (
                         <TD key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</TD>
                       ))}
@@ -440,52 +454,6 @@ export function TransactionsMonitor() {
         </CardContent>
       </Card>
 
-      {selectedTransaction ? (
-        <Card>
-          <CardHeader>
-            <div>
-              <CardTitle>Detalle de transaccion</CardTitle>
-              <CardDescription>{selectedTransaction.id}</CardDescription>
-            </div>
-            <Button variant="ghost" size="sm" onClick={() => setSelectedTransaction(null)}>
-              Cerrar
-            </Button>
-          </CardHeader>
-          <CardContent className="grid gap-3 md:grid-cols-2">
-            <div className="space-y-1 text-sm">
-              <p>
-                <span className="text-slate-500">Merchant:</span> {selectedTransaction.merchantName}
-              </p>
-              <p>
-                <span className="text-slate-500">Estado:</span> {selectedTransaction.status}
-              </p>
-              <p>
-                <span className="text-slate-500">Proveedor:</span> {selectedTransaction.selectedProvider ?? "-"}
-              </p>
-              <p>
-                <span className="text-slate-500">Motivo:</span> {selectedTransaction.routingReasonCode ?? "-"}
-              </p>
-            </div>
-            <div className="space-y-1 text-sm">
-              <p>
-                <span className="text-slate-500">Creado:</span> {formatDate(selectedTransaction.createdAt)}
-              </p>
-              <p>
-                <span className="text-slate-500">Ultimo intento:</span>{" "}
-                {formatDate(selectedTransaction.lastAttempt?.createdAt ?? null)}
-              </p>
-              <p>
-                <span className="text-slate-500">Operacion:</span>{" "}
-                {selectedTransaction.lastAttempt?.operation ?? "-"}
-              </p>
-              <p>
-                <span className="text-slate-500">Error:</span>{" "}
-                {selectedTransaction.lastAttempt?.errorMessage ?? "-"}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      ) : null}
     </div>
   );
 }

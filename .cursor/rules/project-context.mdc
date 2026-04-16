@@ -17,9 +17,9 @@ alwaysApply: true
 - Estado de cobertura de tests: `docs/testing-status.md` (documento vivo)
 
 ### Alcance actual del repositorio
-- Este repositorio es backend-first.
-- La app principal vive en `apps/psp-api`.
-- Si una sugerencia aplica a frontend (React, hooks, TanStack Query), no proponerla salvo que exista explícitamente un módulo frontend.
+- Repositorio **backend-first**; la app principal de dominio vive en `apps/psp-api` (NestJS).
+- Panel administrativo en **`apps/psp-backoffice`** (Next.js 16 App Router, React 19, Tailwind 4, TanStack Query/Table). Convenciones, rutas, BFF y detalle de UI: SSOT **`apps/psp-backoffice/BACKOFFICE_CONTEXT.md`**. Al trabajar bajo `apps/psp-backoffice/**`, aplica también `.cursor/rules/psp-backoffice-context.mdc`.
+- El **`PROJECT_CONTEXT.md` de la raíz** conserva un resumen de lo esencial del backoffice (integración con API, seguridad BFF) para visión global del monorepo.
 
 ### Convenciones de arquitectura
 - Organizar por dominio/módulo de NestJS: `src/<dominio>/`.

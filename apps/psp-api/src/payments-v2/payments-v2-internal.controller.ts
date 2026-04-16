@@ -1,7 +1,9 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
-import { ApiOperation, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import { BadRequestException, Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import { ApiOperation, ApiParam, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { InternalSecretGuard } from '../common/guards/internal-secret.guard';
 import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
+import { OpsPaymentDetailQueryDto } from './dto/ops-payment-detail-query.dto';
+import { OpsTransactionCountsQueryDto } from './dto/ops-transaction-counts-query.dto';
 import { PaymentsV2Service } from './payments-v2.service';
 
 @ApiTags('payments-v2')
@@ -17,6 +19,15 @@ export class PaymentsV2InternalController {
   })
   async metrics() {
     return this.payments.getMetricsSnapshot();
+  }
+
+  @Get('ops/transactions/counts')
+  @ApiOperation({
+    summary:
+      'Conteos por estado en una sola respuesta (groupBy) con los mismos filtros base que el listado ops (sin filtro por status)',
+  })
+  async transactionCounts(@Query() query: OpsTransactionCountsQueryDto) {
+    return this.payments.getOpsTransactionCounts(query);
   }
 
   @Get('ops/transactions')
@@ -50,5 +61,30 @@ export class PaymentsV2InternalController {
   })
   async listTransactions(@Query() query: ListOpsTransactionsDto) {
     return this.payments.listOpsTransactions(query);
+  }
+
+  @Get('ops/payments/:paymentId')
+  @ApiOperation({
+    summary:
+      'Detalle operativo interno de un pago con PaymentAttempt (hasta 200 más recientes, orden cronológico; `attemptsTotal`/`attemptsTruncated` si hay más)',
+  })
+  @ApiParam({
+    name: 'paymentId',
+    description: 'ID interno del pago (`Payment.id`)',
+    schema: { type: 'string', maxLength: 64 },
+  })
+  @ApiQuery({
+    name: 'includePayload',
+    required: false,
+    description:
+      'Si es true, cada intento incluye `responsePayload` (respuesta cruda de proveedor; solo depuración). Por defecto omitido.',
+    schema: { type: 'boolean', default: false },
+  })
+  async getOpsPayment(@Param('paymentId') paymentId: string, @Query() query: OpsPaymentDetailQueryDto) {
+    const id = paymentId?.trim();
+    if (!id || id.length > 64) {
+      throw new BadRequestException('Invalid paymentId');
+    }
+    return this.payments.getOpsPaymentDetail(id, { includePayload: query.includePayload === true });
   }
 }

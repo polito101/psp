@@ -1,4 +1,7 @@
 import type {
+  OpsPaymentDetailResponse,
+  OpsTransactionCountsFilters,
+  OpsTransactionCountsResponse,
   OpsTransactionsResponse,
   ProviderHealthResponse,
   TransactionsFilters,
@@ -43,6 +46,31 @@ export async function fetchOpsTransactions(filters: TransactionsFilters): Promis
     cache: "no-store",
   });
   return parseResponse<OpsTransactionsResponse>(response);
+}
+
+export async function fetchOpsTransactionCounts(
+  filters: OpsTransactionCountsFilters,
+): Promise<OpsTransactionCountsResponse> {
+  const params = new URLSearchParams();
+  if (filters.merchantId) params.set("merchantId", filters.merchantId);
+  if (filters.paymentId) params.set("paymentId", filters.paymentId);
+  if (filters.provider) params.set("provider", filters.provider);
+  if (filters.createdFrom) params.set("createdFrom", filters.createdFrom);
+  if (filters.createdTo) params.set("createdTo", filters.createdTo);
+  const response = await fetch(`/api/internal/transactions/counts?${params.toString()}`, {
+    method: "GET",
+    cache: "no-store",
+  });
+  return parseResponse<OpsTransactionCountsResponse>(response);
+}
+
+export async function fetchOpsPaymentDetail(paymentId: string): Promise<OpsPaymentDetailResponse> {
+  const encoded = encodeURIComponent(paymentId);
+  const response = await fetch(`/api/internal/payments/${encoded}`, {
+    method: "GET",
+    cache: "no-store",
+  });
+  return parseResponse<OpsPaymentDetailResponse>(response);
 }
 
 export async function fetchProviderHealth(): Promise<ProviderHealthResponse> {
