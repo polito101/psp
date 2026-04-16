@@ -1,15 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import {
-  IsIn,
-  IsInt,
-  IsOptional,
-  IsPositive,
-  IsString,
-  IsUrl,
-  Length,
-  Matches,
-  MaxLength,
-} from 'class-validator';
+import { IsInt, IsOptional, IsPositive, IsString, IsUrl, Length, Matches, MaxLength } from 'class-validator';
 
 export class CreatePaymentIntentDto {
   @ApiProperty({ example: 1999 })
@@ -27,14 +17,9 @@ export class CreatePaymentIntentDto {
   @IsString()
   paymentLinkId?: string;
 
-  @ApiPropertyOptional({ enum: ['stripe', 'mock'] })
-  @IsOptional()
-  @IsIn(['stripe', 'mock'])
-  provider?: 'stripe' | 'mock';
-
   @ApiPropertyOptional({
     description:
-      'Stripe PaymentMethod (`pm_...`). Si se envía, el intent se crea con `confirm=true` en servidor (captura manual). Para métodos con redirect suele hacer falta `stripeReturnUrl`.',
+      '**Solo pruebas / adapter Stripe provisional.** No forma parte del contrato estable del PSP: desaparecerá al sustituir o retirar Stripe. Stripe PaymentMethod (`pm_...`). Si se envía, el intent se crea con `confirm=true` en servidor (captura manual). Para métodos con redirect suele hacer falta `stripeReturnUrl`.',
     example: 'pm_card_visa',
   })
   @IsOptional()
@@ -44,7 +29,7 @@ export class CreatePaymentIntentDto {
 
   @ApiPropertyOptional({
     description:
-      'URL de retorno (p. ej. tras 3DS redirect) cuando se confirma en servidor con `stripePaymentMethodId`.',
+      '**Solo pruebas / adapter Stripe provisional.** No forma parte del contrato estable del PSP: desaparecerá al sustituir o retirar Stripe. URL de retorno (p. ej. tras 3DS redirect) cuando se confirma en servidor con `stripePaymentMethodId`.',
     example: 'https://example.com/pay/return',
   })
   @IsOptional()

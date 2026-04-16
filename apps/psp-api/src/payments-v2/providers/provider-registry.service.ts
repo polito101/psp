@@ -24,6 +24,11 @@ export class ProviderRegistryService {
     return this.providers[name];
   }
 
+  /**
+   * Orden de intento para operaciones de pago.
+   * Sin argumento: lista desde `PAYMENTS_PROVIDER_ORDER` (ruteo del PSP, no preferencia del merchant).
+   * Con argumento: solo el proveedor ya ligado al pago (p. ej. `capture` sobre `selectedProvider`), no implica elección del comercio.
+   */
   orderedProviders(preferred?: PaymentProviderName): PaymentProviderName[] {
     if (preferred) return [preferred];
 

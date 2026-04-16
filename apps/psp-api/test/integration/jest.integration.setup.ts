@@ -19,6 +19,7 @@ process.env.INTERNAL_API_SECRET ??= 'integration-internal-secret';
 process.env.APP_ENCRYPTION_KEY ??= 'integration-encryption-key-32-chars';
 process.env.ENABLE_SWAGGER ??= 'false';
 process.env.PAYMENTS_V2_ENABLED_MERCHANTS ??= '*';
+/** Primero `mock` para que los POST create de integración sin body `provider` ejerciten el adapter mock. */
 process.env.PAYMENTS_PROVIDER_ORDER ??= 'mock,stripe';
 process.env.PAYMENTS_ALLOW_MOCK ??= 'true';
 if (!process.env.STRIPE_WEBHOOK_SECRET) {

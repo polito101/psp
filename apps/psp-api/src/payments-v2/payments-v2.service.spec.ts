@@ -143,13 +143,13 @@ describe('PaymentsV2Service', () => {
   it('rechaza Idempotency-Key demasiado larga', async () => {
     const longKey = 'a'.repeat(257);
     await expect(
-      service.createIntent('m_1', { amountMinor: 1000, currency: 'EUR', provider: 'mock' }, longKey),
+      service.createIntent('m_1', { amountMinor: 1000, currency: 'EUR' }, longKey),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('rechaza Idempotency-Key con caracteres fuera del charset permitido', async () => {
     await expect(
-      service.createIntent('m_1', { amountMinor: 1000, currency: 'EUR', provider: 'mock' }, 'key with space'),
+      service.createIntent('m_1', { amountMinor: 1000, currency: 'EUR' }, 'key with space'),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
@@ -187,7 +187,7 @@ describe('PaymentsV2Service', () => {
 
     await service.createIntent(
       'm_1',
-      { amountMinor: 500, currency: 'EUR', provider: 'mock' },
+      { amountMinor: 500, currency: 'EUR' },
       ['first-key', 'ignored'],
     );
 
@@ -204,7 +204,7 @@ describe('PaymentsV2Service', () => {
     await expect(
       service.createIntent(
         'm_other',
-        { amountMinor: 1000, currency: 'EUR', provider: 'mock' },
+        { amountMinor: 1000, currency: 'EUR' },
         'idem_1',
       ),
     ).rejects.toBeInstanceOf(ForbiddenException);
@@ -244,7 +244,6 @@ describe('PaymentsV2Service', () => {
     const result = await service.createIntent('m_1', {
       amountMinor: 1200,
       currency: 'EUR',
-      provider: 'mock',
     });
 
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.AUTHORIZED);
@@ -329,7 +328,6 @@ describe('PaymentsV2Service', () => {
       {
         amountMinor: 1200,
         currency: 'EUR',
-        provider: 'mock',
       },
       'idem-race',
     );
@@ -364,7 +362,7 @@ describe('PaymentsV2Service', () => {
 
     const result = await service.createIntent(
       'm_1',
-      { amountMinor: 1200, currency: 'EUR', provider: 'stripe' },
+      { amountMinor: 1200, currency: 'EUR' },
       'idem-action',
     );
 
@@ -419,7 +417,6 @@ describe('PaymentsV2Service', () => {
     const result = await service.createIntent('m_1', {
       amountMinor: 1500,
       currency: 'EUR',
-      provider: 'mock',
     });
 
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.AUTHORIZED);
@@ -469,7 +466,6 @@ describe('PaymentsV2Service', () => {
     const result = await service.createIntent('m_1', {
       amountMinor: 1500,
       currency: 'EUR',
-      provider: 'mock',
     });
 
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.AUTHORIZED);
@@ -788,7 +784,6 @@ describe('PaymentsV2Service', () => {
     const result = await service.createIntent('m_1', {
       amountMinor: 1500,
       currency: 'EUR',
-      provider: 'mock',
     });
 
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.FAILED);
@@ -832,7 +827,6 @@ describe('PaymentsV2Service', () => {
     const result = await service.createIntent('m_1', {
       amountMinor: 1500,
       currency: 'EUR',
-      provider: 'mock',
     });
 
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.FAILED);
@@ -882,7 +876,6 @@ describe('PaymentsV2Service', () => {
     await service.createIntent('m_1', {
       amountMinor: 500,
       currency: 'EUR',
-      provider: 'mock',
     });
 
     expect(observability.registerAttempt).toHaveBeenCalledTimes(1);
@@ -1558,7 +1551,6 @@ describe('PaymentsV2Service', () => {
     const result = await service.createIntent('m_1', {
       amountMinor: 700,
       currency: 'EUR',
-      provider: 'mock',
     });
 
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.FAILED);

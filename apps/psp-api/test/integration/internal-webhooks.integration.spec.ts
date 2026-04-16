@@ -44,13 +44,13 @@ describe('internal/webhooks integration', () => {
     await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1999, currency: 'EUR', provider: 'mock' })
+      .send({ amountMinor: 1999, currency: 'EUR' })
       .expect(201);
 
     await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 2500, currency: 'EUR', provider: 'mock' })
+      .send({ amountMinor: 2500, currency: 'EUR' })
       .expect(201);
 
     const response = await request(app.getHttpServer())
@@ -75,7 +75,7 @@ describe('internal/webhooks integration', () => {
     await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 100, currency: 'EUR', provider: 'mock' })
+      .send({ amountMinor: 100, currency: 'EUR' })
       .expect(201);
 
     const response = await request(app.getHttpServer())
@@ -98,7 +98,7 @@ describe('internal/webhooks integration', () => {
     await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 100, currency: 'EUR', provider: 'mock' })
+      .send({ amountMinor: 100, currency: 'EUR' })
       .expect(201);
 
     const response = await request(app.getHttpServer())

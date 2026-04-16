@@ -1017,7 +1017,7 @@ export function TransactionsDashboard() {
       <Dialog open={dialog === "create"} onOpenChange={(o) => !o && setDialog(null)} title="Crear pago" description="Los pagos se originan desde tu integración contra psp-api.">
         <p className="text-sm text-slate-600">
           Este backoffice no crea pagos directamente. Expón un checkout o llama a{" "}
-          <code className="rounded bg-slate-100 px-1">POST /api/v2/payments</code> con la API key del merchant.
+          <code className="rounded bg-slate-100 px-1">POST /api/v2/payments</code> con la API key del merchant (importe/divisa; el PSP enruta proveedor por configuración, no va en el body del create).
         </p>
         <p className="mt-2 text-sm text-slate-600">
           Para seguimiento operativo de intentos y proveedores, abre el{" "}

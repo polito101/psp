@@ -77,9 +77,10 @@ Invoke-RestMethod -Method Post "http://localhost:3000/api/v2/payments" `
   -Body (@{
     amountMinor = 1999
     currency = "EUR"
-    provider = "mock"
   } | ConvertTo-Json -Compress)
 ```
+
+El proveedor lo elige el PSP vía `PAYMENTS_PROVIDER_ORDER` en runtime (p. ej. `mock,stripe` en local/sandbox para ejercitar el adapter mock primero).
 
 En `mock`, el intent tipicamente queda `authorized` para importes comunes.
 

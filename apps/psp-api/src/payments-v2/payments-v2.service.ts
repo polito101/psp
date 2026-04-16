@@ -234,7 +234,7 @@ export class PaymentsV2Service {
       }
     }
 
-    const providerOrder = this.registry.orderedProviders(dto.provider);
+    const providerOrder = this.registry.orderedProviders();
     const selectedProvider = providerOrder[0];
     let payment: OperationResult['payment'];
     try {
@@ -2167,14 +2167,6 @@ export class PaymentsV2Service {
       existing.paymentLinkId === (incoming.paymentLinkId ?? null);
     if (!same) {
       throw new ConflictException('Idempotency key already used with a different payment intent');
-    }
-
-    if (incoming.provider) {
-      const providerOrder = this.registry.orderedProviders(incoming.provider);
-      const expectedSelectedProvider = providerOrder[0] ?? null;
-      if (existing.selectedProvider !== expectedSelectedProvider) {
-        throw new ConflictException('Idempotency key already used with a different payment intent');
-      }
     }
   }
 
