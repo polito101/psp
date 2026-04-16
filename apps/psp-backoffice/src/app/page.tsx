@@ -1,5 +1,5 @@
-import { TransactionsDashboard } from "@/components/transactions/transactions-dashboard";
+import { HomeDashboard } from "@/components/home/home-dashboard";
 
-export default function Home() {
-  return <TransactionsDashboard />;
+export default function HomePage() {
+  return <HomeDashboard />;
 }

@@ -17,13 +17,13 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 
 | Dominio | Unit | Integration local | Smoke | Estado | Notas |
 | --- | --- | --- | --- | --- | --- |
-| `payments-v2` | Si | Si | Si | Cubierto | Flujos create/get/capture/cancel/refund + idempotencia + rechazo de `paymentLink` no activo/expirado + concurrencia/ops en smoke + webhook inbound Stripe (succeeded/payment_failed→no terminal/canceled/refund) y worker outbound E2E. |
+| `payments-v2` | Si | Si | Si | Cubierto | Flujos create/get/capture/cancel/refund + idempotencia + rechazo de `paymentLink` no activo/expirado + concurrencia/ops en smoke + webhook inbound Stripe (succeeded/payment_failed→no terminal/canceled/refund/disputas charge.dispute.*) + smoke opcional matriz PM de disputa Stripe (`SMOKE_STRIPE_DISPUTE_PM_MATRIX`) y worker outbound E2E. |
 | `merchants` | No | Si | Parcial | Parcial | Integration cubre create+guard y ciclo revoke/rotate via servicio. Falta spec unitario del controller/service. |
 | `payment-links` | No | Si | No | Parcial | Sin endpoint HTTP activo; cobertura via `PaymentLinksService.findForMerchant`. |
 | `ledger` | Si | Si | Si | Cubierto | Unit de servicio + integration/smoke de `/api/v1/balance`. |
 | `health` | Si | Si | Si | Cubierto | Unit + integration `/health` + smoke readiness. |
 | `webhooks` | Si | Si | Si | Cubierto | Unit worker/outbox + integration retry interno + inbound Stripe firmado (firma/tolerancia/json/payload) + outbound a receptor real con worker + smoke backlog/métricas. |
-| `internal endpoints` | Si (guards) | Si | Si | Cubierto | `/api/v2/payments/ops/metrics`, `/api/v2/payments/ops/transactions` (cursor por `createdAt/id`; `includeTotal=false` sin COUNT), `/api/v2/payments/ops/transactions/counts` (`groupBy` status), guard `X-Internal-Secret`, hardening del script CI ante redirects/URL insegura y spec dedicada bloqueante en `api-ci`. |
+| `internal endpoints` | Si (guards) | Si | Si | Cubierto | `/api/v2/payments/ops/metrics`, `/api/v2/payments/ops/transactions` (cursor por `createdAt/id`; `includeTotal=false` sin COUNT), `/api/v2/payments/ops/transactions/counts` (`groupBy` status), `/api/v2/payments/ops/transactions/volume-hourly` (volumen succeeded acumulado por hora UTC hoy vs ayer), guard `X-Internal-Secret`, hardening del script CI ante redirects/URL insegura y spec dedicada bloqueante en `api-ci`. |
 
 ## Inventario actual de archivos
 
@@ -49,6 +49,7 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 
 - `test/smoke/sandbox.smoke.spec.ts`
 - `test/smoke/stripe.smoke.spec.ts`
+- `test/smoke/stripe-dispute-payment-methods.smoke.spec.ts` (matriz `pm_card_createDispute*`, gated por `SMOKE_STRIPE_DISPUTE_PM_MATRIX=true`)
 - `test/smoke/orchestrator.integration.spec.ts`
 - `test/smoke/check-ops-metrics-ci.spec.ts`
 
