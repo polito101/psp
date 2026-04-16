@@ -117,6 +117,56 @@ export async function waitFor<T>(
   throw new Error(`waitFor timeout after ${timeoutMs}ms${debugSuffix}: ${JSON.stringify(lastValue)}`);
 }
 
+/** Base `.../v1` para llamadas directas a Stripe desde smoke (test mode). */
+export function stripeApiV1BaseUrl(): string {
+  const raw = process.env.STRIPE_API_BASE_URL?.trim();
+  if (raw) {
+    try {
+      const u = new URL(raw);
+      return `${u.origin}/v1`;
+    } catch {
+      // caer al default
+    }
+  }
+  return 'https://api.stripe.com/v1';
+}
+
+/**
+ * GET PaymentIntent con `expand` (p. ej. para leer `latest_charge.dispute` en test mode).
+ */
+export async function stripeGetPaymentIntent(opts: {
+  secretKey: string;
+  paymentIntentId: string;
+  expand?: string[];
+}): Promise<Record<string, unknown>> {
+  const id = encodeURIComponent(opts.paymentIntentId);
+  const expands = opts.expand ?? ['latest_charge.dispute'];
+  const qs = expands.map((e) => `expand[]=${encodeURIComponent(e)}`).join('&');
+  const url = `${stripeApiV1BaseUrl()}/payment_intents/${id}?${qs}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${opts.secretKey}` },
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Stripe GET payment_intents failed ${res.status}: ${text}`);
+  }
+  return JSON.parse(text) as Record<string, unknown>;
+}
+
+/** Devuelve el id `du_...` si Stripe ya materializó la disputa en el cargo del PI. */
+export function stripeDisputeIdFromPaymentIntent(pi: Record<string, unknown>): string | undefined {
+  const lc = pi.latest_charge;
+  if (!lc || typeof lc !== 'object') return undefined;
+  const charge = lc as Record<string, unknown>;
+  const d = charge.dispute;
+  if (typeof d === 'string' && d.startsWith('du_')) return d;
+  if (d && typeof d === 'object' && typeof (d as Record<string, unknown>).id === 'string') {
+    const id = (d as Record<string, unknown>).id;
+    return typeof id === 'string' && id.startsWith('du_') ? id : undefined;
+  }
+  return undefined;
+}
+
 export async function createSmokeMerchant(
   baseUrl: string,
   opts?: { keyTtlDays?: number },

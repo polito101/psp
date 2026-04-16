@@ -392,4 +392,158 @@ describe('stripe inbound webhooks integration', () => {
     await sendSignedWebhook(payload).expect(400);
   });
 
+  /**
+   * Disputas Stripe: en test mode las tarjetas especiales y textos `winning_evidence` / `losing_evidence`
+   * (p. ej. en `uncategorized_text` vía API de Stripe) son del lado Stripe; aquí validamos solo la
+   * ingesta de webhooks con forma compatible (p. ej. `charge` expandido con `payment_intent`).
+   */
+  it('charge.dispute.created/updated marca disputed y charge.dispute.closed won vuelve a succeeded (idempotente)', async () => {
+    const merchant = await createMerchantViaHttp(app);
+    const providerRef = `pi_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+    const payment = await prisma.payment.create({
+      data: {
+        merchantId: merchant.id,
+        amountMinor: 3_000,
+        currency: 'EUR',
+        status: 'succeeded',
+        rail: 'fiat',
+        selectedProvider: 'stripe',
+        providerRef,
+      },
+    });
+
+    const disputeObject = (status: string) => ({
+      id: `du_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
+      object: 'dispute',
+      status,
+      charge: {
+        id: `ch_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
+        object: 'charge',
+        payment_intent: providerRef,
+      },
+    });
+
+    const createdPayload = JSON.stringify({
+      id: `evt_${randomUUID().replace(/-/g, '')}`,
+      type: 'charge.dispute.created',
+      data: { object: disputeObject('needs_response') },
+    });
+    const first = await sendSignedWebhook(createdPayload).expect(200);
+    expect(first.body.handled).toBe(true);
+    expect(first.body.paymentId).toBe(payment.id);
+
+    const replayCreated = await sendSignedWebhook(createdPayload).expect(200);
+    expect(replayCreated.body.handled).toBe(true);
+
+    const updatedPayload = JSON.stringify({
+      id: `evt_${randomUUID().replace(/-/g, '')}`,
+      type: 'charge.dispute.updated',
+      data: { object: disputeObject('under_review') },
+    });
+    await sendSignedWebhook(updatedPayload).expect(200);
+
+    const mid = await prisma.payment.findUniqueOrThrow({
+      where: { id: payment.id },
+      select: { status: true },
+    });
+    expect(mid.status).toBe('disputed');
+
+    const closedWonPayload = JSON.stringify({
+      id: `evt_${randomUUID().replace(/-/g, '')}`,
+      type: 'charge.dispute.closed',
+      data: { object: disputeObject('won') },
+    });
+    await sendSignedWebhook(closedWonPayload).expect(200);
+    await sendSignedWebhook(closedWonPayload).expect(200);
+
+    const final = await prisma.payment.findUniqueOrThrow({
+      where: { id: payment.id },
+      select: { status: true },
+    });
+    expect(final.status).toBe('succeeded');
+  });
+
+  it('charge.dispute.closed lost marca dispute_lost', async () => {
+    const merchant = await createMerchantViaHttp(app);
+    const providerRef = `pi_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+    const payment = await prisma.payment.create({
+      data: {
+        merchantId: merchant.id,
+        amountMinor: 1_100,
+        currency: 'EUR',
+        status: 'succeeded',
+        rail: 'fiat',
+        selectedProvider: 'stripe',
+        providerRef,
+      },
+    });
+
+    const disputeObject = (status: string) => ({
+      id: `du_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
+      object: 'dispute',
+      status,
+      charge: {
+        id: `ch_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
+        object: 'charge',
+        payment_intent: providerRef,
+      },
+    });
+
+    await sendSignedWebhook(
+      JSON.stringify({
+        id: `evt_${randomUUID().replace(/-/g, '')}`,
+        type: 'charge.dispute.created',
+        data: { object: disputeObject('needs_response') },
+      }),
+    ).expect(200);
+
+    const closedLost = await sendSignedWebhook(
+      JSON.stringify({
+        id: `evt_${randomUUID().replace(/-/g, '')}`,
+        type: 'charge.dispute.closed',
+        data: { object: disputeObject('lost') },
+      }),
+    ).expect(200);
+    expect(closedLost.body.handled).toBe(true);
+
+    const updated = await prisma.payment.findUniqueOrThrow({
+      where: { id: payment.id },
+      select: { status: true },
+    });
+    expect(updated.status).toBe('dispute_lost');
+  });
+
+  it('charge.dispute.created con pago no succeeded devuelve handled=false', async () => {
+    const merchant = await createMerchantViaHttp(app);
+    const providerRef = `pi_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+    await prisma.payment.create({
+      data: {
+        merchantId: merchant.id,
+        amountMinor: 900,
+        currency: 'EUR',
+        status: 'authorized',
+        rail: 'fiat',
+        selectedProvider: 'stripe',
+        providerRef,
+      },
+    });
+
+    const res = await sendSignedWebhook(
+      JSON.stringify({
+        id: `evt_${randomUUID().replace(/-/g, '')}`,
+        type: 'charge.dispute.created',
+        data: {
+          object: {
+            id: `du_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
+            object: 'dispute',
+            status: 'needs_response',
+            payment_intent: providerRef,
+          },
+        },
+      }),
+    ).expect(200);
+    expect(res.body.handled).toBe(false);
+    expect(res.body.reason).toBe('dispute_requires_succeeded_or_disputed');
+  });
+
 });

@@ -17,6 +17,7 @@ import { WebhooksService } from '../webhooks/webhooks.service';
 import { CreatePaymentIntentDto } from './dto/create-payment-intent.dto';
 import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
 import { OpsTransactionCountsQueryDto } from './dto/ops-transaction-counts-query.dto';
+import { OpsVolumeHourlyQueryDto } from './dto/ops-volume-hourly-query.dto';
 import {
   PAYMENT_V2_STATUS,
   PaymentOperation,
@@ -328,6 +329,11 @@ export class PaymentsV2Service {
     if (payment.status === PAYMENT_V2_STATUS.SUCCEEDED) {
       return { payment, nextAction: null };
     }
+    if (payment.status === PAYMENT_V2_STATUS.DISPUTED) {
+      throw new ConflictException(
+        'Payment is in dispute; capture is not applicable until Stripe resolves the dispute.',
+      );
+    }
     if (payment.status !== PAYMENT_V2_STATUS.AUTHORIZED) {
       throw new ConflictException(
         'Payment is not capturable: status must be authorized (Stripe requires_capture). Complete payment confirmation or 3DS first.',
@@ -394,12 +400,16 @@ export class PaymentsV2Service {
     if (
       payment.status === PAYMENT_V2_STATUS.CANCELED ||
       payment.status === PAYMENT_V2_STATUS.FAILED ||
-      payment.status === PAYMENT_V2_STATUS.REFUNDED
+      payment.status === PAYMENT_V2_STATUS.REFUNDED ||
+      payment.status === PAYMENT_V2_STATUS.DISPUTE_LOST
     ) {
       return { payment, nextAction: null };
     }
     if (payment.status === PAYMENT_V2_STATUS.SUCCEEDED) {
       throw new ConflictException('Succeeded payment must be refunded, not canceled');
+    }
+    if (payment.status === PAYMENT_V2_STATUS.DISPUTED) {
+      throw new ConflictException('Payment is in dispute; cancel is not applicable until Stripe resolves the dispute.');
     }
 
     const claim = await this.claimPaymentOperation({
@@ -575,6 +585,95 @@ export class PaymentsV2Service {
       total += c;
     }
     return { total, byStatus };
+  }
+
+  /**
+   * Volumen acumulado por hora (UTC) de pagos `succeeded` para hoy y ayer, para comparar en un mismo eje 0–23h.
+   */
+  async getOpsVolumeHourlySeries(query: OpsVolumeHourlyQueryDto) {
+    const currency = (query.currency ?? 'EUR').toUpperCase();
+    const now = new Date();
+    const y = now.getUTCFullYear();
+    const mo = now.getUTCMonth();
+    const day = now.getUTCDate();
+    const todayStart = new Date(Date.UTC(y, mo, day, 0, 0, 0, 0));
+    const tomorrowStart = new Date(Date.UTC(y, mo, day + 1, 0, 0, 0, 0));
+    const yesterdayStart = new Date(Date.UTC(y, mo, day - 1, 0, 0, 0, 0));
+    const utcHourNow = now.getUTCHours();
+
+    const merchantSql =
+      query.merchantId && query.merchantId.trim() !== ''
+        ? Prisma.sql`AND p.merchant_id = ${query.merchantId.trim()}`
+        : Prisma.empty;
+    const providerSql = query.provider
+      ? Prisma.sql`AND p.selected_provider = ${query.provider}`
+      : Prisma.empty;
+
+    const queryHourly = async (rangeStart: Date, rangeEnd: Date): Promise<number[]> => {
+      const hourly = new Array<number>(24).fill(0);
+      const rows = await this.prisma.$queryRaw<Array<{ hour: number; vol: bigint }>>(
+        Prisma.sql`
+          SELECT
+            (EXTRACT(HOUR FROM (p.created_at AT TIME ZONE 'UTC')))::int AS hour,
+            COALESCE(SUM(p.amount_minor), 0)::bigint AS vol
+          FROM "Payment" p
+          WHERE p.status = ${PAYMENT_V2_STATUS.SUCCEEDED}
+            AND p.currency = ${currency}
+            AND p.created_at >= ${rangeStart}
+            AND p.created_at < ${rangeEnd}
+            ${merchantSql}
+            ${providerSql}
+          GROUP BY 1
+          ORDER BY 1
+        `,
+      );
+      for (const row of rows) {
+        const h = row.hour;
+        if (h >= 0 && h < 24) {
+          hourly[h] = Number(row.vol);
+        }
+      }
+      return hourly;
+    };
+
+    const [todayHourly, yesterdayHourly] = await Promise.all([
+      queryHourly(todayStart, tomorrowStart),
+      queryHourly(yesterdayStart, todayStart),
+    ]);
+
+    const toCumulative = (hourly: number[]): number[] => {
+      const out: number[] = [];
+      let sum = 0;
+      for (let i = 0; i < 24; i++) {
+        sum += hourly[i] ?? 0;
+        out.push(sum);
+      }
+      return out;
+    };
+
+    const yesterdayCumulative = toCumulative(yesterdayHourly);
+    const todayCumulativeFull = toCumulative(todayHourly);
+    const todayCumulative: (number | null)[] = todayCumulativeFull.map((v, h) =>
+      h > utcHourNow ? null : v,
+    );
+
+    const todayVolumeMinor = todayHourly.reduce((acc, v, i) => (i <= utcHourNow ? acc + v : acc), 0);
+    const yesterdayVolumeMinor = yesterdayHourly.reduce((a, b) => a + b, 0);
+
+    const labels = Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2, '0')}:00`);
+
+    return {
+      dayBoundary: 'UTC' as const,
+      currency,
+      status: PAYMENT_V2_STATUS.SUCCEEDED,
+      labels,
+      todayCumulativeVolumeMinor: todayCumulative,
+      yesterdayCumulativeVolumeMinor: yesterdayCumulative,
+      totals: {
+        todayVolumeMinor,
+        yesterdayVolumeMinor,
+      },
+    };
   }
 
   /**
@@ -905,6 +1004,11 @@ export class PaymentsV2Service {
   /**
    * Aplica cambios de estado desde eventos inbound de Stripe usando CAS por estado para idempotencia.
    * No duplica ledger aunque Stripe reintente el mismo evento.
+   *
+   * Disputas (`charge.dispute.*`): se resuelve el `Payment` por `payment_intent` en el payload (o en
+   * `charge` expandido con `payment_intent`, útil en tests y en payloads enriquecidos). Ganar/perder
+   * en Stripe (p. ej. textos `winning_evidence` / `losing_evidence` en pruebas) cierra la disputa allí;
+   * aquí solo reaccionamos a `charge.dispute.closed` con `status` `won` | `lost`.
    */
   async applyStripeWebhookEvent(
     eventType: string,
@@ -953,6 +1057,8 @@ export class PaymentsV2Service {
         PAYMENT_V2_STATUS.SUCCEEDED,
         PAYMENT_V2_STATUS.REFUNDED,
         PAYMENT_V2_STATUS.CANCELED,
+        PAYMENT_V2_STATUS.DISPUTED,
+        PAYMENT_V2_STATUS.DISPUTE_LOST,
       ];
       await this.prisma.payment.updateMany({
         where: {
@@ -1039,6 +1145,68 @@ export class PaymentsV2Service {
         });
       });
       return { handled: true, paymentId: payment.id };
+    }
+
+    if (
+      eventType === 'charge.dispute.created' ||
+      eventType === 'charge.dispute.funds_withdrawn' ||
+      eventType === 'charge.dispute.updated'
+    ) {
+      const cas = await this.prisma.payment.updateMany({
+        where: { id: payment.id, status: PAYMENT_V2_STATUS.SUCCEEDED },
+        data: {
+          status: PAYMENT_V2_STATUS.DISPUTED,
+          statusReason: null,
+          failedAt: null,
+          selectedProvider: 'stripe',
+          providerRef,
+          lastAttemptAt: new Date(),
+        },
+      });
+      if (cas.count > 0) {
+        return { handled: true, paymentId: payment.id };
+      }
+      const current = await this.prisma.payment.findUnique({
+        where: { id: payment.id },
+        select: { status: true },
+      });
+      if (current?.status === PAYMENT_V2_STATUS.DISPUTED) {
+        return { handled: true, paymentId: payment.id };
+      }
+      return { handled: false, paymentId: payment.id, reason: 'dispute_requires_succeeded_or_disputed' };
+    }
+
+    if (eventType === 'charge.dispute.closed') {
+      const outcome = this.safeGetString(eventObject.status);
+      if (outcome === 'won') {
+        await this.prisma.payment.updateMany({
+          where: { id: payment.id, status: PAYMENT_V2_STATUS.DISPUTED },
+          data: {
+            status: PAYMENT_V2_STATUS.SUCCEEDED,
+            statusReason: null,
+            failedAt: null,
+            selectedProvider: 'stripe',
+            providerRef,
+            lastAttemptAt: new Date(),
+          },
+        });
+        return { handled: true, paymentId: payment.id };
+      }
+      if (outcome === 'lost') {
+        await this.prisma.payment.updateMany({
+          where: { id: payment.id, status: PAYMENT_V2_STATUS.DISPUTED },
+          data: {
+            status: PAYMENT_V2_STATUS.DISPUTE_LOST,
+            statusReason: null,
+            failedAt: null,
+            selectedProvider: 'stripe',
+            providerRef,
+            lastAttemptAt: new Date(),
+          },
+        });
+        return { handled: true, paymentId: payment.id };
+      }
+      return { handled: false, paymentId: payment.id, reason: 'stripe_dispute_closed_unhandled_status' };
     }
 
     return { handled: false, paymentId: payment.id, reason: 'unsupported_event_type' };
@@ -1392,6 +1560,15 @@ export class PaymentsV2Service {
     }
     if (eventType === 'charge.refunded') {
       return this.safeGetString(eventObject.payment_intent) ?? null;
+    }
+    if (eventType.startsWith('charge.dispute.')) {
+      const directPi = this.safeGetString(eventObject.payment_intent);
+      if (directPi) return directPi;
+      const charge = eventObject.charge;
+      if (charge && typeof charge === 'object' && !Array.isArray(charge)) {
+        return this.safeGetString((charge as Record<string, unknown>).payment_intent) ?? null;
+      }
+      return null;
     }
     return null;
   }

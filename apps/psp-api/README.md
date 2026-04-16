@@ -25,7 +25,7 @@ docker compose up -d
 
 cd apps/psp-api
 cp .env.example .env
-# Ajusta DATABASE_URL, INTERNAL_API_SECRET y APP_ENCRYPTION_KEY
+# Ajusta INTERNAL_API_SECRET y APP_ENCRYPTION_KEY (DATABASE_URL del .env.example ya usa el puerto del compose: Postgres en localhost:5433)
 
 npm run prisma:migrate:deploy
 npm run start:dev
@@ -209,4 +209,7 @@ npm run test:integration
 npm run test:integration:critical
 npm run test:smoke:sandbox
 npm run test:smoke:stripe
+npm run test:smoke:stripe-disputes
 ```
+
+Matriz de PaymentMethods de disputa (Stripe test mode): `SMOKE_STRIPE_ENABLED=true`, `SMOKE_STRIPE_DISPUTE_PM_MATRIX=true`, `SMOKE_BASE_URL`, y opcionalmente `STRIPE_SECRET_KEY` o `SMOKE_STRIPE_SECRET_KEY` en el runner para validar que aparece `du_...` en Stripe. Ver `docs/sandbox-env.md`.

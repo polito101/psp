@@ -142,6 +142,41 @@ describe('payments-v2 integration', () => {
     expect(found.body.attempts.length).toBeGreaterThanOrEqual(3);
   });
 
+  it('returns hourly succeeded volume series for UTC today vs yesterday (internal)', async () => {
+    const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
+    const merchant = await createMerchantViaHttp(app);
+    const created = await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .send({ amountMinor: 1500, currency: 'EUR', provider: 'mock' })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/api/v2/payments/${created.body.payment.id}/capture`)
+      .set('X-API-Key', merchant.apiKey)
+      .expect(201);
+
+    const n = new Date();
+    const utcH = n.getUTCHours();
+    const bucketH = utcH > 0 ? utcH - 1 : 0;
+    const t0 = new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate(), bucketH, 15, 0, 0));
+    await prisma.payment.update({
+      where: { id: created.body.payment.id },
+      data: { createdAt: t0 },
+    });
+
+    const vol = await request(app.getHttpServer())
+      .get('/api/v2/payments/ops/transactions/volume-hourly')
+      .set('X-Internal-Secret', internalSecret)
+      .expect(200);
+
+    expect(vol.body.dayBoundary).toBe('UTC');
+    expect(vol.body.currency).toBe('EUR');
+    expect(vol.body.todayCumulativeVolumeMinor[bucketH]).toBe(1500);
+    expect(vol.body.totals.todayVolumeMinor).toBeGreaterThanOrEqual(1500);
+    expect(vol.body.yesterdayCumulativeVolumeMinor).toHaveLength(24);
+  });
+
   it('runs create -> cancel and keeps canceled state', async () => {
     const merchant = await createMerchantViaHttp(app);
     const created = await request(app.getHttpServer())
