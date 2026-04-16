@@ -60,15 +60,60 @@ export function mapOpsItemToTableRow(item: OpsTransactionItem): TransactionTable
   };
 }
 
-export function formatAmountMinor(amountMinor: number, currency: string): string {
+/**
+ * Convierte unidades menores desde número, bigint o string con entero decimal (p. ej. payload de `volume-hourly`).
+ *
+ * @returns `null` si la cadena no es un entero decimal válido o el número no es finito.
+ */
+export function amountMinorToBigInt(amountMinor: number | bigint | string): bigint | null {
+  if (typeof amountMinor === "bigint") return amountMinor;
+  if (typeof amountMinor === "string") {
+    const t = amountMinor.trim();
+    if (!/^-?\d+$/.test(t)) return null;
+    return BigInt(t);
+  }
+  if (!Number.isFinite(amountMinor)) return null;
+  return BigInt(Math.trunc(amountMinor));
+}
+
+/**
+ * Formatea importe en unidades menores (p. ej. céntimos) a moneda `es-ES`.
+ * Acepta `string`/`bigint` para totales que pueden superar `Number.MAX_SAFE_INTEGER`.
+ */
+export function formatAmountMinor(amountMinor: number | bigint | string, currency: string): string {
   const code = currency?.length === 3 ? currency.toUpperCase() : "EUR";
+  const minor = amountMinorToBigInt(amountMinor);
+  if (minor == null) return "—";
+  const abs = minor < 0n ? -minor : minor;
+
+  if (abs <= BigInt(Number.MAX_SAFE_INTEGER)) {
+    const n = Number(minor) / 100;
+    try {
+      return new Intl.NumberFormat("es-ES", {
+        style: "currency",
+        currency: code,
+      }).format(n);
+    } catch {
+      return `${n.toFixed(2)} ${code}`;
+    }
+  }
+
+  const neg = minor < 0n;
+  const euros = abs / 100n;
+  const cents = abs % 100n;
+  const grouped = euros.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  const base = `${neg ? "-" : ""}${grouped},${cents.toString().padStart(2, "0")}`;
   try {
-    return new Intl.NumberFormat("es-ES", {
+    const sym = new Intl.NumberFormat("es-ES", {
       style: "currency",
       currency: code,
-    }).format(amountMinor / 100);
+      currencyDisplay: "narrowSymbol",
+    })
+      .formatToParts(0)
+      .find((p) => p.type === "currency")?.value;
+    return sym ? `${base}\u00A0${sym}` : `${base} ${code}`;
   } catch {
-    return `${(amountMinor / 100).toFixed(2)} ${code}`;
+    return `${base} ${code}`;
   }
 }
 

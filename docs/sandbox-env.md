@@ -45,6 +45,10 @@ Fuente de verdad operativa de variables para el entorno `sandbox` de `apps/psp-a
 | `SMOKE_STRIPE_PAYMENT_METHOD_ID` | Opcional | default `pm_card_visa` para create+confirm Stripe |
 | `SMOKE_STRIPE_CREATE_AMOUNT_MINOR` | Opcional | default `1999` para create Stripe sin confirm |
 | `SMOKE_STRIPE_CONFIRM_AMOUNT_MINOR` | Opcional | default `2101` para create+confirm Stripe |
+| `SMOKE_STRIPE_DISPUTE_PM_MATRIX` | Opcional | `true` habilita `stripe-dispute-payment-methods.smoke.spec.ts` (además de `SMOKE_STRIPE_ENABLED` o `SMOKE_PROVIDER=stripe`) |
+| `SMOKE_STRIPE_DISPUTE_AMOUNT_MINOR` | Opcional | importe por escenario de disputa (default `5000`) |
+| `SMOKE_STRIPE_SECRET_KEY` | Opcional | `sk_test_...` en el **runner** para comprobar vía API de Stripe que existió `du_...` tras el capture (si no, se usa `STRIPE_SECRET_KEY` del entorno local) |
+| `SMOKE_STRIPE_AWAIT_PSP_DISPUTED` | Opcional | `true` hace polling a `GET /api/v2/payments/:id` hasta `disputed` (requiere `stripe listen` o webhooks hacia el `SMOKE_BASE_URL`) |
 
 ## Variables de readiness operativa (`ops/metrics`)
 

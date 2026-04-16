@@ -1,0 +1,11 @@
+-- CreateIndex (Payment_status_currency_succeeded_at_idx) / drop predecessor
+-- NOTE:
+-- Same pattern as `20260416120000_payment_status_currency_created_at_idx`: we do NOT
+-- create/drop indexes here because `prisma migrate deploy` wraps migrations in a transaction
+-- on PostgreSQL, and `CREATE INDEX CONCURRENTLY` / `DROP INDEX CONCURRENTLY` cannot run
+-- inside a transaction block.
+--
+-- The index is declared in `schema.prisma` for drift alignment. Apply on deploy via:
+--   npm -w apps/psp-api run prisma:ops:indexes
+--
+-- (Executed from `prisma/ops/create-indexes-concurrently.sql` on `prisma:migrate:deploy`.)

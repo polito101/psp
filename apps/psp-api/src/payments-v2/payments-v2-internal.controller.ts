@@ -4,6 +4,7 @@ import { InternalSecretGuard } from '../common/guards/internal-secret.guard';
 import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
 import { OpsPaymentDetailQueryDto } from './dto/ops-payment-detail-query.dto';
 import { OpsTransactionCountsQueryDto } from './dto/ops-transaction-counts-query.dto';
+import { OpsVolumeHourlyQueryDto } from './dto/ops-volume-hourly-query.dto';
 import { PaymentsV2Service } from './payments-v2.service';
 
 @ApiTags('payments-v2')
@@ -28,6 +29,15 @@ export class PaymentsV2InternalController {
   })
   async transactionCounts(@Query() query: OpsTransactionCountsQueryDto) {
     return this.payments.getOpsTransactionCounts(query);
+  }
+
+  @Get('ops/transactions/volume-hourly')
+  @ApiOperation({
+    summary:
+      'Serie horaria UTC de volumen acumulado (amount_minor) de pagos succeeded: hoy vs ayer, por hora 0–23',
+  })
+  async volumeHourly(@Query() query: OpsVolumeHourlyQueryDto) {
+    return this.payments.getOpsVolumeHourlySeries(query);
   }
 
   @Get('ops/transactions')

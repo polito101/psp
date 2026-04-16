@@ -7,6 +7,8 @@ const PAYMENT_STATUSES = [
   'requires_action',
   'authorized',
   'succeeded',
+  'disputed',
+  'dispute_lost',
   'failed',
   'canceled',
   'refunded',

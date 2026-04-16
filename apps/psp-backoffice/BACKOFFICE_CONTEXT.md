@@ -26,12 +26,14 @@ Puerto dev por defecto: **3005** (`next dev -p 3005`). API local típica: **3003
 ```text
 src/
 ├── app/
-│   ├── layout.tsx, page.tsx          # `/` panel transacciones
+│   ├── layout.tsx, page.tsx          # `/` inicio (stats + volumen hoy vs ayer)
+│   ├── transactions/page.tsx         # `/transactions` listado ops
 │   ├── monitor/page.tsx              # `/monitor`
 │   ├── payments/[paymentId]/page.tsx # detalle pago
 │   └── api/internal/                 # BFF (solo servidor)
 │       ├── transactions/route.ts
 │       ├── transactions/counts/route.ts
+│       ├── transactions/volume-hourly/route.ts
 │       ├── payments/[paymentId]/route.ts
 │       └── provider-health/route.ts
 ├── components/                       # UI por feature
@@ -53,13 +55,14 @@ Definidas en `.env.example`; copia a `.env.local`.
 
 ## 5) Rutas de producto
 
-- **`/`** — Dashboard de transacciones (lista ops, filtros, export CSV de pagina visible, conteos por estado, cursores).
+- **`/`** — Inicio: tarjetas de conteo del día (UTC) y bloque **Volumen bruto**: totales succeeded hoy vs ayer (EUR) encima del gráfico; líneas acumuladas por hora UTC con hover que compara el volumen bruto de cada hora frente al mismo tramo de ayer (incluye %).
+- **`/transactions`** — Dashboard de transacciones (lista ops, filtros, export CSV de pagina visible, conteos por estado, cursores).
 - **`/monitor`** — Vista compacta + health de proveedores.
 - **`/payments/[paymentId]`** — Detalle de pago (intentos acotados a los 200 más recientes si el historial crece; aviso en UI si `attemptsTruncated`), metadatos, enlaces operativos.
 
 ## 6) BFF y seguridad
 
-- Las rutas `app/api/internal/*` reenvian a endpoints internos de Nest (`/api/v2/payments/ops/...`, health, etc.) con `X-Internal-Secret` solo en servidor. El listado ops va a `.../ops/transactions`; los conteos agregados por estado del dashboard a `.../ops/transactions/counts` (`GET /api/internal/transactions/counts`).
+- Las rutas `app/api/internal/*` reenvian a endpoints internos de Nest (`/api/v2/payments/ops/...`, health, etc.) con `X-Internal-Secret` solo en servidor. El listado ops va a `.../ops/transactions`; los conteos agregados por estado del dashboard a `.../ops/transactions/counts` (`GET /api/internal/transactions/counts`); la serie de volumen horario a `.../ops/transactions/volume-hourly` (`GET /api/internal/transactions/volume-hourly`). La respuesta de `volume-hourly` expone acumulados y totales en **unidades menores como string** (mismo contrato que la API Nest); el panel las convierte a `bigint` para el gráfico y el formateo.
 - Detalle de pago: `GET /api/internal/payments/:paymentId` hace proxy a `.../ops/payments/:id`. Por defecto **no** se incluye `responsePayload` por intento (menos payload y menos metadata de proveedor en el navegador). Solo si la peticion al BFF lleva `?includePayload=true` se reenvia ese flag a la API (uso depuracion).
 - Cada request al BFF debe llevar auth explícita: header `Authorization: Bearer <BACKOFFICE_ADMIN_SECRET>` o cookie HttpOnly `backoffice_admin_token` (valor igual al secreto configurado). Sin eso: `401`/`403`.
 - No leer secretos desde `NEXT_PUBLIC_*` salvo decision documentada; el patron actual mantiene secretos server-only.

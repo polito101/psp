@@ -1184,4 +1184,208 @@ describe('PaymentsV2Service', () => {
     );
     captureSpy.mockRestore();
   });
+
+  it('stripe webhook charge.dispute.created marca DISPUTED desde SUCCEEDED', async () => {
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_dsp',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.SUCCEEDED,
+      amountMinor: 2000,
+      currency: 'EUR',
+      selectedProvider: 'stripe',
+      providerRef: 'pi_dsp',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    prisma.payment.updateMany.mockResolvedValueOnce({ count: 1 });
+
+    const result = await service.applyStripeWebhookEvent('charge.dispute.created', {
+      id: 'dp_1',
+      object: 'dispute',
+      status: 'needs_response',
+      charge: {
+        object: 'charge',
+        id: 'ch_1',
+        payment_intent: 'pi_dsp',
+      },
+    });
+
+    expect(result).toEqual({ handled: true, paymentId: 'pay_dsp' });
+    expect(prisma.payment.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'pay_dsp', status: PAYMENT_V2_STATUS.SUCCEEDED },
+        data: expect.objectContaining({ status: PAYMENT_V2_STATUS.DISPUTED }),
+      }),
+    );
+  });
+
+  it('stripe webhook charge.dispute.* usa payment_intent plano en el dispute', async () => {
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_dsp2',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.SUCCEEDED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'stripe',
+      providerRef: 'pi_flat',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    prisma.payment.updateMany.mockResolvedValueOnce({ count: 1 });
+
+    const result = await service.applyStripeWebhookEvent('charge.dispute.funds_withdrawn', {
+      id: 'dp_2',
+      payment_intent: 'pi_flat',
+      status: 'needs_response',
+    });
+
+    expect(result).toEqual({ handled: true, paymentId: 'pay_dsp2' });
+  });
+
+  it('stripe webhook dispute opening idempotente si ya está DISPUTED', async () => {
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_dsp3',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.DISPUTED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'stripe',
+      providerRef: 'pi_dsp3',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    prisma.payment.updateMany.mockResolvedValueOnce({ count: 0 });
+    prisma.payment.findUnique.mockResolvedValueOnce({ status: PAYMENT_V2_STATUS.DISPUTED });
+
+    const result = await service.applyStripeWebhookEvent('charge.dispute.updated', {
+      id: 'dp_3',
+      payment_intent: 'pi_dsp3',
+      status: 'under_review',
+    });
+
+    expect(result).toEqual({ handled: true, paymentId: 'pay_dsp3' });
+  });
+
+  it('stripe webhook dispute opening devuelve dispute_requires_succeeded_or_disputed si el pago no califica', async () => {
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_auth',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'stripe',
+      providerRef: 'pi_auth',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    prisma.payment.updateMany.mockResolvedValueOnce({ count: 0 });
+    prisma.payment.findUnique.mockResolvedValueOnce({ status: PAYMENT_V2_STATUS.AUTHORIZED });
+
+    const result = await service.applyStripeWebhookEvent('charge.dispute.created', {
+      id: 'dp_4',
+      payment_intent: 'pi_auth',
+      status: 'needs_response',
+    });
+
+    expect(result).toEqual({
+      handled: false,
+      paymentId: 'pay_auth',
+      reason: 'dispute_requires_succeeded_or_disputed',
+    });
+  });
+
+  it('stripe webhook charge.dispute.closed won restaura SUCCEEDED', async () => {
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_won',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.DISPUTED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'stripe',
+      providerRef: 'pi_won',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    prisma.payment.updateMany.mockResolvedValueOnce({ count: 1 });
+
+    const result = await service.applyStripeWebhookEvent('charge.dispute.closed', {
+      id: 'dp_won',
+      payment_intent: 'pi_won',
+      status: 'won',
+    });
+
+    expect(result).toEqual({ handled: true, paymentId: 'pay_won' });
+    expect(prisma.payment.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'pay_won', status: PAYMENT_V2_STATUS.DISPUTED },
+        data: expect.objectContaining({ status: PAYMENT_V2_STATUS.SUCCEEDED }),
+      }),
+    );
+  });
+
+  it('stripe webhook charge.dispute.closed lost marca DISPUTE_LOST', async () => {
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_lost',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.DISPUTED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'stripe',
+      providerRef: 'pi_lost',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    prisma.payment.updateMany.mockResolvedValueOnce({ count: 1 });
+
+    const result = await service.applyStripeWebhookEvent('charge.dispute.closed', {
+      id: 'dp_lost',
+      payment_intent: 'pi_lost',
+      status: 'lost',
+    });
+
+    expect(result).toEqual({ handled: true, paymentId: 'pay_lost' });
+    expect(prisma.payment.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'pay_lost', status: PAYMENT_V2_STATUS.DISPUTED },
+        data: expect.objectContaining({ status: PAYMENT_V2_STATUS.DISPUTE_LOST }),
+      }),
+    );
+  });
+
+  it('stripe webhook charge.dispute.closed con status no soportado devuelve razon dedicada', async () => {
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_misc',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.DISPUTED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'stripe',
+      providerRef: 'pi_misc',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+
+    const result = await service.applyStripeWebhookEvent('charge.dispute.closed', {
+      id: 'dp_misc',
+      payment_intent: 'pi_misc',
+      status: 'warning_closed',
+    });
+
+    expect(result).toEqual({
+      handled: false,
+      paymentId: 'pay_misc',
+      reason: 'stripe_dispute_closed_unhandled_status',
+    });
+  });
+
+  it('stripe webhook dispute devuelve missing_provider_ref si charge es solo id', async () => {
+    const result = await service.applyStripeWebhookEvent('charge.dispute.created', {
+      id: 'dp_nopi',
+      charge: 'ch_only_id',
+      status: 'needs_response',
+    });
+
+    expect(result).toEqual({ handled: false, reason: 'missing_provider_ref' });
+    expect(prisma.payment.findFirst).not.toHaveBeenCalled();
+  });
 });

@@ -96,6 +96,24 @@ export type OpsTransactionCountsResponse = {
   byStatus: Record<string, number>;
 };
 
+/** Respuesta de `GET .../ops/transactions/volume-hourly` (límites de día en UTC). */
+export type OpsVolumeHourlyResponse = {
+  dayBoundary: "UTC";
+  currency: string;
+  status: string;
+  labels: string[];
+  /**
+   * Acumulado por hora en unidades menores (entero); `null` en horas futuras del día actual (UTC).
+   * Se serializa como string decimal para evitar pérdida de precisión fuera de `MAX_SAFE_INTEGER`.
+   */
+  todayCumulativeVolumeMinor: (string | null)[];
+  yesterdayCumulativeVolumeMinor: string[];
+  totals: {
+    todayVolumeMinor: string;
+    yesterdayVolumeMinor: string;
+  };
+};
+
 export type OpsPaymentAttemptDetail = {
   id: string;
   operation: string;

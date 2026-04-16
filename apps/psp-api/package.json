@@ -13,6 +13,7 @@
     "test:integration:critical": "jest --config jest.integration.config.js --runInBand test/integration/payments-v2.integration.spec.ts test/integration/internal-webhooks.integration.spec.ts test/integration/stripe-webhooks.integration.spec.ts test/integration/stripe-webhooks-outbound.integration.spec.ts",
     "test:smoke:sandbox": "jest --config jest.smoke.config.js --runInBand",
     "test:smoke:stripe": "jest --config jest.smoke.config.js --runInBand test/smoke/stripe.smoke.spec.ts",
+    "test:smoke:stripe-disputes": "jest --config jest.smoke.config.js --runInBand test/smoke/stripe-dispute-payment-methods.smoke.spec.ts",
     "test:smoke:ops": "jest --config jest.smoke.config.js --runInBand test/smoke/orchestrator.integration.spec.ts",
     "test:ci:ops-metrics": "jest --config jest.smoke.config.js --runInBand test/smoke/check-ops-metrics-ci.spec.ts",
     "test:watch": "jest --watch",

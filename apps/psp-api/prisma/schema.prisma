@@ -73,6 +73,8 @@ model Payment {
   // Acceso operativo (ops/transactions): orden estable por createdAt/id y filtros globales sin merchantId.
   @@index([createdAt, id])
   @@index([status, createdAt, id])
+  // Serie volumen horario ops (status + currency + rango en succeeded_at).
+  @@index([status, currency, succeededAt], map: "Payment_status_currency_succeeded_at_idx")
   @@index([selectedProvider, createdAt, id])
   @@index([merchantId, createdAt, id])
   @@index([selectedProvider, providerRef])

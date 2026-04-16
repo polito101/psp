@@ -3,6 +3,7 @@ import type {
   OpsTransactionCountsFilters,
   OpsTransactionCountsResponse,
   OpsTransactionsResponse,
+  OpsVolumeHourlyResponse,
   ProviderHealthResponse,
   TransactionsFilters,
 } from "@/lib/api/contracts";
@@ -62,6 +63,30 @@ export async function fetchOpsTransactionCounts(
     cache: "no-store",
   });
   return parseResponse<OpsTransactionCountsResponse>(response);
+}
+
+export type OpsVolumeHourlyFilters = {
+  merchantId?: string;
+  provider?: "stripe" | "mock";
+  currency?: string;
+};
+
+export async function fetchOpsVolumeHourly(
+  filters: OpsVolumeHourlyFilters = {},
+): Promise<OpsVolumeHourlyResponse> {
+  const params = new URLSearchParams();
+  if (filters.merchantId) params.set("merchantId", filters.merchantId);
+  if (filters.provider) params.set("provider", filters.provider);
+  if (filters.currency) params.set("currency", filters.currency);
+  const qs = params.toString();
+  const response = await fetch(
+    `/api/internal/transactions/volume-hourly${qs ? `?${qs}` : ""}`,
+    {
+      method: "GET",
+      cache: "no-store",
+    },
+  );
+  return parseResponse<OpsVolumeHourlyResponse>(response);
 }
 
 export async function fetchOpsPaymentDetail(paymentId: string): Promise<OpsPaymentDetailResponse> {

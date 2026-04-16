@@ -26,7 +26,8 @@ Variables:
 
 ## Rutas principales
 
-- `/` — Panel de transacciones (lista ops contra la API vía BFF, export y filtros).
+- `/` — Inicio con estadísticas del día (UTC) y gráfico de volumen hoy vs ayer.
+- `/transactions` — Panel de transacciones (lista ops contra la API vía BFF, export y filtros).
 - `/monitor` — Monitor operativo compacto (misma fuente + health de proveedores).
 
 ## Comandos

@@ -78,7 +78,7 @@ export function PaymentDetailView({ paymentId }: Props) {
     return (
       <div className="mx-auto max-w-5xl p-6">
         <Link
-          href="/"
+          href="/transactions"
           className={cn(
             "mb-4 inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-900 hover:bg-slate-50",
           )}
@@ -109,7 +109,7 @@ export function PaymentDetailView({ paymentId }: Props) {
     <div className="mx-auto max-w-5xl p-6">
       <div className="mb-6 flex flex-wrap items-center gap-3">
         <Link
-          href="/"
+          href="/transactions"
           className="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-900 hover:bg-slate-50"
         >
           <ArrowLeft className="size-4" aria-hidden />
@@ -203,8 +203,8 @@ export function PaymentDetailView({ paymentId }: Props) {
               <dd className="mt-1 text-slate-800">{fundsAvailableLabel(d)}</dd>
             </div>
             <div>
-              <Link href="/" className="text-sm font-medium text-[var(--primary)] hover:underline">
-                Ver saldos
+              <Link href="/transactions" className="text-sm font-medium text-[var(--primary)] hover:underline">
+                Ver transacciones
               </Link>
             </div>
             <div>

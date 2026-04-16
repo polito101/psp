@@ -3,11 +3,12 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, Building2, CreditCard } from "lucide-react";
+import { Activity, Building2, CreditCard, LayoutDashboard } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
-  { href: "/", id: "transactions", label: "Transacciones", icon: CreditCard },
+  { href: "/", id: "home", label: "Inicio", icon: LayoutDashboard },
+  { href: "/transactions", id: "transactions", label: "Transacciones", icon: CreditCard },
   { href: "/monitor", id: "monitor", label: "Monitor operativo (API)", icon: Activity },
   {
     href: null as string | null,
@@ -37,7 +38,9 @@ export function AppShell({ children }: { children: ReactNode }) {
         <aside className="rounded-xl border border-slate-200 bg-white p-3">
           <nav className="space-y-1">
             {navItems.map(({ id, label, icon: Icon, href }) => {
-              const active = href != null && pathname === href;
+              const active =
+                href != null &&
+                (href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`));
               if (!href) {
                 return (
                   <button
