@@ -22,6 +22,7 @@ process.env.PAYMENTS_V2_ENABLED_MERCHANTS ??= '*';
 /** Primero `mock` para que los POST create de integración sin body `provider` ejerciten el adapter mock. */
 process.env.PAYMENTS_PROVIDER_ORDER ??= 'mock,stripe';
 process.env.PAYMENTS_ALLOW_MOCK ??= 'true';
+process.env.PAYMENTS_PROVIDER_RETRY_BASE_MS ??= '0';
 if (!process.env.STRIPE_WEBHOOK_SECRET) {
   process.env.STRIPE_WEBHOOK_SECRET = 'whsec_integration_test_secret';
 }

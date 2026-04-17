@@ -153,6 +153,28 @@ export function validateEnv(input: EnvInput): EnvInput {
       'PAYMENTS_PROVIDER_CB_COOLDOWN_MS',
     ),
   );
+  const halfOpenRaw = getString(env.PAYMENTS_PROVIDER_CB_HALF_OPEN);
+  if (halfOpenRaw !== undefined && halfOpenRaw !== 'true' && halfOpenRaw !== 'false') {
+    throw new Error('PAYMENTS_PROVIDER_CB_HALF_OPEN must be "true" or "false"');
+  }
+  env.PAYMENTS_PROVIDER_CB_HALF_OPEN = halfOpenRaw === 'true' ? 'true' : 'false';
+  const retryBackoffBaseMs = parseIntegerRange(
+    getString(env.PAYMENTS_PROVIDER_RETRY_BASE_MS),
+    100,
+    0,
+    60_000,
+    'PAYMENTS_PROVIDER_RETRY_BASE_MS',
+  );
+  let retryBackoffMaxMs = parsePositiveInt(
+    getString(env.PAYMENTS_PROVIDER_RETRY_MAX_MS),
+    3000,
+    'PAYMENTS_PROVIDER_RETRY_MAX_MS',
+  );
+  if (retryBackoffMaxMs < retryBackoffBaseMs) {
+    retryBackoffMaxMs = retryBackoffBaseMs;
+  }
+  env.PAYMENTS_PROVIDER_RETRY_BASE_MS = String(retryBackoffBaseMs);
+  env.PAYMENTS_PROVIDER_RETRY_MAX_MS = String(retryBackoffMaxMs);
   env.PAYMENTS_V2_OPERATION_LOCK_STALE_MS = String(
     parsePositiveInt(
       getString(env.PAYMENTS_V2_OPERATION_LOCK_STALE_MS),

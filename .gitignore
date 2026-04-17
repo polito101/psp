@@ -46,6 +46,9 @@ apps/psp-api/src/generated/
 # Hosting (previews / link local)
 .vercel/
 
+# Cursor IDE (hooks, estado local)
+.cursor/
+
 # SO / certificados locales
 .DS_Store
 Thumbs.db

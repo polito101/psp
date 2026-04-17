@@ -1,6 +1,6 @@
 # PROJECT_CONTEXT
 
-Ultima actualizacion: 2026-04-16
+Ultima actualizacion: 2026-04-17
 
 ## 1) Resumen del proyecto
 
@@ -111,7 +111,7 @@ En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc`, `te
 - Prisma centralizado en `PrismaService` y cliente generado en `src/generated/prisma`.
 - Convencion Prisma: modelos en PascalCase y mapeo SQL snake_case mediante `@map`/`@@map`.
 - Modulo `RedisModule/RedisService` para responsabilidades de cache e idempotencia.
-- Payments V2 (`/api/v2/payments`) introduce orquestacion multi-proveedor (Stripe + Mock) con `ProviderRegistry`, adapters por proveedor, retries acotados y circuit breaker por proveedor con estado compartido en Redis (HASH `payv2:cb:{provider}`: campos `failures`, `openedUntil` ms; sin `REDIS_URL` el servicio degrada a Map en proceso y registra una vez por proceso Node `payments_v2.circuit_breaker_redis_unavailable`).
+- Payments V2 (`/api/v2/payments`) introduce orquestacion multi-proveedor (Stripe + Mock) con `ProviderRegistry`, adapters por proveedor, retries acotados y circuit breaker por proveedor con estado compartido en Redis (HASH `payv2:cb:{provider}`: campos `failures`, `openedUntil` ms; sin `REDIS_URL` el servicio degrada a Map en proceso y registra una vez por proceso Node `payments_v2.circuit_breaker_redis_unavailable`). Opcionalmente, con Redis y `PAYMENTS_PROVIDER_CB_HALF_OPEN=true`, tras el cooldown solo una petición a la vez obtiene la sonda `SET payv2:cb:{provider}:probe NX` (mitiga thundering herd en recuperación); con el flag en false el comportamiento es el anterior. Entre reintentos internos del mismo adapter ante `transientError`, backoff exponencial acotado con jitter (`PAYMENTS_PROVIDER_RETRY_BASE_MS` default 100, `0` = sin espera; `PAYMENTS_PROVIDER_RETRY_MAX_MS` default 3000; si `MAX < BASE` se normaliza `MAX` a `BASE`).
 - Hardening providers: `PAYMENTS_PROVIDER_ORDER` se valida fail-fast (solo `stripe|mock`, sin vacíos, no puede quedar vacío). `mock` queda restringido a `NODE_ENV=sandbox|development` salvo flag explícito `PAYMENTS_ALLOW_MOCK=true`.
 - Create intent v2: el comercio **no** envía proveedor en el body; el primer intento sigue `PAYMENTS_PROVIDER_ORDER` (y fallbacks/circuitos). Stripe es adapter de **pruebas** en esta fase y se retirará con un PSP real.
 - Campos opcionales `stripePaymentMethodId` y `stripeReturnUrl` en `POST /api/v2/payments` son **acoplamiento temporal** al adapter Stripe provisional; no forman parte del contrato estable a largo plazo y desaparecerán al sustituir/retirar Stripe (ver Swagger).

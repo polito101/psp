@@ -52,6 +52,8 @@ describe('PaymentsV2Service', () => {
     incrementPaymentsV2ProviderCircuitFailure: jest.fn(),
     resetPaymentsV2ProviderCircuit: jest.fn(),
     getPaymentsV2ProviderCircuitState: jest.fn(),
+    tryAcquirePaymentsV2HalfOpenProbe: jest.fn().mockResolvedValue(true),
+    releasePaymentsV2HalfOpenProbe: jest.fn().mockResolvedValue(undefined),
   };
 
   const ledger = {
@@ -98,10 +100,13 @@ describe('PaymentsV2Service', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    delete process.env.PAYMENTS_PROVIDER_CB_HALF_OPEN;
     process.env.PAYMENTS_V2_ENABLED_MERCHANTS = '*';
     process.env.PAYMENTS_PROVIDER_MAX_RETRIES = '1';
     process.env.PAYMENTS_PROVIDER_CB_FAILURES = '3';
     process.env.PAYMENTS_PROVIDER_CB_COOLDOWN_MS = '60000';
+    process.env.PAYMENTS_PROVIDER_RETRY_BASE_MS = '0';
+    process.env.PAYMENTS_PROVIDER_RETRY_MAX_MS = '3000';
     process.env.PAYMENTS_V2_TOLERATE_ATTEMPT_PERSIST_FAILURE = 'true';
     service = buildService();
     prisma.$transaction.mockImplementation(async (fn: (trx: unknown) => Promise<unknown>) => fn(prisma));
@@ -111,6 +116,10 @@ describe('PaymentsV2Service', () => {
     redis.incrementPaymentsV2ProviderCircuitFailure.mockReset();
     redis.resetPaymentsV2ProviderCircuit.mockReset();
     redis.getPaymentsV2ProviderCircuitState.mockReset();
+    redis.tryAcquirePaymentsV2HalfOpenProbe.mockReset();
+    redis.releasePaymentsV2HalfOpenProbe.mockReset();
+    redis.tryAcquirePaymentsV2HalfOpenProbe.mockResolvedValue(true);
+    redis.releasePaymentsV2HalfOpenProbe.mockResolvedValue(undefined);
     prisma.paymentAttempt.aggregate.mockResolvedValue({ _max: { attemptNo: 0 } });
     prisma.paymentAttempt.create.mockResolvedValue(undefined);
     prisma.payment.updateMany.mockResolvedValue({ count: 1 });
@@ -912,6 +921,58 @@ describe('PaymentsV2Service', () => {
     expect(observability.registerAttempt).toHaveBeenCalledTimes(1);
   });
 
+  it('aplica backoff entre reintentos por fallo transitorio del adapter', async () => {
+    process.env.PAYMENTS_PROVIDER_RETRY_BASE_MS = '2';
+    process.env.PAYMENTS_PROVIDER_RETRY_MAX_MS = '50';
+    process.env.PAYMENTS_PROVIDER_MAX_RETRIES = '1';
+    service = buildService();
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    prisma.payment.create.mockResolvedValue({
+      id: 'pay_backoff',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.PROCESSING,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    mockProvider.run
+      .mockResolvedValueOnce({
+        status: PAYMENT_V2_STATUS.FAILED,
+        transientError: true,
+        reasonCode: 'provider_timeout',
+      })
+      .mockResolvedValueOnce({
+        status: PAYMENT_V2_STATUS.AUTHORIZED,
+        providerPaymentId: 'mock_pi_backoff',
+      });
+    prisma.payment.update.mockResolvedValue({
+      id: 'pay_backoff',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'mock_pi_backoff',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+
+    const started = Date.now();
+    const result = await service.createIntent('m_1', {
+      amountMinor: 1000,
+      currency: 'EUR',
+    });
+    const elapsed = Date.now() - started;
+
+    expect(mockProvider.run).toHaveBeenCalledTimes(2);
+    expect(result.payment.status).toBe(PAYMENT_V2_STATUS.AUTHORIZED);
+    expect(elapsed).toBeGreaterThanOrEqual(1);
+  });
+
   it('no adquiere lock de capture si el pago ya está SUCCEEDED', async () => {
     prisma.payment.findFirst.mockResolvedValue({
       id: 'pay_already_ok',
@@ -1424,7 +1485,18 @@ describe('PaymentsV2Service', () => {
   type CbSvc = {
     registerProviderFailure: (p: 'stripe' | 'mock') => Promise<void>;
     resetProviderFailure: (p: 'stripe' | 'mock') => Promise<void>;
-    getCircuitBreakerSnapshot: () => Promise<Record<string, { failures: number; open: boolean; openedUntil: number }>>;
+    getCircuitBreakerSnapshot: () => Promise<
+      Record<
+        string,
+        {
+          failures: number;
+          open: boolean;
+          openedUntil: number;
+          halfOpen?: boolean;
+          circuitState?: string;
+        }
+      >
+    >;
   };
 
   it('con Redis: conteo de fallos abre circuito y el snapshot refleja estado en Redis', async () => {
@@ -1728,5 +1800,102 @@ describe('PaymentsV2Service', () => {
 
     expect(snap.stripe.open).toBe(false);
     expect(snap.mock.open).toBe(false);
+  });
+
+  it('con Redis y PAYMENTS_PROVIDER_CB_HALF_OPEN: si la sonda NX no se obtiene, no se llama al adapter', async () => {
+    process.env.PAYMENTS_PROVIDER_CB_HALF_OPEN = 'true';
+    redis.getClient.mockReturnValue({});
+    redis.getPaymentsV2ProviderCircuitState.mockResolvedValue({ failures: 3, openedUntil: 0 });
+    redis.tryAcquirePaymentsV2HalfOpenProbe.mockResolvedValue(false);
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    prisma.payment.create.mockResolvedValue({
+      id: 'pay_half_busy',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.PROCESSING,
+      amountMinor: 800,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    prisma.payment.update.mockResolvedValue({
+      id: 'pay_half_busy',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.FAILED,
+      amountMinor: 800,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: 'provider_unavailable',
+      paymentLinkId: null,
+    });
+    service = buildService();
+
+    const result = await service.createIntent('m_1', { amountMinor: 800, currency: 'EUR' });
+
+    expect(result.payment.status).toBe(PAYMENT_V2_STATUS.FAILED);
+    expect(mockProvider.run).not.toHaveBeenCalled();
+    expect(redis.tryAcquirePaymentsV2HalfOpenProbe).toHaveBeenCalledWith('mock', expect.any(Number));
+    expect(redis.releasePaymentsV2HalfOpenProbe).not.toHaveBeenCalled();
+  });
+
+  it('con Redis y PAYMENTS_PROVIDER_CB_HALF_OPEN: tras sonda exitosa se libera la clave probe', async () => {
+    process.env.PAYMENTS_PROVIDER_CB_HALF_OPEN = 'true';
+    redis.getClient.mockReturnValue({});
+    redis.getPaymentsV2ProviderCircuitState.mockResolvedValue({ failures: 3, openedUntil: 0 });
+    redis.tryAcquirePaymentsV2HalfOpenProbe.mockResolvedValue(true);
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    prisma.payment.create.mockResolvedValue({
+      id: 'pay_half_release',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.PROCESSING,
+      amountMinor: 900,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    mockProvider.run.mockResolvedValue({
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      providerPaymentId: 'mock_pi_half',
+      nextAction: { type: 'none' },
+    });
+    prisma.payment.update.mockResolvedValue({
+      id: 'pay_half_release',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 900,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'mock_pi_half',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    service = buildService();
+
+    await service.createIntent('m_1', { amountMinor: 900, currency: 'EUR' });
+
+    expect(mockProvider.run).toHaveBeenCalled();
+    expect(redis.releasePaymentsV2HalfOpenProbe).toHaveBeenCalledWith('mock');
+  });
+
+  it('con Redis y flag half-open: snapshot expone circuitState half_open cuando aplica', async () => {
+    process.env.PAYMENTS_PROVIDER_CB_HALF_OPEN = 'true';
+    redis.getClient.mockReturnValue({});
+    redis.getPaymentsV2ProviderCircuitState.mockImplementation(async (p: string) =>
+      p === 'stripe' ? { failures: 3, openedUntil: 0 } : { failures: 0, openedUntil: 0 },
+    );
+    service = buildService();
+    const cb = service as unknown as CbSvc;
+
+    const snap = await cb.getCircuitBreakerSnapshot();
+
+    expect(snap.stripe.halfOpen).toBe(true);
+    expect(snap.stripe.circuitState).toBe('half_open');
+    expect(snap.mock.circuitState).toBe('closed');
   });
 });
