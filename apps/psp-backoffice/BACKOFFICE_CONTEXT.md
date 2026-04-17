@@ -62,6 +62,7 @@ Definidas en `.env.example`; copia a `.env.local`.
 
 ## 6) BFF y seguridad
 
+- El merchant **no** envía proveedor en `POST /api/v2/payments` (ruteo del PSP en API); los filtros por `provider` en este panel son solo operativos sobre datos ya persistidos.
 - Las rutas `app/api/internal/*` reenvian a endpoints internos de Nest (`/api/v2/payments/ops/...`, health, etc.) con `X-Internal-Secret` solo en servidor. El listado ops va a `.../ops/transactions`; los conteos agregados por estado del dashboard a `.../ops/transactions/counts` (`GET /api/internal/transactions/counts`); la serie de volumen horario a `.../ops/transactions/volume-hourly` (`GET /api/internal/transactions/volume-hourly`). La respuesta de `volume-hourly` expone acumulados y totales en **unidades menores como string** (mismo contrato que la API Nest); el panel las convierte a `bigint` para el gráfico y el formateo.
 - Detalle de pago: `GET /api/internal/payments/:paymentId` hace proxy a `.../ops/payments/:id`. Por defecto **no** se incluye `responsePayload` por intento (menos payload y menos metadata de proveedor en el navegador). Solo si la peticion al BFF lleva `?includePayload=true` se reenvia ese flag a la API (uso depuracion).
 - Cada request al BFF debe llevar auth explícita: header `Authorization: Bearer <BACKOFFICE_ADMIN_SECRET>` o cookie HttpOnly `backoffice_admin_token` (valor igual al secreto configurado). Sin eso: `401`/`403`.

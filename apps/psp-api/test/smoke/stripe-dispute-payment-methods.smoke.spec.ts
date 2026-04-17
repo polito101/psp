@@ -90,7 +90,6 @@ runDescribe('stripe dispute payment methods matrix (smoke)', () => {
         body: {
           amountMinor: disputeAmountMinor,
           currency: 'EUR',
-          provider: 'stripe',
           stripePaymentMethodId: scenario.paymentMethodId,
         },
       });

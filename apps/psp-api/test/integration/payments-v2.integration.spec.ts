@@ -25,7 +25,7 @@ describe('payments-v2 integration', () => {
   it('creates payment and replays idempotent request with same payment id', async () => {
     const merchant = await createMerchantViaHttp(app);
     const idempotencyKey = randomUUID();
-    const payload = { amountMinor: 1999, currency: 'EUR', provider: 'mock' };
+    const payload = { amountMinor: 1999, currency: 'EUR' };
 
     const first = await request(app.getHttpServer())
       .post('/api/v2/payments')
@@ -53,14 +53,41 @@ describe('payments-v2 integration', () => {
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
       .set('Idempotency-Key', idempotencyKey)
-      .send({ amountMinor: 1999, currency: 'EUR', provider: 'mock' })
+      .send({ amountMinor: 1999, currency: 'EUR' })
       .expect(201);
 
     const conflict = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
       .set('Idempotency-Key', idempotencyKey)
-      .send({ amountMinor: 2000, currency: 'EUR', provider: 'mock' })
+      .send({ amountMinor: 2000, currency: 'EUR' })
+      .expect(409);
+
+    expect(conflict.body.message).toContain('Idempotency key');
+  });
+
+  it('rejects idempotency replay when only stripePaymentMethodId differs', async () => {
+    const merchant = await createMerchantViaHttp(app);
+    const idempotencyKey = randomUUID();
+    const base = {
+      amountMinor: 1999,
+      currency: 'EUR',
+      stripePaymentMethodId: 'pm_card_visa',
+      stripeReturnUrl: 'https://example.com/return',
+    };
+
+    await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .set('Idempotency-Key', idempotencyKey)
+      .send(base)
+      .expect(201);
+
+    const conflict = await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .set('Idempotency-Key', idempotencyKey)
+      .send({ ...base, stripePaymentMethodId: 'pm_card_mastercard' })
       .expect(409);
 
     expect(conflict.body.message).toContain('Idempotency key');
@@ -81,7 +108,7 @@ describe('payments-v2 integration', () => {
     const response = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1999, currency: 'EUR', provider: 'mock', paymentLinkId: link.id })
+      .send({ amountMinor: 1999, currency: 'EUR', paymentLinkId: link.id })
       .expect(400);
 
     expect(response.body.message).toContain('Payment link is not active');
@@ -103,7 +130,7 @@ describe('payments-v2 integration', () => {
     const response = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1999, currency: 'EUR', provider: 'mock', paymentLinkId: link.id })
+      .send({ amountMinor: 1999, currency: 'EUR', paymentLinkId: link.id })
       .expect(400);
 
     expect(response.body.message).toContain('Payment link has expired');
@@ -114,7 +141,7 @@ describe('payments-v2 integration', () => {
     const created = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1999, currency: 'EUR', provider: 'mock' })
+      .send({ amountMinor: 1999, currency: 'EUR' })
       .expect(201);
 
     expect(created.body.payment.status).toBe('authorized');
@@ -148,7 +175,7 @@ describe('payments-v2 integration', () => {
     const created = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1500, currency: 'EUR', provider: 'mock' })
+      .send({ amountMinor: 1500, currency: 'EUR' })
       .expect(201);
 
     await request(app.getHttpServer())
@@ -187,7 +214,7 @@ describe('payments-v2 integration', () => {
     const created = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1999, currency: 'EUR', provider: 'mock' })
+      .send({ amountMinor: 1999, currency: 'EUR' })
       .expect(201);
 
     const canceled = await request(app.getHttpServer())

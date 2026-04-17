@@ -38,7 +38,6 @@ maybeDescribe('sandbox smoke flow (stripe)', () => {
       const payload = {
         amountMinor: stripeCreateAmountMinor,
         currency: 'EUR',
-        provider: 'stripe' as const,
       };
 
       const first = await requestJson<{
@@ -91,7 +90,6 @@ maybeDescribe('sandbox smoke flow (stripe)', () => {
         body: {
           amountMinor: stripeConfirmAmountMinor,
           currency: 'EUR',
-          provider: 'stripe',
           stripePaymentMethodId,
         },
       });

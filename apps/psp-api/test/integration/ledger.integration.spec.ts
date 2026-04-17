@@ -27,7 +27,7 @@ describe('ledger integration', () => {
     const created = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1999, currency: 'EUR', provider: 'mock' })
+      .send({ amountMinor: 1999, currency: 'EUR' })
       .expect(201);
 
     await request(app.getHttpServer())

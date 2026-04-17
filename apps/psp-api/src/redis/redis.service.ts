@@ -9,18 +9,28 @@ export const PAYMENTS_V2_CB_HASH_PREFIX = 'payv2:cb';
 
 /**
  * Lua atómico: incrementa fallos y, si alcanza umbral, fija `openedUntil = now + cooldownMs`.
- * Devuelve `openedNow=1` solo en la transición cerrado→abierto (`failures == threshold` tras el INCRBY).
+ * Devuelve `openedNow=1` en la transición cerrado→abierto (antes del INCR, `openedUntil <= now`
+ * y tras el INCR `failures >= threshold`), no en fallos extra mientras el circuito sigue abierto.
  */
 const PAYMENTS_V2_CB_LUA_INCREMENT = `
 local key = KEYS[1]
 local threshold = tonumber(ARGV[1])
 local cooldownMs = tonumber(ARGV[2])
 local now = tonumber(ARGV[3])
+local openedUntilPrevRaw = redis.call('HGET', key, 'openedUntil')
+local openedUntilPrev = 0
+if openedUntilPrevRaw then
+  openedUntilPrev = tonumber(openedUntilPrevRaw) or 0
+end
+local wasOpen = 0
+if openedUntilPrev > now then
+  wasOpen = 1
+end
 local failures = redis.call('HINCRBY', key, 'failures', 1)
 local openedNow = 0
 if failures >= threshold then
   redis.call('HSET', key, 'openedUntil', now + cooldownMs)
-  if failures == threshold then
+  if wasOpen == 0 then
     openedNow = 1
   end
 end
@@ -73,7 +83,9 @@ export class RedisService implements OnModuleDestroy {
 
   /**
    * Incrementa el contador de fallos del CB v2 para un proveedor y opcionalmente abre/extiende la ventana.
-   * `openedNow` vale 1 solo cuando, en esta llamada, el contador alcanza exactamente el umbral (transición a abierto).
+   * `openedNow` vale 1 cuando, en esta llamada, el circuito pasa de cerrado a abierto (`openedUntil` previo
+   * no posterior a `nowMs` y, tras el incremento, `failures >= threshold`). No se emite en fallos consecutivos
+   * mientras la ventana sigue vigente.
    * Requiere cliente Redis configurado.
    */
   async incrementPaymentsV2ProviderCircuitFailure(

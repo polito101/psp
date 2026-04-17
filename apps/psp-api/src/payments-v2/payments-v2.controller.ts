@@ -16,7 +16,11 @@ export class PaymentsV2Controller {
 
   @Post()
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Crear payment intent (v2 orquestador multi-proveedor)' })
+  @ApiOperation({
+    summary: 'Crear payment intent (v2 orquestador multi-proveedor)',
+    description:
+      'El comercio no elige proveedor: el PSP enruta según configuración del servidor (`PAYMENTS_PROVIDER_ORDER`, circuitos, disponibilidad). Stripe en el stack actual es adapter de pruebas y se retirará cuando exista PSP real.',
+  })
   @ApiHeader({
     name: 'Idempotency-Key',
     required: false,

@@ -46,7 +46,6 @@ describe('sandbox smoke flow', () => {
       const paymentPayload = {
         amountMinor: smokeAmountMinor,
         currency: 'EUR',
-        provider: 'mock',
       };
 
       const paymentIntent = await requestJson<{ payment: { id: string; status: string } }>(
@@ -147,7 +146,6 @@ describe('sandbox smoke flow', () => {
         body: {
           amountMinor: smokeAmountMinor,
           currency: 'EUR',
-          provider: 'mock',
         },
       });
       expect(typeof first.payment.id).toBe('string');
@@ -164,7 +162,6 @@ describe('sandbox smoke flow', () => {
           body: {
             amountMinor: smokeAmountMinor + 1,
             currency: 'EUR',
-            provider: 'mock',
           },
           expectedStatus: 409,
         },
@@ -188,7 +185,6 @@ describe('sandbox smoke flow', () => {
           body: {
             amountMinor: smokeAmountMinor,
             currency: 'EUR',
-            provider: 'mock',
           },
         },
       );
@@ -231,7 +227,6 @@ describe('sandbox smoke flow', () => {
         body: {
           amountMinor: requiresActionAmountMinor,
           currency: 'EUR',
-          provider: 'mock',
         },
       });
 

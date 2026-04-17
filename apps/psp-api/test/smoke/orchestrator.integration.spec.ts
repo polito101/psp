@@ -52,7 +52,7 @@ describe('payments v2 integration: concurrencia + webhooks + métricas + fallbac
     async () => {
       const { apiKey } = await createSmokeMerchant(baseUrl);
       const idem = randomUUID();
-      const payload = { amountMinor: 1999, currency: 'EUR', provider: 'mock' as const };
+      const payload = { amountMinor: 1999, currency: 'EUR' };
 
       const responses = await Promise.all(
         Array.from({ length: 6 }, () =>
@@ -99,7 +99,7 @@ describe('payments v2 integration: concurrencia + webhooks + métricas + fallbac
         '/api/v2/payments',
         {
           headers: { 'X-API-Key': apiKey },
-          body: { amountMinor: 1999, currency: 'EUR', provider: 'mock' },
+          body: { amountMinor: 1999, currency: 'EUR' },
         },
       );
       expect(created.payment.status).toBe('authorized');
@@ -212,7 +212,7 @@ describe('payments v2 integration: concurrencia + webhooks + métricas + fallbac
         '/api/v2/payments',
         {
           headers: { 'X-API-Key': merchant.apiKey },
-          body: { amountMinor: 1999, currency: 'EUR', provider: 'mock' },
+          body: { amountMinor: 1999, currency: 'EUR' },
         },
       );
       expect(created.payment.status).toBe('authorized');
