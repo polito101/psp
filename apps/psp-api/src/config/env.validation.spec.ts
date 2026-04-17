@@ -96,4 +96,16 @@ describe('validateEnv payments provider retry backoff', () => {
       }),
     ).toThrow(/PAYMENTS_PROVIDER_CB_HALF_OPEN/);
   });
+
+  it('rechaza combinación de CB/timeout/reintentos que supera el tope Redis de la sonda half-open (300s)', () => {
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        PAYMENTS_PROVIDER_CB_COOLDOWN_MS: '290000',
+        PAYMENTS_PROVIDER_TIMEOUT_MS: '8000',
+        PAYMENTS_PROVIDER_MAX_RETRIES: '5',
+        PAYMENTS_PROVIDER_RETRY_MAX_MS: '3000',
+      }),
+    ).toThrow(/half-open probe/);
+  });
 });

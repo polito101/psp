@@ -52,7 +52,9 @@ describe('PaymentsV2Service', () => {
     incrementPaymentsV2ProviderCircuitFailure: jest.fn(),
     resetPaymentsV2ProviderCircuit: jest.fn(),
     getPaymentsV2ProviderCircuitState: jest.fn(),
-    tryAcquirePaymentsV2HalfOpenProbe: jest.fn().mockResolvedValue(true),
+    tryAcquirePaymentsV2HalfOpenProbe: jest
+      .fn()
+      .mockResolvedValue({ acquired: true, token: 'default-probe-token' }),
     releasePaymentsV2HalfOpenProbe: jest.fn().mockResolvedValue(undefined),
   };
 
@@ -118,7 +120,7 @@ describe('PaymentsV2Service', () => {
     redis.getPaymentsV2ProviderCircuitState.mockReset();
     redis.tryAcquirePaymentsV2HalfOpenProbe.mockReset();
     redis.releasePaymentsV2HalfOpenProbe.mockReset();
-    redis.tryAcquirePaymentsV2HalfOpenProbe.mockResolvedValue(true);
+    redis.tryAcquirePaymentsV2HalfOpenProbe.mockResolvedValue({ acquired: true, token: 'default-probe-token' });
     redis.releasePaymentsV2HalfOpenProbe.mockResolvedValue(undefined);
     prisma.paymentAttempt.aggregate.mockResolvedValue({ _max: { attemptNo: 0 } });
     prisma.paymentAttempt.create.mockResolvedValue(undefined);
@@ -1808,7 +1810,7 @@ describe('PaymentsV2Service', () => {
     process.env.PAYMENTS_PROVIDER_CB_HALF_OPEN = 'true';
     redis.getClient.mockReturnValue({});
     redis.getPaymentsV2ProviderCircuitState.mockResolvedValue({ failures: 3, openedUntil: 0 });
-    redis.tryAcquirePaymentsV2HalfOpenProbe.mockResolvedValue(false);
+    redis.tryAcquirePaymentsV2HalfOpenProbe.mockResolvedValue({ acquired: false, token: null });
     registry.orderedProviders.mockReturnValue(['mock']);
     registry.getProvider.mockReturnValue(mockProvider);
     prisma.payment.create.mockResolvedValue({
@@ -1847,7 +1849,7 @@ describe('PaymentsV2Service', () => {
     process.env.PAYMENTS_PROVIDER_CB_HALF_OPEN = 'true';
     redis.getClient.mockReturnValue({});
     redis.getPaymentsV2ProviderCircuitState.mockResolvedValue({ failures: 3, openedUntil: 0 });
-    redis.tryAcquirePaymentsV2HalfOpenProbe.mockResolvedValue(true);
+    redis.tryAcquirePaymentsV2HalfOpenProbe.mockResolvedValue({ acquired: true, token: 'probe-token-xy' });
     registry.orderedProviders.mockReturnValue(['mock']);
     registry.getProvider.mockReturnValue(mockProvider);
     prisma.payment.create.mockResolvedValue({
@@ -1882,7 +1884,7 @@ describe('PaymentsV2Service', () => {
     await service.createIntent('m_1', { amountMinor: 900, currency: 'EUR' });
 
     expect(mockProvider.run).toHaveBeenCalled();
-    expect(redis.releasePaymentsV2HalfOpenProbe).toHaveBeenCalledWith('mock');
+    expect(redis.releasePaymentsV2HalfOpenProbe).toHaveBeenCalledWith('mock', 'probe-token-xy');
   });
 
   it('con Redis y flag half-open: snapshot expone circuitState half_open cuando aplica', async () => {

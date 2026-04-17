@@ -1317,7 +1317,7 @@ export class PaymentsV2Service {
         return { payment, nextAction: result.nextAction ?? null };
       } finally {
         if (circuitGate.probeAcquired) {
-          await this.releaseHalfOpenProbeSafe(providerName);
+          await this.releaseHalfOpenProbeSafe(providerName, circuitGate.halfOpenProbeToken);
         }
       }
     }
@@ -2430,7 +2430,7 @@ export class PaymentsV2Service {
    */
   private async resolveProviderCircuitGate(
     providerName: PaymentProviderName,
-  ): Promise<{ block: boolean; blockReason?: string; probeAcquired: boolean }> {
+  ): Promise<{ block: boolean; blockReason?: string; probeAcquired: boolean; halfOpenProbeToken?: string }> {
     const state = await this.readCircuitState(providerName);
     const now = Date.now();
     if (state.openedUntil > now) {
@@ -2444,8 +2444,8 @@ export class PaymentsV2Service {
     }
     const ttlSec = this.halfOpenProbeTtlSeconds();
     try {
-      const acquired = await this.redis.tryAcquirePaymentsV2HalfOpenProbe(providerName, ttlSec);
-      if (acquired) {
+      const probe = await this.redis.tryAcquirePaymentsV2HalfOpenProbe(providerName, ttlSec);
+      if (probe.acquired && probe.token) {
         this.log.debug(
           JSON.stringify({
             event: 'payments_v2.circuit_half_open_acquired',
@@ -2453,7 +2453,7 @@ export class PaymentsV2Service {
             ttlSec,
           }),
         );
-        return { block: false, probeAcquired: true };
+        return { block: false, probeAcquired: true, halfOpenProbeToken: probe.token };
       }
       this.log.debug(
         JSON.stringify({
@@ -2473,10 +2473,14 @@ export class PaymentsV2Service {
     }
   }
 
-  private async releaseHalfOpenProbeSafe(providerName: PaymentProviderName): Promise<void> {
+  private async releaseHalfOpenProbeSafe(
+    providerName: PaymentProviderName,
+    halfOpenProbeToken?: string,
+  ): Promise<void> {
     if (!this.cbHalfOpenEnabled || !this.cbRedisEnabled) return;
+    if (!halfOpenProbeToken) return;
     try {
-      await this.redis.releasePaymentsV2HalfOpenProbe(providerName);
+      await this.redis.releasePaymentsV2HalfOpenProbe(providerName, halfOpenProbeToken);
     } catch (error) {
       this.logCircuitBreakerRedisError('half_open_release', error, providerName);
     }

@@ -1,4 +1,5 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import Redis from 'ioredis';
 
 /**
@@ -9,7 +10,7 @@ export const PAYMENTS_V2_CB_HASH_PREFIX = 'payv2:cb';
 
 /**
  * Clave efímera SET NX para exclusión mutua de la sonda half-open por proveedor (Payments V2).
- * Valor arbitrario; la presencia de la clave indica “hay una petición de prueba en curso”.
+ * El valor es un token UUID; solo el poseedor puede borrarlo (Lua GET+DEL condicional).
  */
 export function paymentsV2CircuitHalfOpenProbeKey(provider: string): string {
   return `${PAYMENTS_V2_CB_HASH_PREFIX}:${provider}:probe`;
@@ -20,6 +21,14 @@ export function paymentsV2CircuitHalfOpenProbeKey(provider: string): string {
  * Devuelve `openedNow=1` en la transición cerrado→abierto (antes del INCR, `openedUntil <= now`
  * y tras el INCR `failures >= threshold`), no en fallos extra mientras el circuito sigue abierto.
  */
+/** Libera la sonda solo si el valor coincide con el token del adquirente (evita DEL tras expiración NX de otro). */
+const PAYMENTS_V2_HALF_OPEN_PROBE_RELEASE_LUA = `
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("DEL", KEYS[1])
+end
+return 0
+`;
+
 const PAYMENTS_V2_CB_LUA_INCREMENT = `
 local key = KEYS[1]
 local threshold = tonumber(ARGV[1])
@@ -154,20 +163,29 @@ export class RedisService implements OnModuleDestroy {
    * Intenta reservar la sonda half-open para un proveedor (`SET key NX EX`). Coordina entre réplicas/pods:
    * solo el ganador llama al proveedor tras cooldown del HASH, evitando thundering herd.
    * Requiere cliente Redis configurado.
+   * @returns `acquired` y `token` (UUID) si se ganó el SET NX; hay que pasar el mismo `token` a `releasePaymentsV2HalfOpenProbe`.
    */
-  async tryAcquirePaymentsV2HalfOpenProbe(provider: string, ttlSeconds: number): Promise<boolean> {
+  async tryAcquirePaymentsV2HalfOpenProbe(
+    provider: string,
+    ttlSeconds: number,
+  ): Promise<{ acquired: boolean; token: string | null }> {
     if (!this.client) {
       throw new Error('Redis client not configured');
     }
     const key = paymentsV2CircuitHalfOpenProbeKey(provider);
     const ttl = Math.max(1, Math.trunc(ttlSeconds));
-    const r = await this.client.set(key, '1', 'EX', ttl, 'NX');
-    return r === 'OK';
+    const token = randomUUID();
+    const r = await this.client.set(key, token, 'EX', ttl, 'NX');
+    return r === 'OK' ? { acquired: true, token } : { acquired: false, token: null };
   }
 
-  /** Libera la sonda half-open (p. ej. al terminar `adapter.run` con éxito o fallo). Idempotente. */
-  async releasePaymentsV2HalfOpenProbe(provider: string): Promise<void> {
-    if (!this.client) return;
-    await this.client.del(paymentsV2CircuitHalfOpenProbeKey(provider));
+  /**
+   * Libera la sonda half-open solo si `token` coincide con el valor en Redis (p. ej. al terminar `adapter.run`).
+   * Si el TTL expiró y otra petición adquirió la sonda, no borra la clave ajena.
+   */
+  async releasePaymentsV2HalfOpenProbe(provider: string, token: string): Promise<void> {
+    if (!this.client || token.length === 0) return;
+    const key = paymentsV2CircuitHalfOpenProbeKey(provider);
+    await this.client.eval(PAYMENTS_V2_HALF_OPEN_PROBE_RELEASE_LUA, 1, key, token);
   }
 }

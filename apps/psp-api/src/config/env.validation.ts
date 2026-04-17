@@ -138,7 +138,13 @@ export function validateEnv(input: EnvInput): EnvInput {
   );
   env.STRIPE_API_BASE_URL = validateStripeApiBaseUrl(getString(env.STRIPE_API_BASE_URL));
   env.PAYMENTS_PROVIDER_TIMEOUT_MS = String(
-    parsePositiveInt(getString(env.PAYMENTS_PROVIDER_TIMEOUT_MS), 8_000, 'PAYMENTS_PROVIDER_TIMEOUT_MS'),
+    parseIntegerRange(
+      getString(env.PAYMENTS_PROVIDER_TIMEOUT_MS),
+      8_000,
+      1_000,
+      120_000,
+      'PAYMENTS_PROVIDER_TIMEOUT_MS',
+    ),
   );
   env.PAYMENTS_PROVIDER_MAX_RETRIES = String(
     parseIntegerRange(getString(env.PAYMENTS_PROVIDER_MAX_RETRIES), 2, 0, 5, 'PAYMENTS_PROVIDER_MAX_RETRIES'),
@@ -147,9 +153,11 @@ export function validateEnv(input: EnvInput): EnvInput {
     parseIntegerRange(getString(env.PAYMENTS_PROVIDER_CB_FAILURES), 3, 1, 20, 'PAYMENTS_PROVIDER_CB_FAILURES'),
   );
   env.PAYMENTS_PROVIDER_CB_COOLDOWN_MS = String(
-    parsePositiveInt(
+    parseIntegerRange(
       getString(env.PAYMENTS_PROVIDER_CB_COOLDOWN_MS),
       60_000,
+      1_000,
+      600_000,
       'PAYMENTS_PROVIDER_CB_COOLDOWN_MS',
     ),
   );
@@ -165,9 +173,11 @@ export function validateEnv(input: EnvInput): EnvInput {
     60_000,
     'PAYMENTS_PROVIDER_RETRY_BASE_MS',
   );
-  let retryBackoffMaxMs = parsePositiveInt(
+  let retryBackoffMaxMs = parseIntegerRange(
     getString(env.PAYMENTS_PROVIDER_RETRY_MAX_MS),
     3000,
+    1,
+    60_000,
     'PAYMENTS_PROVIDER_RETRY_MAX_MS',
   );
   if (retryBackoffMaxMs < retryBackoffBaseMs) {
@@ -175,6 +185,21 @@ export function validateEnv(input: EnvInput): EnvInput {
   }
   env.PAYMENTS_PROVIDER_RETRY_BASE_MS = String(retryBackoffBaseMs);
   env.PAYMENTS_PROVIDER_RETRY_MAX_MS = String(retryBackoffMaxMs);
+
+  const maxRetriesForHalfOpenProbe = Number(env.PAYMENTS_PROVIDER_MAX_RETRIES);
+  const halfOpenProbeWorstCaseMs =
+    Number(env.PAYMENTS_PROVIDER_CB_COOLDOWN_MS) +
+    Number(env.PAYMENTS_PROVIDER_TIMEOUT_MS) * (maxRetriesForHalfOpenProbe + 1) +
+    Number(env.PAYMENTS_PROVIDER_RETRY_MAX_MS) * maxRetriesForHalfOpenProbe;
+  /** Mismo tope que `halfOpenProbeTtlSeconds()` en PaymentsV2Service (cap Redis EX). */
+  const PAYMENTS_V2_HALF_OPEN_PROBE_REDIS_TTL_CAP_MS = 300_000;
+  if (halfOpenProbeWorstCaseMs > PAYMENTS_V2_HALF_OPEN_PROBE_REDIS_TTL_CAP_MS) {
+    throw new Error(
+      `Payments V2 half-open probe uses Redis TTL capped at ${PAYMENTS_V2_HALF_OPEN_PROBE_REDIS_TTL_CAP_MS}ms, but the worst-case provider attempt window is ${halfOpenProbeWorstCaseMs}ms ` +
+        `(PAYMENTS_PROVIDER_CB_COOLDOWN_MS + PAYMENTS_PROVIDER_TIMEOUT_MS*(PAYMENTS_PROVIDER_MAX_RETRIES+1) + PAYMENTS_PROVIDER_RETRY_MAX_MS*PAYMENTS_PROVIDER_MAX_RETRIES). ` +
+        `Lower those variables so the probe lock TTL is not shorter than the work it protects.`,
+    );
+  }
   env.PAYMENTS_V2_OPERATION_LOCK_STALE_MS = String(
     parsePositiveInt(
       getString(env.PAYMENTS_V2_OPERATION_LOCK_STALE_MS),
