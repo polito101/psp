@@ -5,6 +5,7 @@ import { PaymentLinksModule } from '../payment-links/payment-links.module';
 import { WebhooksModule } from '../webhooks/webhooks.module';
 import { PaymentsV2Controller } from './payments-v2.controller';
 import { PaymentsV2InternalController } from './payments-v2-internal.controller';
+import { PaymentsV2MerchantRateLimitService } from './payments-v2-merchant-rate-limit.service';
 import { PaymentsV2ObservabilityService } from './payments-v2-observability.service';
 import { PaymentsV2Service } from './payments-v2.service';
 import { AcmeProviderAdapter } from './providers/acme/acme-provider.adapter';
@@ -20,6 +21,7 @@ import { StripeWebhookController } from './stripe-webhook.controller';
   controllers: [PaymentsV2Controller, PaymentsV2InternalController, StripeWebhookController],
   providers: [
     PaymentsV2Service,
+    PaymentsV2MerchantRateLimitService,
     PaymentsV2ObservabilityService,
     MockProviderAdapter,
     StripeProviderAdapter,

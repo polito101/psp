@@ -26,6 +26,7 @@ import {
   PaymentReasonCode,
   isPaymentProviderName,
 } from './domain/payment-status';
+import { PaymentsV2MerchantRateLimitService } from './payments-v2-merchant-rate-limit.service';
 import { PaymentsV2ObservabilityService } from './payments-v2-observability.service';
 import { ProviderRegistryService } from './providers/provider-registry.service';
 import { ProviderContext, ProviderResult } from './providers/payment-provider.interface';
@@ -166,6 +167,7 @@ export class PaymentsV2Service {
     private readonly registry: ProviderRegistryService,
     private readonly observability: PaymentsV2ObservabilityService,
     private readonly stripeAdapter: StripeProviderAdapter,
+    private readonly merchantRateLimit: PaymentsV2MerchantRateLimitService,
   ) {
     this.cbRedisEnabled = Boolean(this.redis.getClient?.());
     this.cbHalfOpenEnabled =
@@ -260,6 +262,8 @@ export class PaymentsV2Service {
         return { payment: existing, nextAction };
       }
     }
+
+    await this.merchantRateLimit.consumeIfNeeded(merchantId, 'create');
 
     const providerOrder = this.registry.orderedProviders();
     const selectedProvider = providerOrder[0];
@@ -361,6 +365,8 @@ export class PaymentsV2Service {
         return { payment: current, nextAction: null };
       }
     }
+
+    await this.merchantRateLimit.consumeIfNeeded(merchantId, 'capture');
 
     const payment = await this.findMerchantPayment(merchantId, paymentId);
     if (payment.status === PAYMENT_V2_STATUS.SUCCEEDED) {
@@ -517,6 +523,8 @@ export class PaymentsV2Service {
         return { payment: current, nextAction: null };
       }
     }
+
+    await this.merchantRateLimit.consumeIfNeeded(merchantId, 'refund');
 
     const claim = await this.claimPaymentOperation({
       merchantId,

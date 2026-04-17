@@ -210,6 +210,37 @@ export function validateEnv(input: EnvInput): EnvInput {
     ),
   );
 
+  const merchantRlEnabled = parseBoolean(getString(env.PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED), false);
+  env.PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED = String(merchantRlEnabled);
+  if (merchantRlEnabled) {
+    env.PAYMENTS_V2_MERCHANT_CREATE_LIMIT = String(
+      parseStrictPositiveInt(getString(env.PAYMENTS_V2_MERCHANT_CREATE_LIMIT), 'PAYMENTS_V2_MERCHANT_CREATE_LIMIT'),
+    );
+    env.PAYMENTS_V2_MERCHANT_CREATE_WINDOW_SEC = String(
+      parseStrictPositiveInt(
+        getString(env.PAYMENTS_V2_MERCHANT_CREATE_WINDOW_SEC),
+        'PAYMENTS_V2_MERCHANT_CREATE_WINDOW_SEC',
+      ),
+    );
+    normalizeOptionalMerchantRlPair(
+      env,
+      'PAYMENTS_V2_MERCHANT_CAPTURE_LIMIT',
+      'PAYMENTS_V2_MERCHANT_CAPTURE_WINDOW_SEC',
+    );
+    normalizeOptionalMerchantRlPair(
+      env,
+      'PAYMENTS_V2_MERCHANT_REFUND_LIMIT',
+      'PAYMENTS_V2_MERCHANT_REFUND_WINDOW_SEC',
+    );
+  } else {
+    env.PAYMENTS_V2_MERCHANT_CREATE_LIMIT = getString(env.PAYMENTS_V2_MERCHANT_CREATE_LIMIT) ?? '';
+    env.PAYMENTS_V2_MERCHANT_CREATE_WINDOW_SEC = getString(env.PAYMENTS_V2_MERCHANT_CREATE_WINDOW_SEC) ?? '';
+    env.PAYMENTS_V2_MERCHANT_CAPTURE_LIMIT = getString(env.PAYMENTS_V2_MERCHANT_CAPTURE_LIMIT) ?? '';
+    env.PAYMENTS_V2_MERCHANT_CAPTURE_WINDOW_SEC = getString(env.PAYMENTS_V2_MERCHANT_CAPTURE_WINDOW_SEC) ?? '';
+    env.PAYMENTS_V2_MERCHANT_REFUND_LIMIT = getString(env.PAYMENTS_V2_MERCHANT_REFUND_LIMIT) ?? '';
+    env.PAYMENTS_V2_MERCHANT_REFUND_WINDOW_SEC = getString(env.PAYMENTS_V2_MERCHANT_REFUND_WINDOW_SEC) ?? '';
+  }
+
   if (nodeEnv === 'sandbox') {
     const redisUrl = getString(env.REDIS_URL);
     if (!redisUrl) {
@@ -226,6 +257,40 @@ export function validateEnv(input: EnvInput): EnvInput {
   }
 
   return env;
+}
+
+function parseStrictPositiveInt(value: string | undefined, envName: string): number {
+  const v = getString(value);
+  if (!v) {
+    throw new Error(`${envName} is required when PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED=true`);
+  }
+  const parsed = Number(v);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${envName} must be a positive integer`);
+  }
+  return parsed;
+}
+
+/**
+ * Si una de las dos variables está definida, exige la otra y normaliza ambas a enteros positivos en `env`.
+ */
+function normalizeOptionalMerchantRlPair(
+  env: EnvInput,
+  limitKey: 'PAYMENTS_V2_MERCHANT_CAPTURE_LIMIT' | 'PAYMENTS_V2_MERCHANT_REFUND_LIMIT',
+  windowKey: 'PAYMENTS_V2_MERCHANT_CAPTURE_WINDOW_SEC' | 'PAYMENTS_V2_MERCHANT_REFUND_WINDOW_SEC',
+): void {
+  const lim = getString(env[limitKey]);
+  const win = getString(env[windowKey]);
+  if (!lim && !win) {
+    env[limitKey] = '';
+    env[windowKey] = '';
+    return;
+  }
+  if (!lim || !win) {
+    throw new Error(`${limitKey} and ${windowKey} must both be set or both unset`);
+  }
+  env[limitKey] = String(parseStrictPositiveInt(lim, limitKey));
+  env[windowKey] = String(parseStrictPositiveInt(win, windowKey));
 }
 
 function parsePaymentsProviderOrder(
