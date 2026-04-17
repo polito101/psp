@@ -1,5 +1,6 @@
 import { Transform, Type } from 'class-transformer';
 import { IsBoolean, IsDateString, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { PAYMENT_PROVIDER_NAMES, PaymentProviderName } from '../domain/payment-provider-names';
 
 const PAYMENT_STATUSES = [
   'pending',
@@ -13,8 +14,6 @@ const PAYMENT_STATUSES = [
   'canceled',
   'refunded',
 ] as const;
-
-const PAYMENT_PROVIDERS = ['stripe', 'mock'] as const;
 
 export class ListOpsTransactionsDto {
   /**
@@ -68,8 +67,8 @@ export class ListOpsTransactionsDto {
   status?: (typeof PAYMENT_STATUSES)[number];
 
   @IsOptional()
-  @IsIn(PAYMENT_PROVIDERS)
-  provider?: (typeof PAYMENT_PROVIDERS)[number];
+  @IsIn([...PAYMENT_PROVIDER_NAMES])
+  provider?: PaymentProviderName;
 
   @IsOptional()
   @IsDateString()

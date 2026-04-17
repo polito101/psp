@@ -1,6 +1,5 @@
 import { IsDateString, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
-
-const PAYMENT_PROVIDERS = ['stripe', 'mock'] as const;
+import { PAYMENT_PROVIDER_NAMES, PaymentProviderName } from '../domain/payment-provider-names';
 
 /**
  * Filtros base compartidos con `GET .../ops/transactions` (sin estado ni cursores).
@@ -18,8 +17,8 @@ export class OpsTransactionCountsQueryDto {
   paymentId?: string;
 
   @IsOptional()
-  @IsIn(PAYMENT_PROVIDERS)
-  provider?: (typeof PAYMENT_PROVIDERS)[number];
+  @IsIn([...PAYMENT_PROVIDER_NAMES])
+  provider?: PaymentProviderName;
 
   @IsOptional()
   @IsDateString()

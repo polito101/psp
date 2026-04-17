@@ -1,3 +1,5 @@
+import type { OpsPaymentProvider } from "./payment-providers";
+
 export type TransactionStatus =
   | "pending"
   | "processing"
@@ -8,7 +10,7 @@ export type TransactionStatus =
   | "canceled"
   | "refunded";
 
-export type TransactionProvider = "stripe" | "mock";
+export type TransactionProvider = OpsPaymentProvider;
 
 export type OpsTransactionLastAttempt = {
   id: string;

@@ -1,5 +1,5 @@
 import { ConfigService } from '@nestjs/config';
-import { PAYMENT_V2_STATUS } from '../domain/payment-status';
+import { PAYMENT_V2_STATUS } from '../../domain/payment-status';
 import { StripeProviderAdapter } from './stripe-provider.adapter';
 
 describe('StripeProviderAdapter', () => {

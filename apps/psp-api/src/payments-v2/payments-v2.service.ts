@@ -24,6 +24,7 @@ import {
   PaymentOperation,
   PaymentProviderName,
   PaymentReasonCode,
+  isPaymentProviderName,
 } from './domain/payment-status';
 import { PaymentsV2ObservabilityService } from './payments-v2-observability.service';
 import { ProviderRegistryService } from './providers/provider-registry.service';
@@ -573,7 +574,7 @@ export class PaymentsV2Service {
     merchantId?: string;
     paymentId?: string;
     status?: string;
-    provider?: 'stripe' | 'mock';
+    provider?: PaymentProviderName;
     createdFrom?: string;
     createdTo?: string;
   }): Prisma.PaymentWhereInput {
@@ -2305,8 +2306,8 @@ export class PaymentsV2Service {
   }
 
   private toProviderName(value: string | null): PaymentProviderName | undefined {
-    if (value === 'stripe' || value === 'mock') return value;
-    return undefined;
+    if (value === null || value === '') return undefined;
+    return isPaymentProviderName(value) ? value : undefined;
   }
 
   private toReasonCode(value: string | undefined): PaymentReasonCode {
@@ -2369,7 +2370,7 @@ export class PaymentsV2Service {
       circuitState?: 'closed' | 'open' | 'half_open';
     }
   > {
-    const providers: PaymentProviderName[] = ['stripe', 'mock'];
+    const providers = this.registry.getRegisteredProviderNames();
     return providers.reduce(
       (acc, provider) => {
         const state = this.cbStateFallback.get(provider) ?? { failures: 0, openedUntil: 0 };
@@ -2574,7 +2575,7 @@ export class PaymentsV2Service {
     >
   > {
     const now = Date.now();
-    const providers: PaymentProviderName[] = ['stripe', 'mock'];
+    const providers = this.registry.getRegisteredProviderNames();
     if (this.cbRedisEnabled) {
       try {
         const states = await Promise.all(
