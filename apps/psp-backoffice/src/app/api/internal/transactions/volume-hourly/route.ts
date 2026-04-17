@@ -2,12 +2,13 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import type { OpsVolumeHourlyResponse } from "@/lib/api/contracts";
+import { OPS_PAYMENT_PROVIDERS } from "@/lib/api/payment-providers";
 import { mapProxyError, proxyInternalGet } from "@/lib/server/backoffice-api";
 import { enforceInternalRouteAuth } from "@/lib/server/internal-route-auth";
 
 const querySchema = z.object({
   merchantId: z.string().trim().min(1).max(64).optional(),
-  provider: z.enum(["stripe", "mock"]).optional(),
+  provider: z.enum(OPS_PAYMENT_PROVIDERS).optional(),
   currency: z
     .string()
     .length(3)

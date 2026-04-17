@@ -96,4 +96,61 @@ describe('validateEnv payments provider retry backoff', () => {
       }),
     ).toThrow(/PAYMENTS_PROVIDER_CB_HALF_OPEN/);
   });
+
+  it('rechaza PAYMENTS_PROVIDER_ORDER con código de proveedor desconocido', () => {
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        PAYMENTS_PROVIDER_ORDER: 'stripe,unknownpsp',
+      }),
+    ).toThrow(/invalid provider/);
+  });
+
+  it('acepta PAYMENTS_PROVIDER_ORDER con acme en development', () => {
+    const out = validateEnv({
+      ...minimalEnv(),
+      NODE_ENV: 'development',
+      PAYMENTS_PROVIDER_ORDER: 'stripe,mock,acme',
+    });
+    expect(out.PAYMENTS_PROVIDER_ORDER).toBe('stripe,mock,acme');
+  });
+
+  it('no rechaza ventana >300s si la sonda half-open Redis no aplica (half-open desactivado por defecto)', () => {
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        PAYMENTS_PROVIDER_CB_COOLDOWN_MS: '290000',
+        PAYMENTS_PROVIDER_TIMEOUT_MS: '8000',
+        PAYMENTS_PROVIDER_MAX_RETRIES: '5',
+        PAYMENTS_PROVIDER_RETRY_MAX_MS: '3000',
+      }),
+    ).not.toThrow();
+  });
+
+  it('no rechaza ventana >300s con half-open activo si no hay REDIS_URL (sin sonda distribuida)', () => {
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        PAYMENTS_PROVIDER_CB_HALF_OPEN: 'true',
+        PAYMENTS_PROVIDER_CB_COOLDOWN_MS: '290000',
+        PAYMENTS_PROVIDER_TIMEOUT_MS: '8000',
+        PAYMENTS_PROVIDER_MAX_RETRIES: '5',
+        PAYMENTS_PROVIDER_RETRY_MAX_MS: '3000',
+      }),
+    ).not.toThrow();
+  });
+
+  it('rechaza ventana >300s cuando half-open Redis aplica (flag true y REDIS_URL)', () => {
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        REDIS_URL: 'redis://localhost:6379',
+        PAYMENTS_PROVIDER_CB_HALF_OPEN: 'true',
+        PAYMENTS_PROVIDER_CB_COOLDOWN_MS: '290000',
+        PAYMENTS_PROVIDER_TIMEOUT_MS: '8000',
+        PAYMENTS_PROVIDER_MAX_RETRIES: '5',
+        PAYMENTS_PROVIDER_RETRY_MAX_MS: '3000',
+      }),
+    ).toThrow(/half-open probe/);
+  });
 });

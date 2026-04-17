@@ -1,3 +1,9 @@
+import {
+  PaymentProviderName,
+  isPaymentProviderName,
+  paymentProviderNamesLabel,
+} from '../payments-v2/domain/payment-provider-names';
+
 type EnvInput = Record<string, unknown>;
 
 /**
@@ -113,6 +119,7 @@ export function validateEnv(input: EnvInput): EnvInput {
 
   env.PAYMENTS_V2_ENABLED_MERCHANTS = getString(env.PAYMENTS_V2_ENABLED_MERCHANTS) ?? '';
   env.PAYMENTS_ALLOW_MOCK = String(parseBoolean(getString(env.PAYMENTS_ALLOW_MOCK), false));
+  env.PAYMENTS_ACME_ENABLED = String(parseBoolean(getString(env.PAYMENTS_ACME_ENABLED), false));
   const defaultProviderOrder = nodeEnv === 'production' ? 'stripe' : 'stripe,mock';
   const providerOrder = parsePaymentsProviderOrder(
     getString(env.PAYMENTS_PROVIDER_ORDER) ?? defaultProviderOrder,
@@ -175,6 +182,26 @@ export function validateEnv(input: EnvInput): EnvInput {
   }
   env.PAYMENTS_PROVIDER_RETRY_BASE_MS = String(retryBackoffBaseMs);
   env.PAYMENTS_PROVIDER_RETRY_MAX_MS = String(retryBackoffMaxMs);
+
+  const maxRetriesForHalfOpenProbe = Number(env.PAYMENTS_PROVIDER_MAX_RETRIES);
+  const halfOpenProbeWorstCaseMs =
+    Number(env.PAYMENTS_PROVIDER_CB_COOLDOWN_MS) +
+    Number(env.PAYMENTS_PROVIDER_TIMEOUT_MS) * (maxRetriesForHalfOpenProbe + 1) +
+    Number(env.PAYMENTS_PROVIDER_RETRY_MAX_MS) * maxRetriesForHalfOpenProbe;
+  /** Mismo tope que `halfOpenProbeTtlSeconds()` en PaymentsV2Service (cap Redis EX). */
+  const PAYMENTS_V2_HALF_OPEN_PROBE_REDIS_TTL_CAP_MS = 300_000;
+  const halfOpenProbeRedisRelevant =
+    env.PAYMENTS_PROVIDER_CB_HALF_OPEN === 'true' && Boolean(getString(env.REDIS_URL));
+  if (
+    halfOpenProbeRedisRelevant &&
+    halfOpenProbeWorstCaseMs > PAYMENTS_V2_HALF_OPEN_PROBE_REDIS_TTL_CAP_MS
+  ) {
+    throw new Error(
+      `Payments V2 half-open probe uses Redis TTL capped at ${PAYMENTS_V2_HALF_OPEN_PROBE_REDIS_TTL_CAP_MS}ms, but the worst-case provider attempt window is ${halfOpenProbeWorstCaseMs}ms ` +
+        `(PAYMENTS_PROVIDER_CB_COOLDOWN_MS + PAYMENTS_PROVIDER_TIMEOUT_MS*(PAYMENTS_PROVIDER_MAX_RETRIES+1) + PAYMENTS_PROVIDER_RETRY_MAX_MS*PAYMENTS_PROVIDER_MAX_RETRIES). ` +
+        `Lower those variables so the probe lock TTL is not shorter than the work it protects.`,
+    );
+  }
   env.PAYMENTS_V2_OPERATION_LOCK_STALE_MS = String(
     parsePositiveInt(
       getString(env.PAYMENTS_V2_OPERATION_LOCK_STALE_MS),
@@ -201,12 +228,10 @@ export function validateEnv(input: EnvInput): EnvInput {
   return env;
 }
 
-type PaymentsProviderName = 'stripe' | 'mock';
-
 function parsePaymentsProviderOrder(
   raw: string,
   opts: { nodeEnv: string; allowMockOutsideSandbox: boolean },
-): PaymentsProviderName[] {
+): PaymentProviderName[] {
   const entries = raw
     .split(',')
     .map((s) => s.trim())
@@ -214,19 +239,19 @@ function parsePaymentsProviderOrder(
 
   if (entries.length === 0) {
     throw new Error(
-      'PAYMENTS_PROVIDER_ORDER must contain at least one provider: stripe or mock',
+      `PAYMENTS_PROVIDER_ORDER must contain at least one provider (allowed: ${paymentProviderNamesLabel()})`,
     );
   }
 
-  const seen = new Set<PaymentsProviderName>();
-  const result: PaymentsProviderName[] = [];
+  const seen = new Set<PaymentProviderName>();
+  const result: PaymentProviderName[] = [];
   for (const entry of entries) {
-    if (entry !== 'stripe' && entry !== 'mock') {
+    if (!isPaymentProviderName(entry)) {
       throw new Error(
-        `PAYMENTS_PROVIDER_ORDER contains an invalid provider: "${entry}" (allowed: stripe,mock)`,
+        `PAYMENTS_PROVIDER_ORDER contains an invalid provider: "${entry}" (allowed: ${paymentProviderNamesLabel()})`,
       );
     }
-    const name = entry as PaymentsProviderName;
+    const name = entry;
     if (!seen.has(name)) {
       seen.add(name);
       result.push(name);
@@ -235,7 +260,7 @@ function parsePaymentsProviderOrder(
 
   if (result.length === 0) {
     throw new Error(
-      'PAYMENTS_PROVIDER_ORDER must contain at least one provider: stripe or mock',
+      `PAYMENTS_PROVIDER_ORDER must contain at least one provider (allowed: ${paymentProviderNamesLabel()})`,
     );
   }
 

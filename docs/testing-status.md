@@ -17,7 +17,7 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 
 | Dominio | Unit | Integration local | Smoke | Estado | Notas |
 | --- | --- | --- | --- | --- | --- |
-| `payments-v2` | Si | Si | Si | Cubierto | Create v2 sin `provider` en body: ruteo vía `PAYMENTS_PROVIDER_ORDER` en runtime (integration setup `mock,stripe`; smoke sandbox/stripe dependen del orden configurado en el host). Flujos create/get/capture/cancel/refund + idempotencia + rechazo de `paymentLink` no activo/expirado + concurrencia/ops en smoke + webhook inbound Stripe (succeeded/payment_failed→no terminal/canceled/refund/disputas charge.dispute.*) + smoke opcional matriz PM de disputa Stripe (`SMOKE_STRIPE_DISPUTE_PM_MATRIX`) y worker outbound E2E. Unit: circuit breaker v2 (Redis compartido vs fallback sin cliente, conteo/snapshot/reset, log `circuit_opened` en cada transición cerrado→abierto sin spam en fallos consecutivos con ventana abierta, reapertura tras cooldown, degradación si Redis cae con cliente presente: flujo de pago y snapshot); modo half-open opcional (`PAYMENTS_PROVIDER_CB_HALF_OPEN` + clave `payv2:cb:{p}:probe` NX, release tras intento, snapshot `circuitState`/`halfOpen`); backoff entre reintentos transitorios (spec con `PAYMENTS_PROVIDER_RETRY_BASE_MS` bajo; el resto de specs usa `0` en `beforeEach` para no alentar). Integration `jest.integration.setup` fuerza `PAYMENTS_PROVIDER_RETRY_BASE_MS=0` salvo override. Integration `volume-hourly`: aserciones de tipo string en totales y serie ayer. |
+| `payments-v2` | Si | Si | Si | Cubierto | Create v2 sin `provider` en body: ruteo vía `PAYMENTS_PROVIDER_ORDER` + registry inyectable (`PAYMENT_PROVIDERS`); integration setup `mock,stripe`; smoke sandbox/stripe según orden en host. Flujos create/get/capture/cancel/refund + idempotencia + `paymentLink` + ops + webhooks Stripe (incl. disputas, `SMOKE_STRIPE_DISPUTE_PM_MATRIX`) + outbound E2E. Unit: `ProviderRegistryService`, adapter Acme stub, Stripe en `providers/stripe/`, CB v2 (Redis/fallback, half-open NX con validación env solo si `PAYMENTS_PROVIDER_CB_HALF_OPEN` + `REDIS_URL`, snapshot `circuitState`/`halfOpen`, backoff). Integration `jest.integration.setup` fuerza `PAYMENTS_PROVIDER_RETRY_BASE_MS=0`. Integration `volume-hourly`: totales/serie como string. |
 | `merchants` | No | Si | Parcial | Parcial | Integration cubre create+guard y ciclo revoke/rotate via servicio. Falta spec unitario del controller/service. |
 | `payment-links` | No | Si | No | Parcial | Sin endpoint HTTP activo; cobertura via `PaymentLinksService.findForMerchant`. |
 | `ledger` | Si | Si | Si | Cubierto | Unit de servicio + integration/smoke de `/api/v1/balance`. |
@@ -43,6 +43,9 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 ### Unit relevantes (`src`)
 
 - `src/payments-v2/payments-v2.service.spec.ts`
+- `src/payments-v2/providers/provider-registry.service.spec.ts`
+- `src/payments-v2/providers/stripe/stripe-provider.adapter.spec.ts`
+- `src/payments-v2/providers/acme/acme-provider.adapter.spec.ts`
 - `src/payments-v2/stripe-webhook.controller.spec.ts`
 - `src/config/env.validation.spec.ts`
 

@@ -1,6 +1,5 @@
 import { IsIn, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
-
-const PAYMENT_PROVIDERS = ['stripe', 'mock'] as const;
+import { PAYMENT_PROVIDER_NAMES, PaymentProviderName } from '../domain/payment-provider-names';
 
 /**
  * Filtros opcionales para volumen horario ops (mismo criterio base que conteos: merchant/proveedor).
@@ -13,8 +12,8 @@ export class OpsVolumeHourlyQueryDto {
   merchantId?: string;
 
   @IsOptional()
-  @IsIn(PAYMENT_PROVIDERS)
-  provider?: (typeof PAYMENT_PROVIDERS)[number];
+  @IsIn([...PAYMENT_PROVIDER_NAMES])
+  provider?: PaymentProviderName;
 
   @IsOptional()
   @IsString()

@@ -7,6 +7,7 @@ import type {
   ProviderHealthResponse,
   TransactionsFilters,
 } from "@/lib/api/contracts";
+import type { OpsPaymentProvider } from "@/lib/api/payment-providers";
 
 function toSearchParams(filters: TransactionsFilters): URLSearchParams {
   const params = new URLSearchParams();
@@ -67,7 +68,7 @@ export async function fetchOpsTransactionCounts(
 
 export type OpsVolumeHourlyFilters = {
   merchantId?: string;
-  provider?: "stripe" | "mock";
+  provider?: OpsPaymentProvider;
   currency?: string;
 };
 

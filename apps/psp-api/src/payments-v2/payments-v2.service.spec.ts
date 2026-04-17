@@ -70,6 +70,7 @@ describe('PaymentsV2Service', () => {
   const registry = {
     orderedProviders: jest.fn(),
     getProvider: jest.fn(),
+    getRegisteredProviderNames: jest.fn().mockReturnValue(['stripe', 'mock']),
   };
 
   const observability = {
