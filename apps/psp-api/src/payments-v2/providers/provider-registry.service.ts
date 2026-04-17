@@ -48,17 +48,13 @@ export class ProviderRegistryService {
    * Orden de intento para operaciones de pago.
    * Sin argumento: orden en caché desde `PAYMENTS_PROVIDER_ORDER` (ruteo del PSP, no preferencia del merchant).
    * Con argumento: solo el proveedor ya ligado al pago (p. ej. `capture` sobre `selectedProvider`), no implica elección del comercio.
+   * Basta con que el adapter esté registrado; no tiene que figurar en el orden de ruteo de nuevos pagos.
    */
   orderedProviders(preferred?: PaymentProviderName): PaymentProviderName[] {
     if (!preferred) {
       return [...this.cachedOrder];
     }
     this.getProvider(preferred);
-    if (!this.cachedOrder.includes(preferred)) {
-      throw new Error(
-        `Payment provider "${preferred}" is not listed in PAYMENTS_PROVIDER_ORDER (current: ${this.cachedOrder.join(',')})`,
-      );
-    }
     return [preferred];
   }
 

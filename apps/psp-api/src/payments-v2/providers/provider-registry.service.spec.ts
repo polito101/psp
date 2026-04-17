@@ -32,10 +32,16 @@ describe('ProviderRegistryService', () => {
     );
   });
 
-  it('orderedProviders(preferred) exige el proveedor en PAYMENTS_PROVIDER_ORDER', () => {
+  it('orderedProviders(preferred) acepta proveedor registrado aunque no esté en PAYMENTS_PROVIDER_ORDER', () => {
     const registry = new ProviderRegistryService(configWithOrder('stripe'), [stripe, mock]);
-    expect(() => registry.orderedProviders('mock')).toThrow(/not listed in PAYMENTS_PROVIDER_ORDER/);
+    expect(registry.orderedProviders('mock')).toEqual(['mock']);
+    expect(registry.orderedProviders()).toEqual(['stripe']);
     expect(registry.orderedProviders('stripe')).toEqual(['stripe']);
+  });
+
+  it('orderedProviders(preferred) falla si el proveedor no está registrado', () => {
+    const registry = new ProviderRegistryService(configWithOrder('mock'), [mock]);
+    expect(() => registry.orderedProviders('stripe')).toThrow(/Unknown payment provider/);
   });
 
   it('rechaza nombres desconocidos en PAYMENTS_PROVIDER_ORDER', () => {
