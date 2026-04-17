@@ -147,6 +147,7 @@ En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc`, `te
 
 ## 5) Estado actual (que estamos haciendo ahora)
 
+- Rama **`Phase4`**: circuit breaker Payments V2 en fase **half-open** opcional (`PAYMENTS_PROVIDER_CB_HALF_OPEN`, default `false`). Con Redis compartido y flag `true`, tras cooldown (`openedUntil <= now`) y `failures >= PAYMENTS_PROVIDER_CB_FAILURES`, una sola petición por proveedor obtiene `SET payv2:cb:{provider}:probe NX EX` (`RedisService.tryAcquirePaymentsV2HalfOpenProbe`); el resto no invoca el adapter hasta liberación o TTL (`releasePaymentsV2HalfOpenProbe` en `finally` del orquestador). Sin `REDIS_URL` o con flag `false`, el comportamiento sigue el camino previo (sin sonda distribuida). Snapshot ops opcional: `halfOpen` y `circuitState` (`closed` | `open` | `half_open`).
 - Se consolidó CI en `.github/workflows/ci.yml`: `api-ci` (lint/test/build/Docker API), `backoffice-ci` (lint/typecheck/build del panel), `terraform-validate`, y en rama `sandbox` deploy + migrate + readiness estricto de `/health` [status/db/redis en `ok`] + gate de métricas operativas en `/api/v2/payments/ops/metrics` + smoke.
 - `api-ci` ahora trata `test:integration:critical` como bloqueante, agrega `test:ci:ops-metrics` para hardening del gate de métricas internas y valida build Docker (`psp-api:ci`) en cada corrida.
 - `sandbox-deploy` define umbrales explícitos de readiness operativo (`READINESS_*`) para reducir falsos verdes y alinear promoción con SLO operativo de canary.

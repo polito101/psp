@@ -151,7 +151,8 @@ export class RedisService implements OnModuleDestroy {
   }
 
   /**
-   * Intenta reservar la sonda half-open para un proveedor (SET NX EX). Una sola réplica/petición gana.
+   * Intenta reservar la sonda half-open para un proveedor (`SET key NX EX`). Coordina entre réplicas/pods:
+   * solo el ganador llama al proveedor tras cooldown del HASH, evitando thundering herd.
    * Requiere cliente Redis configurado.
    */
   async tryAcquirePaymentsV2HalfOpenProbe(provider: string, ttlSeconds: number): Promise<boolean> {

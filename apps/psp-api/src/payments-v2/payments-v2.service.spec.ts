@@ -1802,6 +1802,8 @@ describe('PaymentsV2Service', () => {
     expect(snap.mock.open).toBe(false);
   });
 
+  // Mitigación thundering herd: con N réplicas concurrentes tras cooldown, solo quien gana SET NX llama al proveedor;
+  // el resto queda bloqueado como si el CB siguiera abierto hasta que la sonda termine o expire el TTL.
   it('con Redis y PAYMENTS_PROVIDER_CB_HALF_OPEN: si la sonda NX no se obtiene, no se llama al adapter', async () => {
     process.env.PAYMENTS_PROVIDER_CB_HALF_OPEN = 'true';
     redis.getClient.mockReturnValue({});

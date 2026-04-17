@@ -2446,9 +2446,9 @@ export class PaymentsV2Service {
     try {
       const acquired = await this.redis.tryAcquirePaymentsV2HalfOpenProbe(providerName, ttlSec);
       if (acquired) {
-        this.log.log(
+        this.log.debug(
           JSON.stringify({
-            event: 'payments_v2.circuit_half_open_probe',
+            event: 'payments_v2.circuit_half_open_acquired',
             provider: providerName,
             ttlSec,
           }),
