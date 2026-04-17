@@ -139,9 +139,16 @@ export class PaymentsV2Service {
    */
   private readonly cbStateFallback = new Map<PaymentProviderName, CircuitBreakerState>();
   private readonly cbRedisEnabled: boolean;
+  /** Half-open (sonda única tras cooldown) solo con Redis; desactivado por defecto. */
+  private readonly cbHalfOpenEnabled: boolean;
   private readonly maxRetries: number;
   private readonly cbFailures: number;
   private readonly cbCooldownMs: number;
+  private readonly providerTimeoutMs: number;
+  /** Espera base (ms) entre reintentos internos del adapter ante `transientError`; 0 desactiva la espera. */
+  private readonly retryBackoffBaseMs: number;
+  /** Tope (ms) del backoff exponencial con jitter entre reintentos del proveedor. */
+  private readonly retryBackoffMaxMs: number;
   private readonly attemptWriteMaxRetries = 5;
   private readonly operationLockStaleMs: number;
   private readonly persistAttemptPayload: boolean;
@@ -160,9 +167,27 @@ export class PaymentsV2Service {
     private readonly stripeAdapter: StripeProviderAdapter,
   ) {
     this.cbRedisEnabled = Boolean(this.redis.getClient?.());
+    this.cbHalfOpenEnabled =
+      (this.config.get<string>('PAYMENTS_PROVIDER_CB_HALF_OPEN') ?? 'false').toLowerCase() === 'true';
     this.maxRetries = this.getNumber('PAYMENTS_PROVIDER_MAX_RETRIES', 2);
     this.cbFailures = this.getNumber('PAYMENTS_PROVIDER_CB_FAILURES', 3);
     this.cbCooldownMs = this.getNumber('PAYMENTS_PROVIDER_CB_COOLDOWN_MS', 60_000);
+    this.providerTimeoutMs = this.getNumber('PAYMENTS_PROVIDER_TIMEOUT_MS', 8_000);
+    let retryBackoffBaseMs = this.getNumber('PAYMENTS_PROVIDER_RETRY_BASE_MS', 100);
+    let retryBackoffMaxMs = this.getNumber('PAYMENTS_PROVIDER_RETRY_MAX_MS', 3000);
+    if (retryBackoffMaxMs < retryBackoffBaseMs) {
+      this.log.warn(
+        JSON.stringify({
+          event: 'payments_v2.retry_backoff_max_clamped',
+          baseMs: retryBackoffBaseMs,
+          configuredMaxMs: retryBackoffMaxMs,
+          appliedMaxMs: retryBackoffBaseMs,
+        }),
+      );
+      retryBackoffMaxMs = retryBackoffBaseMs;
+    }
+    this.retryBackoffBaseMs = retryBackoffBaseMs;
+    this.retryBackoffMaxMs = retryBackoffMaxMs;
     this.persistAttemptPayload =
       (this.config.get<string>('PAYMENTS_V2_PERSIST_PROVIDER_RAW') ?? 'true').toLowerCase() === 'true';
     this.tolerateAttemptPersistFailure =
@@ -1243,51 +1268,58 @@ export class PaymentsV2Service {
       const providerName = providerOrder[providerIndex];
       lastProviderAttempted = providerName;
       const isLastProvider = providerIndex === providerOrder.length - 1;
-      if (await this.isCircuitOpen(providerName)) {
+      const circuitGate = await this.resolveProviderCircuitGate(providerName);
+      if (circuitGate.block) {
         await this.safeCreateAttempt(payment, operation, providerName, {
           status: PAYMENT_V2_STATUS.FAILED,
           reasonCode: 'provider_unavailable',
-          reasonMessage: 'Provider circuit breaker is open',
+          reasonMessage: circuitGate.blockReason ?? 'Provider circuit breaker is open',
         }, 0);
         continue;
       }
-      const result = await this.runWithRetry(providerName, operation, payment, amountMinor, createExtras);
-      const shouldFallbackToNextProvider =
-        result.status === PAYMENT_V2_STATUS.FAILED &&
-        result.reasonCode === 'provider_unavailable' &&
-        !isLastProvider;
+      try {
+        const result = await this.runWithRetry(providerName, operation, payment, amountMinor, createExtras);
+        const shouldFallbackToNextProvider =
+          result.status === PAYMENT_V2_STATUS.FAILED &&
+          result.reasonCode === 'provider_unavailable' &&
+          !isLastProvider;
 
-      if (shouldFallbackToNextProvider) {
-        // No marcamos el pago como FAILED si hay proveedores alternativos; solo registramos el intento.
-        payment = await this.prisma.payment.update({
-          where: { id: payment.id },
-          data: {
-            selectedProvider: providerName,
-            lastAttemptAt: new Date(),
-          },
-          select: {
-            id: true,
-            merchantId: true,
-            status: true,
-            amountMinor: true,
-            currency: true,
-            selectedProvider: true,
-            providerRef: true,
-            statusReason: true,
-            paymentLinkId: true,
-          },
-        });
-        continue;
-      }
+        if (shouldFallbackToNextProvider) {
+          // No marcamos el pago como FAILED si hay proveedores alternativos; solo registramos el intento.
+          payment = await this.prisma.payment.update({
+            where: { id: payment.id },
+            data: {
+              selectedProvider: providerName,
+              lastAttemptAt: new Date(),
+            },
+            select: {
+              id: true,
+              merchantId: true,
+              status: true,
+              amountMinor: true,
+              currency: true,
+              selectedProvider: true,
+              providerRef: true,
+              statusReason: true,
+              paymentLinkId: true,
+            },
+          });
+          continue;
+        }
 
-      payment = await this.applyPaymentState(payment, operation, providerName, result, amountMinor);
-      if (operation === 'refund' && result.status === PAYMENT_V2_STATUS.FAILED) {
-        throw new RefundProviderFailedError(
-          payment.id,
-          result.reasonCode ?? 'provider_error',
-        );
+        payment = await this.applyPaymentState(payment, operation, providerName, result, amountMinor);
+        if (operation === 'refund' && result.status === PAYMENT_V2_STATUS.FAILED) {
+          throw new RefundProviderFailedError(
+            payment.id,
+            result.reasonCode ?? 'provider_error',
+          );
+        }
+        return { payment, nextAction: result.nextAction ?? null };
+      } finally {
+        if (circuitGate.probeAcquired) {
+          await this.releaseHalfOpenProbeSafe(providerName);
+        }
       }
-      return { payment, nextAction: result.nextAction ?? null };
     }
     if (operation === 'refund') {
       throw new RefundProviderFailedError(payment.id, 'provider_unavailable');
@@ -1315,6 +1347,10 @@ export class PaymentsV2Service {
     };
 
     while (retries <= this.maxRetries) {
+      if (retries > 0) {
+        const backoffMs = this.computeProviderRetryBackoffMs(retries - 1);
+        await this.sleep(backoffMs);
+      }
       const start = Date.now();
       let result: ProviderResult;
       try {
@@ -1378,6 +1414,28 @@ export class PaymentsV2Service {
       await this.resetProviderFailure(providerName);
     }
     return finalResult;
+  }
+
+  /**
+   * Espera entre intentos consecutivos del mismo `adapter.run` ante `transientError`.
+   * Exponencial acotada (`base * 2^n`) con tope `retryBackoffMaxMs` y jitter multiplicativo en [0.5, 1).
+   * Si `retryBackoffBaseMs` es 0, no hay espera (útil en tests / desactivar backoff).
+   *
+   * @param attemptIndexZeroBased Índice del reintento: 0 tras el primer fallo, 1 tras el segundo, etc.
+   */
+  private computeProviderRetryBackoffMs(attemptIndexZeroBased: number): number {
+    if (this.retryBackoffBaseMs <= 0) return 0;
+    const rawCap = Math.min(
+      this.retryBackoffMaxMs,
+      this.retryBackoffBaseMs * 2 ** attemptIndexZeroBased,
+    );
+    const jitterFactor = 0.5 + Math.random() * 0.5;
+    return Math.max(1, Math.min(this.retryBackoffMaxMs, Math.round(rawCap * jitterFactor)));
+  }
+
+  private sleep(ms: number): Promise<void> {
+    if (ms <= 0) return Promise.resolve();
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private buildProviderIdempotencyKey(
@@ -2285,7 +2343,7 @@ export class PaymentsV2Service {
    * Redis del CB configurado pero no usable: no debe propagar el error al flujo de pago.
    */
   private logCircuitBreakerRedisError(
-    op: 'read_state' | 'increment_failure' | 'reset' | 'snapshot',
+    op: 'read_state' | 'increment_failure' | 'reset' | 'snapshot' | 'half_open_probe' | 'half_open_release',
     error: unknown,
     provider?: PaymentProviderName,
   ): void {
@@ -2301,20 +2359,127 @@ export class PaymentsV2Service {
 
   private circuitBreakerSnapshotFromFallback(
     now: number,
-  ): Record<PaymentProviderName, { failures: number; open: boolean; openedUntil: number }> {
+  ): Record<
+    PaymentProviderName,
+    {
+      failures: number;
+      open: boolean;
+      openedUntil: number;
+      halfOpen?: boolean;
+      circuitState?: 'closed' | 'open' | 'half_open';
+    }
+  > {
     const providers: PaymentProviderName[] = ['stripe', 'mock'];
     return providers.reduce(
       (acc, provider) => {
         const state = this.cbStateFallback.get(provider) ?? { failures: 0, openedUntil: 0 };
-        acc[provider] = {
+        const open = state.openedUntil > now;
+        const base = {
           failures: state.failures,
-          open: state.openedUntil > now,
+          open,
           openedUntil: state.openedUntil,
         };
+        acc[provider] = this.cbHalfOpenEnabled
+          ? {
+              ...base,
+              halfOpen: false,
+              circuitState: open ? ('open' as const) : ('closed' as const),
+            }
+          : base;
         return acc;
       },
-      {} as Record<PaymentProviderName, { failures: number; open: boolean; openedUntil: number }>,
+      {} as Record<
+        PaymentProviderName,
+        {
+          failures: number;
+          open: boolean;
+          openedUntil: number;
+          halfOpen?: boolean;
+          circuitState?: 'closed' | 'open' | 'half_open';
+        }
+      >,
     );
+  }
+
+  /**
+   * TTL de la clave SET NX de half-open: acota el tiempo máximo que una sonda puede retener el lock
+   * (reintentos + timeouts de proveedor + cooldown como colchón).
+   */
+  private halfOpenProbeTtlSeconds(): number {
+    const ms = Math.min(
+      300_000,
+      Math.max(
+        15_000,
+        this.cbCooldownMs +
+          this.providerTimeoutMs * (this.maxRetries + 1) +
+          this.retryBackoffMaxMs * this.maxRetries,
+      ),
+    );
+    return Math.max(1, Math.ceil(ms / 1000));
+  }
+
+  /**
+   * Transiciones (con `PAYMENTS_PROVIDER_CB_HALF_OPEN=true` y Redis):
+   * - **open**: `openedUntil > now` → bloqueo total (igual que hoy).
+   * - **half-open**: cooldown vencido (`openedUntil <= now`) y aún `failures >= umbral` → solo la petición
+   *   que gana `SET payv2:cb:{provider}:probe NX` llama al adapter; el resto ve bloqueo como CB abierto.
+   * - **closed**: `failures < umbral`, o `resetProviderFailure` tras éxito del adapter (HASH limpio).
+   * En half-open, un fallo que cuenta para el CB vuelve a abrir ventana (`registerProviderFailure` / Lua).
+   *
+   * Sin Redis o flag en false: no hay half-open; tras cooldown el tráfico sigue el comportamiento previo.
+   */
+  private async resolveProviderCircuitGate(
+    providerName: PaymentProviderName,
+  ): Promise<{ block: boolean; blockReason?: string; probeAcquired: boolean }> {
+    const state = await this.readCircuitState(providerName);
+    const now = Date.now();
+    if (state.openedUntil > now) {
+      return { block: true, probeAcquired: false };
+    }
+    if (!this.cbHalfOpenEnabled || !this.cbRedisEnabled) {
+      return { block: false, probeAcquired: false };
+    }
+    if (state.failures < this.cbFailures) {
+      return { block: false, probeAcquired: false };
+    }
+    const ttlSec = this.halfOpenProbeTtlSeconds();
+    try {
+      const acquired = await this.redis.tryAcquirePaymentsV2HalfOpenProbe(providerName, ttlSec);
+      if (acquired) {
+        this.log.log(
+          JSON.stringify({
+            event: 'payments_v2.circuit_half_open_probe',
+            provider: providerName,
+            ttlSec,
+          }),
+        );
+        return { block: false, probeAcquired: true };
+      }
+      this.log.debug(
+        JSON.stringify({
+          event: 'payments_v2.circuit_half_open_skipped',
+          provider: providerName,
+          reason: 'probe_busy',
+        }),
+      );
+      return {
+        block: true,
+        blockReason: 'Provider circuit breaker half-open probe busy',
+        probeAcquired: false,
+      };
+    } catch (error) {
+      this.logCircuitBreakerRedisError('half_open_probe', error, providerName);
+      return { block: false, probeAcquired: false };
+    }
+  }
+
+  private async releaseHalfOpenProbeSafe(providerName: PaymentProviderName): Promise<void> {
+    if (!this.cbHalfOpenEnabled || !this.cbRedisEnabled) return;
+    try {
+      await this.redis.releasePaymentsV2HalfOpenProbe(providerName);
+    } catch (error) {
+      this.logCircuitBreakerRedisError('half_open_release', error, providerName);
+    }
   }
 
   private async readCircuitState(providerName: PaymentProviderName): Promise<CircuitBreakerState> {
@@ -2329,11 +2494,6 @@ export class PaymentsV2Service {
     }
     this.warnCircuitBreakerRedisUnavailableOnce();
     return this.cbStateFallback.get(providerName) ?? { failures: 0, openedUntil: 0 };
-  }
-
-  private async isCircuitOpen(providerName: PaymentProviderName): Promise<boolean> {
-    const state = await this.readCircuitState(providerName);
-    return state.openedUntil > Date.now();
   }
 
   private registerProviderFailureInMemory(providerName: PaymentProviderName): void {
@@ -2402,7 +2562,16 @@ export class PaymentsV2Service {
   }
 
   private async getCircuitBreakerSnapshot(): Promise<
-    Record<PaymentProviderName, { failures: number; open: boolean; openedUntil: number }>
+    Record<
+      PaymentProviderName,
+      {
+        failures: number;
+        open: boolean;
+        openedUntil: number;
+        halfOpen?: boolean;
+        circuitState?: 'closed' | 'open' | 'half_open';
+      }
+    >
   > {
     const now = Date.now();
     const providers: PaymentProviderName[] = ['stripe', 'mock'];
@@ -2414,14 +2583,33 @@ export class PaymentsV2Service {
         return providers.reduce(
           (acc, provider, i) => {
             const state = states[i] ?? { failures: 0, openedUntil: 0 };
-            acc[provider] = {
+            const open = state.openedUntil > now;
+            const base = {
               failures: state.failures,
-              open: state.openedUntil > now,
+              open,
               openedUntil: state.openedUntil,
             };
+            const logicalHalfOpen =
+              this.cbHalfOpenEnabled && !open && state.failures >= this.cbFailures && this.cbRedisEnabled;
+            acc[provider] = this.cbHalfOpenEnabled
+              ? {
+                  ...base,
+                  halfOpen: logicalHalfOpen,
+                  circuitState: open ? ('open' as const) : logicalHalfOpen ? ('half_open' as const) : ('closed' as const),
+                }
+              : base;
             return acc;
           },
-          {} as Record<PaymentProviderName, { failures: number; open: boolean; openedUntil: number }>,
+          {} as Record<
+            PaymentProviderName,
+            {
+              failures: number;
+              open: boolean;
+              openedUntil: number;
+              halfOpen?: boolean;
+              circuitState?: 'closed' | 'open' | 'half_open';
+            }
+          >,
         );
       } catch (error) {
         this.logCircuitBreakerRedisError('snapshot', error);

@@ -1,4 +1,4 @@
-import { parseCorsAllowedOrigins } from './env.validation';
+import { parseCorsAllowedOrigins, validateEnv } from './env.validation';
 
 describe('parseCorsAllowedOrigins', () => {
   it('normalizes trailing slash to origin', () => {
@@ -44,5 +44,56 @@ describe('parseCorsAllowedOrigins', () => {
   it('returns empty array for empty or whitespace-only input', () => {
     expect(parseCorsAllowedOrigins('')).toEqual([]);
     expect(parseCorsAllowedOrigins('  ,  , ')).toEqual([]);
+  });
+});
+
+describe('validateEnv payments provider retry backoff', () => {
+  const minimalEnv = (): Record<string, string> => ({
+    DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
+    INTERNAL_API_SECRET: 'internal-secret',
+    APP_ENCRYPTION_KEY: '01234567890123456789012345678901',
+    NODE_ENV: 'development',
+  });
+
+  it('expone PAYMENTS_PROVIDER_RETRY_BASE_MS y PAYMENTS_PROVIDER_RETRY_MAX_MS normalizados', () => {
+    const out = validateEnv({
+      ...minimalEnv(),
+      PAYMENTS_PROVIDER_RETRY_BASE_MS: '200',
+      PAYMENTS_PROVIDER_RETRY_MAX_MS: '4000',
+    });
+    expect(out.PAYMENTS_PROVIDER_RETRY_BASE_MS).toBe('200');
+    expect(out.PAYMENTS_PROVIDER_RETRY_MAX_MS).toBe('4000');
+  });
+
+  it('sube PAYMENTS_PROVIDER_RETRY_MAX_MS hasta BASE si MAX < BASE', () => {
+    const out = validateEnv({
+      ...minimalEnv(),
+      PAYMENTS_PROVIDER_RETRY_BASE_MS: '500',
+      PAYMENTS_PROVIDER_RETRY_MAX_MS: '100',
+    });
+    expect(out.PAYMENTS_PROVIDER_RETRY_BASE_MS).toBe('500');
+    expect(out.PAYMENTS_PROVIDER_RETRY_MAX_MS).toBe('500');
+  });
+
+  it('normaliza PAYMENTS_PROVIDER_CB_HALF_OPEN (default false)', () => {
+    const out = validateEnv({ ...minimalEnv() });
+    expect(out.PAYMENTS_PROVIDER_CB_HALF_OPEN).toBe('false');
+  });
+
+  it('acepta PAYMENTS_PROVIDER_CB_HALF_OPEN=true', () => {
+    const out = validateEnv({
+      ...minimalEnv(),
+      PAYMENTS_PROVIDER_CB_HALF_OPEN: 'true',
+    });
+    expect(out.PAYMENTS_PROVIDER_CB_HALF_OPEN).toBe('true');
+  });
+
+  it('rechaza PAYMENTS_PROVIDER_CB_HALF_OPEN inválido', () => {
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        PAYMENTS_PROVIDER_CB_HALF_OPEN: 'yes',
+      }),
+    ).toThrow(/PAYMENTS_PROVIDER_CB_HALF_OPEN/);
   });
 });

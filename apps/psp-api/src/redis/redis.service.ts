@@ -8,6 +8,14 @@ import Redis from 'ioredis';
 export const PAYMENTS_V2_CB_HASH_PREFIX = 'payv2:cb';
 
 /**
+ * Clave efímera SET NX para exclusión mutua de la sonda half-open por proveedor (Payments V2).
+ * Valor arbitrario; la presencia de la clave indica “hay una petición de prueba en curso”.
+ */
+export function paymentsV2CircuitHalfOpenProbeKey(provider: string): string {
+  return `${PAYMENTS_V2_CB_HASH_PREFIX}:${provider}:probe`;
+}
+
+/**
  * Lua atómico: incrementa fallos y, si alcanza umbral, fija `openedUntil = now + cooldownMs`.
  * Devuelve `openedNow=1` en la transición cerrado→abierto (antes del INCR, `openedUntil <= now`
  * y tras el INCR `failures >= threshold`), no en fallos extra mientras el circuito sigue abierto.
@@ -140,5 +148,25 @@ export class RedisService implements OnModuleDestroy {
       failures: Number.isFinite(failures) ? failures : 0,
       openedUntil: Number.isFinite(openedUntil) ? openedUntil : 0,
     };
+  }
+
+  /**
+   * Intenta reservar la sonda half-open para un proveedor (SET NX EX). Una sola réplica/petición gana.
+   * Requiere cliente Redis configurado.
+   */
+  async tryAcquirePaymentsV2HalfOpenProbe(provider: string, ttlSeconds: number): Promise<boolean> {
+    if (!this.client) {
+      throw new Error('Redis client not configured');
+    }
+    const key = paymentsV2CircuitHalfOpenProbeKey(provider);
+    const ttl = Math.max(1, Math.trunc(ttlSeconds));
+    const r = await this.client.set(key, '1', 'EX', ttl, 'NX');
+    return r === 'OK';
+  }
+
+  /** Libera la sonda half-open (p. ej. al terminar `adapter.run` con éxito o fallo). Idempotente. */
+  async releasePaymentsV2HalfOpenProbe(provider: string): Promise<void> {
+    if (!this.client) return;
+    await this.client.del(paymentsV2CircuitHalfOpenProbeKey(provider));
   }
 }
