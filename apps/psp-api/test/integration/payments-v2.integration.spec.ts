@@ -66,6 +66,33 @@ describe('payments-v2 integration', () => {
     expect(conflict.body.message).toContain('Idempotency key');
   });
 
+  it('rejects idempotency replay when only stripePaymentMethodId differs', async () => {
+    const merchant = await createMerchantViaHttp(app);
+    const idempotencyKey = randomUUID();
+    const base = {
+      amountMinor: 1999,
+      currency: 'EUR',
+      stripePaymentMethodId: 'pm_card_visa',
+      stripeReturnUrl: 'https://example.com/return',
+    };
+
+    await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .set('Idempotency-Key', idempotencyKey)
+      .send(base)
+      .expect(201);
+
+    const conflict = await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .set('Idempotency-Key', idempotencyKey)
+      .send({ ...base, stripePaymentMethodId: 'pm_card_mastercard' })
+      .expect(409);
+
+    expect(conflict.body.message).toContain('Idempotency key');
+  });
+
   it('rejects create intent when payment link is not active', async () => {
     const merchant = await createMerchantViaHttp(app);
     const link = await prisma.paymentLink.create({

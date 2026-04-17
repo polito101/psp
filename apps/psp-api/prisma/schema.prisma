@@ -47,6 +47,8 @@ model Payment {
   merchantId     String   @map("merchant_id")
   paymentLinkId  String?  @map("payment_link_id")
   idempotencyKey String?  @map("idempotency_key")
+  /// SHA-256 hex de `hashCreatePaymentIntentPayload` al crear (idempotencia incl. Stripe provisional).
+  createPayloadHash String? @map("create_payload_hash")
   amountMinor    Int      @map("amount_minor")
   currency       String
   status         String

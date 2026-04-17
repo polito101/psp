@@ -8,6 +8,8 @@ import { StripeProviderAdapter } from './stripe-provider.adapter';
 @Injectable()
 export class ProviderRegistryService {
   private readonly providers: Record<PaymentProviderName, PaymentProvider>;
+  /** Orden deduplicado y validado una vez desde `PAYMENTS_PROVIDER_ORDER` al arranque. */
+  private readonly cachedOrder: PaymentProviderName[];
 
   constructor(
     private readonly config: ConfigService,
@@ -18,6 +20,7 @@ export class ProviderRegistryService {
       stripe: this.stripe,
       mock: this.mock,
     };
+    this.cachedOrder = this.resolveConfiguredProviderOrder();
   }
 
   getProvider(name: PaymentProviderName): PaymentProvider {
@@ -26,12 +29,15 @@ export class ProviderRegistryService {
 
   /**
    * Orden de intento para operaciones de pago.
-   * Sin argumento: lista desde `PAYMENTS_PROVIDER_ORDER` (ruteo del PSP, no preferencia del merchant).
+   * Sin argumento: orden en caché desde `PAYMENTS_PROVIDER_ORDER` (ruteo del PSP, no preferencia del merchant).
    * Con argumento: solo el proveedor ya ligado al pago (p. ej. `capture` sobre `selectedProvider`), no implica elección del comercio.
    */
   orderedProviders(preferred?: PaymentProviderName): PaymentProviderName[] {
     if (preferred) return [preferred];
+    return this.cachedOrder;
+  }
 
+  private resolveConfiguredProviderOrder(): PaymentProviderName[] {
     const raw = this.config.get<string>('PAYMENTS_PROVIDER_ORDER') ?? 'stripe';
     const entries = raw
       .split(',')

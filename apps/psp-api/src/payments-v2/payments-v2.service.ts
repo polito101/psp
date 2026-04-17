@@ -14,6 +14,7 @@ import { PaymentLinksService } from '../payment-links/payment-links.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
+import { hashCreatePaymentIntentPayload } from './create-payment-intent-payload-hash';
 import { CreatePaymentIntentDto } from './dto/create-payment-intent.dto';
 import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
 import { OpsTransactionCountsQueryDto } from './dto/ops-transaction-counts-query.dto';
@@ -243,6 +244,7 @@ export class PaymentsV2Service {
           merchantId,
           paymentLinkId: dto.paymentLinkId ?? null,
           idempotencyKey: idempotencyKey ?? null,
+          createPayloadHash: hashCreatePaymentIntentPayload(dto),
           amountMinor: dto.amountMinor,
           currency: dto.currency.toUpperCase(),
           status: PAYMENT_V2_STATUS.PROCESSING,
@@ -2094,6 +2096,7 @@ export class PaymentsV2Service {
           providerRef: true,
           statusReason: true,
           paymentLinkId: true,
+          createPayloadHash: true,
         },
       });
       if (!existing) return null;
@@ -2112,6 +2115,7 @@ export class PaymentsV2Service {
         providerRef: true,
         statusReason: true,
         paymentLinkId: true,
+        createPayloadHash: true,
       },
     });
     if (!existing) return null;
@@ -2158,9 +2162,18 @@ export class PaymentsV2Service {
       currency: string;
       paymentLinkId: string | null;
       selectedProvider: string | null;
+      createPayloadHash: string | null;
     },
     incoming: CreatePaymentIntentDto,
   ) {
+    const incomingHash = hashCreatePaymentIntentPayload(incoming);
+    if (existing.createPayloadHash != null) {
+      if (existing.createPayloadHash !== incomingHash) {
+        throw new ConflictException('Idempotency key already used with a different payment intent');
+      }
+      return;
+    }
+    // Filas anteriores a `create_payload_hash`: solo se validaron amount/divisa/link en su momento.
     const same =
       existing.amountMinor === incoming.amountMinor &&
       existing.currency === incoming.currency.toUpperCase() &&
@@ -2325,10 +2338,12 @@ export class PaymentsV2Service {
 
   private registerProviderFailureInMemory(providerName: PaymentProviderName): void {
     const current = this.cbStateFallback.get(providerName) ?? { failures: 0, openedUntil: 0 };
+    const now = Date.now();
+    const wasOpen = current.openedUntil > now;
     current.failures += 1;
     if (current.failures >= this.cbFailures) {
-      current.openedUntil = Date.now() + this.cbCooldownMs;
-      if (current.failures === this.cbFailures) {
+      current.openedUntil = now + this.cbCooldownMs;
+      if (!wasOpen) {
         this.log.warn(
           JSON.stringify({
             event: 'payments_v2.circuit_opened',

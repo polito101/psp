@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Logger } from '@nestjs/common';
+import { hashCreatePaymentIntentPayload } from './create-payment-intent-payload-hash';
 import { PaymentsV2Service } from './payments-v2.service';
 import { PAYMENT_V2_STATUS } from './domain/payment-status';
 import { ProviderResult } from './providers/payment-provider.interface';
@@ -193,7 +194,10 @@ describe('PaymentsV2Service', () => {
 
     expect(prisma.payment.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ idempotencyKey: 'first-key' }),
+        data: expect.objectContaining({
+          idempotencyKey: 'first-key',
+          createPayloadHash: hashCreatePaymentIntentPayload({ amountMinor: 500, currency: 'EUR' }),
+        }),
       }),
     );
   });
@@ -377,6 +381,33 @@ describe('PaymentsV2Service', () => {
     expect(prisma.payment.create).not.toHaveBeenCalled();
     expect(stripeProvider.run).not.toHaveBeenCalled();
     expect(mockProvider.run).not.toHaveBeenCalled();
+  });
+
+  it('rechaza replay idempotente si difiere stripePaymentMethodId (misma clave)', async () => {
+    registry.orderedProviders.mockReturnValue(['mock']);
+    const firstPm = { amountMinor: 1000, currency: 'EUR', stripePaymentMethodId: 'pm_card_visa' as const };
+    prisma.payment.findUnique.mockResolvedValue({
+      id: 'pay_idem_pm',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'pi_x',
+      statusReason: null,
+      paymentLinkId: null,
+      createPayloadHash: hashCreatePaymentIntentPayload(firstPm),
+    });
+
+    await expect(
+      service.createIntent(
+        'm_1',
+        { amountMinor: 1000, currency: 'EUR', stripePaymentMethodId: 'pm_card_mastercard' },
+        'idem-pm-mismatch',
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    expect(prisma.payment.create).not.toHaveBeenCalled();
   });
 
   it('reintenta createAttempt ante P2002 y evita romper el flujo', async () => {
@@ -1400,11 +1431,13 @@ describe('PaymentsV2Service', () => {
     let state = { failures: 0, openedUntil: 0 };
     redis.getClient.mockReturnValue({});
     redis.incrementPaymentsV2ProviderCircuitFailure.mockImplementation(async () => {
+      const now = Date.now();
+      const wasOpen = state.openedUntil > now;
       state.failures += 1;
-      const openedNow = state.failures === 3 ? 1 : 0;
       if (state.failures >= 3) {
-        state.openedUntil = Date.now() + 60_000;
+        state.openedUntil = now + 60_000;
       }
+      const openedNow = state.failures >= 3 && !wasOpen ? 1 : 0;
       return { failures: state.failures, openedUntil: state.openedUntil, openedNow };
     });
     redis.getPaymentsV2ProviderCircuitState.mockImplementation(async () => ({ ...state }));
@@ -1430,9 +1463,11 @@ describe('PaymentsV2Service', () => {
     let state = { failures: 2, openedUntil: 0 };
     redis.getClient.mockReturnValue({});
     redis.incrementPaymentsV2ProviderCircuitFailure.mockImplementation(async () => {
+      const now = Date.now();
+      const wasOpen = state.openedUntil > now;
       state.failures += 1;
-      if (state.failures >= 3) state.openedUntil = Date.now() + 60_000;
-      const openedNow = state.failures === 3 ? 1 : 0;
+      if (state.failures >= 3) state.openedUntil = now + 60_000;
+      const openedNow = state.failures >= 3 && !wasOpen ? 1 : 0;
       return { ...state, openedNow };
     });
     redis.getPaymentsV2ProviderCircuitState.mockImplementation(async () => ({ ...state }));
@@ -1470,11 +1505,13 @@ describe('PaymentsV2Service', () => {
     let state = { failures: 0, openedUntil: 0 };
     redis.getClient.mockReturnValue({});
     redis.incrementPaymentsV2ProviderCircuitFailure.mockImplementation(async () => {
+      const now = Date.now();
+      const wasOpen = state.openedUntil > now;
       state.failures += 1;
-      const openedNow = state.failures === 3 ? 1 : 0;
       if (state.failures >= 3) {
-        state.openedUntil = Date.now() + 60_000;
+        state.openedUntil = now + 60_000;
       }
+      const openedNow = state.failures >= 3 && !wasOpen ? 1 : 0;
       return { failures: state.failures, openedUntil: state.openedUntil, openedNow };
     });
     redis.getPaymentsV2ProviderCircuitState.mockImplementation(async () => ({ ...state }));
@@ -1510,6 +1547,124 @@ describe('PaymentsV2Service', () => {
     );
     expect(circuitOpenedCalls).toHaveLength(1);
     warnSpy.mockRestore();
+  });
+
+  it('sin Redis: payments_v2.circuit_opened se re-emite tras cooldown (reapertura)', async () => {
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    redis.getClient.mockReturnValue(null);
+    const t0 = 1_700_000_000_000;
+    jest.useFakeTimers({ now: t0 });
+    service = buildService();
+    const cb = service as unknown as CbSvc;
+
+    await cb.registerProviderFailure('mock');
+    await cb.registerProviderFailure('mock');
+    await cb.registerProviderFailure('mock');
+    jest.advanceTimersByTime(60_000 + 1);
+    await cb.registerProviderFailure('mock');
+
+    const circuitOpenedCalls = warnSpy.mock.calls.filter(
+      (args) => typeof args[0] === 'string' && args[0].includes('payments_v2.circuit_opened'),
+    );
+    expect(circuitOpenedCalls).toHaveLength(2);
+    warnSpy.mockRestore();
+    jest.useRealTimers();
+  });
+
+  it('sin Redis: circuit_opened en reapertura aunque failures quede muy por encima del umbral (no hace falta volver a igualar el umbral)', async () => {
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    redis.getClient.mockReturnValue(null);
+    const t0 = 1_711_000_000_000;
+    jest.useFakeTimers({ now: t0 });
+    service = buildService();
+    const cb = service as unknown as CbSvc;
+
+    await cb.registerProviderFailure('mock');
+    await cb.registerProviderFailure('mock');
+    await cb.registerProviderFailure('mock');
+    for (let i = 0; i < 7; i += 1) {
+      await cb.registerProviderFailure('mock');
+    }
+    jest.advanceTimersByTime(60_000 + 1);
+    await cb.registerProviderFailure('mock');
+
+    const circuitOpenedCalls = warnSpy.mock.calls.filter(
+      (args) => typeof args[0] === 'string' && args[0].includes('payments_v2.circuit_opened'),
+    );
+    expect(circuitOpenedCalls).toHaveLength(2);
+    warnSpy.mockRestore();
+    jest.useRealTimers();
+  });
+
+  it('con Redis: payments_v2.circuit_opened se re-emite tras cooldown (reapertura)', async () => {
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    let state = { failures: 0, openedUntil: 0 };
+    redis.getClient.mockReturnValue({});
+    redis.incrementPaymentsV2ProviderCircuitFailure.mockImplementation(async () => {
+      const now = Date.now();
+      const wasOpen = state.openedUntil > now;
+      state.failures += 1;
+      if (state.failures >= 3) {
+        state.openedUntil = now + 60_000;
+      }
+      const openedNow = state.failures >= 3 && !wasOpen ? 1 : 0;
+      return { failures: state.failures, openedUntil: state.openedUntil, openedNow };
+    });
+    redis.getPaymentsV2ProviderCircuitState.mockImplementation(async () => ({ ...state }));
+    const t0 = 1_700_000_000_000;
+    jest.useFakeTimers({ now: t0 });
+    service = buildService();
+    const cb = service as unknown as CbSvc;
+
+    await cb.registerProviderFailure('stripe');
+    await cb.registerProviderFailure('stripe');
+    await cb.registerProviderFailure('stripe');
+    jest.advanceTimersByTime(60_000 + 1);
+    await cb.registerProviderFailure('stripe');
+
+    const circuitOpenedCalls = warnSpy.mock.calls.filter(
+      (args) => typeof args[0] === 'string' && args[0].includes('payments_v2.circuit_opened'),
+    );
+    expect(circuitOpenedCalls).toHaveLength(2);
+    warnSpy.mockRestore();
+    jest.useRealTimers();
+  });
+
+  it('con Redis: circuit_opened en reapertura aunque failures quede muy por encima del umbral (no hace falta volver a igualar el umbral)', async () => {
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    let state = { failures: 0, openedUntil: 0 };
+    redis.getClient.mockReturnValue({});
+    redis.incrementPaymentsV2ProviderCircuitFailure.mockImplementation(async () => {
+      const now = Date.now();
+      const wasOpen = state.openedUntil > now;
+      state.failures += 1;
+      if (state.failures >= 3) {
+        state.openedUntil = now + 60_000;
+      }
+      const openedNow = state.failures >= 3 && !wasOpen ? 1 : 0;
+      return { failures: state.failures, openedUntil: state.openedUntil, openedNow };
+    });
+    redis.getPaymentsV2ProviderCircuitState.mockImplementation(async () => ({ ...state }));
+    const t0 = 1_712_000_000_000;
+    jest.useFakeTimers({ now: t0 });
+    service = buildService();
+    const cb = service as unknown as CbSvc;
+
+    await cb.registerProviderFailure('stripe');
+    await cb.registerProviderFailure('stripe');
+    await cb.registerProviderFailure('stripe');
+    for (let i = 0; i < 7; i += 1) {
+      await cb.registerProviderFailure('stripe');
+    }
+    jest.advanceTimersByTime(60_000 + 1);
+    await cb.registerProviderFailure('stripe');
+
+    const circuitOpenedCalls = warnSpy.mock.calls.filter(
+      (args) => typeof args[0] === 'string' && args[0].includes('payments_v2.circuit_opened'),
+    );
+    expect(circuitOpenedCalls).toHaveLength(2);
+    warnSpy.mockRestore();
+    jest.useRealTimers();
   });
 
   it('con Redis: si increment del circuit breaker en Redis lanza, createIntent sigue y refleja el fallo del provider', async () => {
