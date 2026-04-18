@@ -63,6 +63,46 @@ function buildReleaseLedgerEntries(claimed: ClaimedSettlementRow[]) {
 export class SettlementService {
   constructor(private readonly prisma: PrismaService) {}
 
+  /**
+   * Una tanda: UPDATE PENDING→AVAILABLE con `FOR UPDATE SKIP LOCKED` y postings de ledger.
+   * @returns filas liberadas en esta tanda (0 si no había candidatos).
+   */
+  private async releasePendingToAvailableBatch(
+    tx: Prisma.TransactionClient,
+    filters: { merchantId: string; currency: string } | undefined,
+    now: Date,
+  ): Promise<number> {
+    const claimed = await tx.$queryRaw<ClaimedSettlementRow[]>(Prisma.sql`
+      UPDATE "PaymentSettlement" ps
+      SET
+        status = 'AVAILABLE'::"SettlementStatus",
+        "updated_at" = CURRENT_TIMESTAMP
+      FROM (
+        SELECT id
+        FROM "PaymentSettlement"
+        WHERE
+          ${filters != null ? Prisma.sql`merchant_id = ${filters.merchantId} AND currency = ${filters.currency} AND ` : Prisma.empty}
+          status = 'PENDING'::"SettlementStatus"
+          AND "available_at" <= ${now}
+        ORDER BY id
+        FOR UPDATE SKIP LOCKED
+        LIMIT ${RELEASE_PENDING_BATCH_SIZE}
+      ) AS sub
+      WHERE ps.id = sub.id
+      RETURNING ps.id, ps.merchant_id, ps.payment_id, ps.currency, ps.net_minor
+    `);
+
+    if (claimed.length === 0) {
+      return 0;
+    }
+
+    await tx.ledgerLine.createMany({
+      data: buildReleaseLedgerEntries(claimed),
+    });
+
+    return claimed.length;
+  }
+
   static computeAvailableAt(
     capturedAt: Date,
     payoutScheduleType: PayoutScheduleType,
@@ -87,36 +127,9 @@ export class SettlementService {
   async releasePendingToAvailable(now: Date): Promise<number> {
     let total = 0;
     for (;;) {
-      const n = await this.prisma.$transaction(async (tx) => {
-        const claimed = await tx.$queryRaw<ClaimedSettlementRow[]>(Prisma.sql`
-          UPDATE "PaymentSettlement" ps
-          SET
-            status = 'AVAILABLE'::"SettlementStatus",
-            "updated_at" = CURRENT_TIMESTAMP
-          FROM (
-            SELECT id
-            FROM "PaymentSettlement"
-            WHERE
-              status = 'PENDING'::"SettlementStatus"
-              AND "available_at" <= ${now}
-            ORDER BY id
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${RELEASE_PENDING_BATCH_SIZE}
-          ) AS sub
-          WHERE ps.id = sub.id
-          RETURNING ps.id, ps.merchant_id, ps.payment_id, ps.currency, ps.net_minor
-        `);
-
-        if (claimed.length === 0) {
-          return 0;
-        }
-
-        await tx.ledgerLine.createMany({
-          data: buildReleaseLedgerEntries(claimed),
-        });
-
-        return claimed.length;
-      });
+      const n = await this.prisma.$transaction(async (tx) =>
+        this.releasePendingToAvailableBatch(tx, undefined, now),
+      );
 
       if (n === 0) {
         break;
@@ -133,33 +146,15 @@ export class SettlementService {
     const now = params.now ?? new Date();
     return this.prisma.$transaction(async (tx) => {
       for (;;) {
-        const batch = await tx.$queryRaw<ClaimedSettlementRow[]>(Prisma.sql`
-          UPDATE "PaymentSettlement" ps
-          SET
-            status = 'AVAILABLE'::"SettlementStatus",
-            "updated_at" = CURRENT_TIMESTAMP
-          FROM (
-            SELECT id
-            FROM "PaymentSettlement"
-            WHERE
-              merchant_id = ${params.merchantId}
-              AND currency = ${params.currency}
-              AND status = 'PENDING'::"SettlementStatus"
-              AND "available_at" <= ${now}
-            ORDER BY id
-            FOR UPDATE SKIP LOCKED
-            LIMIT ${RELEASE_PENDING_BATCH_SIZE}
-          ) AS sub
-          WHERE ps.id = sub.id
-          RETURNING ps.id, ps.merchant_id, ps.payment_id, ps.currency, ps.net_minor
-        `);
-        if (batch.length === 0) {
+        const n = await this.releasePendingToAvailableBatch(
+          tx,
+          { merchantId: params.merchantId, currency: params.currency },
+          now,
+        );
+        if (n === 0) {
           break;
         }
-        await tx.ledgerLine.createMany({
-          data: buildReleaseLedgerEntries(batch),
-        });
-        if (batch.length < RELEASE_PENDING_BATCH_SIZE) {
+        if (n < RELEASE_PENDING_BATCH_SIZE) {
           break;
         }
       }
