@@ -62,6 +62,68 @@ describe('PaymentsV2MerchantRateLimitService', () => {
     await expect(svc.consumeIfNeeded('m1', 'create')).resolves.toBeUndefined();
   });
 
+  it('tras fail-open por Redis no vuelve a llamar INCR hasta pasar el backoff (circuito local)', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(1_717_243_200_000);
+    const redis = {
+      getClient: jest.fn().mockReturnValue({}),
+      incrWithExpireOnFirst: jest.fn().mockRejectedValue(new Error('ECONNRESET')),
+    };
+    const env = {
+      PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED: 'true',
+      PAYMENTS_V2_MERCHANT_CREATE_LIMIT: '10',
+      PAYMENTS_V2_MERCHANT_CREATE_WINDOW_SEC: '60',
+      PAYMENTS_V2_MERCHANT_RL_FAIL_OPEN_BACKOFF_MS: '10000',
+    };
+    const svc = new PaymentsV2MerchantRateLimitService(makeConfig(env), redis as unknown as RedisService);
+    await expect(svc.consumeIfNeeded('m1', 'create')).resolves.toBeUndefined();
+    expect(redis.incrWithExpireOnFirst).toHaveBeenCalledTimes(1);
+
+    await expect(svc.consumeIfNeeded('m1', 'create')).resolves.toBeUndefined();
+    expect(redis.incrWithExpireOnFirst).toHaveBeenCalledTimes(1);
+
+    jest.advanceTimersByTime(9_999);
+    await expect(svc.consumeIfNeeded('m1', 'create')).resolves.toBeUndefined();
+    expect(redis.incrWithExpireOnFirst).toHaveBeenCalledTimes(1);
+
+    jest.advanceTimersByTime(1);
+    await expect(svc.consumeIfNeeded('m1', 'create')).resolves.toBeUndefined();
+    expect(redis.incrWithExpireOnFirst).toHaveBeenCalledTimes(2);
+
+    jest.useRealTimers();
+  });
+
+  it('fail-open por timeout si INCR no responde a tiempo', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(1_717_243_200_000);
+    const hanging = new Promise<number>(() => {
+      /* nunca resuelve en el test */
+    });
+    const redis = {
+      getClient: jest.fn().mockReturnValue({}),
+      incrWithExpireOnFirst: jest.fn().mockReturnValue(hanging),
+    };
+    const env = {
+      PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED: 'true',
+      PAYMENTS_V2_MERCHANT_CREATE_LIMIT: '10',
+      PAYMENTS_V2_MERCHANT_CREATE_WINDOW_SEC: '60',
+      PAYMENTS_V2_MERCHANT_RL_REDIS_OP_TIMEOUT_MS: '80',
+      PAYMENTS_V2_MERCHANT_RL_FAIL_OPEN_BACKOFF_MS: '60000',
+    };
+    const svc = new PaymentsV2MerchantRateLimitService(makeConfig(env), redis as unknown as RedisService);
+    const p = svc.consumeIfNeeded('m1', 'create');
+    await jest.advanceTimersByTimeAsync(79);
+    await Promise.resolve();
+    expect(redis.incrWithExpireOnFirst).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(2);
+    await expect(p).resolves.toBeUndefined();
+
+    await expect(svc.consumeIfNeeded('m1', 'create')).resolves.toBeUndefined();
+    expect(redis.incrWithExpireOnFirst).toHaveBeenCalledTimes(1);
+
+    jest.useRealTimers();
+  });
+
   it('fail-open sin cliente Redis', async () => {
     const redis = {
       getClient: jest.fn().mockReturnValue(null),

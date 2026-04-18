@@ -11,6 +11,17 @@ import { PaymentsV2Service } from './payments-v2.service';
 @Controller({ path: 'payments', version: '2' })
 @UseGuards(ApiKeyGuard)
 @ApiSecurity('ApiKey')
+@ApiHeader({
+  name: 'X-Request-Id',
+  required: false,
+  description:
+    'Opcional. Correlación/traza de la petición. Si no se envía, el servidor genera un UUID y lo devuelve en la misma cabecera de respuesta. Con `X-Correlation-Id` presente, gana `X-Request-Id`.',
+})
+@ApiHeader({
+  name: 'X-Correlation-Id',
+  required: false,
+  description: 'Opcional. Alias de correlación; se usa solo si falta `X-Request-Id`.',
+})
 export class PaymentsV2Controller {
   constructor(private readonly payments: PaymentsV2Service) {}
 

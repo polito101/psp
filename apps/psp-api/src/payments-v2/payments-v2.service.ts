@@ -11,6 +11,7 @@ import { createHash, randomBytes } from 'crypto';
 import { Prisma } from '../generated/prisma/client';
 import { LedgerService } from '../ledger/ledger.service';
 import { PaymentLinksService } from '../payment-links/payment-links.service';
+import { CorrelationContextService } from '../common/correlation/correlation-context.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
@@ -168,6 +169,7 @@ export class PaymentsV2Service {
     private readonly observability: PaymentsV2ObservabilityService,
     private readonly stripeAdapter: StripeProviderAdapter,
     private readonly merchantRateLimit: PaymentsV2MerchantRateLimitService,
+    private readonly correlationContext: CorrelationContextService,
   ) {
     this.cbRedisEnabled = Boolean(this.redis.getClient?.());
     this.cbHalfOpenEnabled =
@@ -180,7 +182,7 @@ export class PaymentsV2Service {
     let retryBackoffMaxMs = this.getNumber('PAYMENTS_PROVIDER_RETRY_MAX_MS', 3000);
     if (retryBackoffMaxMs < retryBackoffBaseMs) {
       this.log.warn(
-        JSON.stringify({
+        this.correlationLogJson({
           event: 'payments_v2.retry_backoff_max_clamped',
           baseMs: retryBackoffBaseMs,
           configuredMaxMs: retryBackoffMaxMs,
@@ -202,7 +204,7 @@ export class PaymentsV2Service {
     if (!Number.isFinite(parsed) || parsed <= 0) {
       this.operationLockStaleMs = 30_000;
       this.log.warn(
-        JSON.stringify({
+        this.correlationLogJson({
           event: 'payments_v2.operation_lock_stale_ms_invalid',
           raw: raw ?? null,
           applied: this.operationLockStaleMs,
@@ -218,6 +220,15 @@ export class PaymentsV2Service {
     if (raw === undefined || raw.trim() === '') return defaultValue;
     const parsed = Number(raw);
     return Number.isFinite(parsed) ? parsed : defaultValue;
+  }
+
+  private correlationFields(): Record<string, string> {
+    const id = this.correlationContext.getId();
+    return id ? { correlationId: id } : {};
+  }
+
+  private correlationLogJson(payload: Record<string, unknown>): string {
+    return JSON.stringify({ ...payload, ...this.correlationFields() });
   }
 
   /**
@@ -300,7 +311,7 @@ export class PaymentsV2Service {
         const existing = await this.resolveIdempotentPayment(merchantId, idempotencyKey, dto);
         if (existing) {
           this.log.log(
-            JSON.stringify({
+            this.correlationLogJson({
               event: 'payments_v2.create_intent.idempotent_race',
               merchantId,
               paymentId: existing.id,
@@ -406,7 +417,7 @@ export class PaymentsV2Service {
         idempotencyKey,
       });
       this.log.warn(
-        JSON.stringify({
+        this.correlationLogJson({
           event: 'payments_v2.operation_lock_released_after_error',
           paymentId,
           operation: 'capture',
@@ -478,7 +489,7 @@ export class PaymentsV2Service {
         idempotencyKey,
       });
       this.log.warn(
-        JSON.stringify({
+        this.correlationLogJson({
           event: 'payments_v2.operation_lock_released_after_error',
           paymentId,
           operation: 'cancel',
@@ -1088,7 +1099,7 @@ export class PaymentsV2Service {
     });
     if (!payment) {
       this.log.warn(
-        JSON.stringify({
+        this.correlationLogJson({
           event: 'payments_v2.stripe_webhook.payment_not_found',
           eventType,
           providerRef,
@@ -1365,6 +1376,7 @@ export class PaymentsV2Service {
       try {
         const adapter = this.registry.getProvider(providerName);
         const idempotencyKey = this.buildProviderIdempotencyKey(operation, payment.id, amountMinor);
+        const correlationId = this.correlationContext.getId();
         const context: ProviderContext = {
           merchantId: payment.merchantId,
           paymentId: payment.id,
@@ -1372,6 +1384,7 @@ export class PaymentsV2Service {
           currency: payment.currency,
           providerPaymentId: payment.providerRef,
           idempotencyKey,
+          ...(correlationId ? { correlationId } : {}),
           ...(operation === 'create' && createExtras
             ? {
                 stripePaymentMethodId: createExtras.stripePaymentMethodId,
@@ -1400,6 +1413,7 @@ export class PaymentsV2Service {
         reasonCode: result.reasonCode ?? null,
         latencyMs,
         retryNo: retries,
+        ...this.correlationFields(),
       });
       finalResult = result;
       if (result.status === PAYMENT_V2_STATUS.FAILED && result.transientError && retries < this.maxRetries) {
@@ -1524,10 +1538,10 @@ export class PaymentsV2Service {
         error: error instanceof Error ? error.message : String(error),
       };
       if (!this.tolerateAttemptPersistFailure) {
-        this.log.error(JSON.stringify({ ...payload, fatal: true }));
+        this.log.error(this.correlationLogJson({ ...payload, fatal: true }));
         throw error;
       }
-      this.log.error(JSON.stringify({ ...payload, tolerated: true }));
+      this.log.error(this.correlationLogJson({ ...payload, tolerated: true }));
     }
   }
 
@@ -1579,7 +1593,7 @@ export class PaymentsV2Service {
           throw error;
         }
         this.log.warn(
-          JSON.stringify({
+          this.correlationLogJson({
             event: 'payments_v2.create_attempt_retry',
             paymentId: payment.id,
             operation,
@@ -1703,7 +1717,7 @@ export class PaymentsV2Service {
       payment.providerRef === null
     ) {
       this.log.error(
-        JSON.stringify({
+        this.correlationLogJson({
           event: 'payments_v2.provider_success_missing_id',
           paymentId: payment.id,
           merchantId: payment.merchantId,
@@ -1938,7 +1952,7 @@ export class PaymentsV2Service {
       });
     } catch (error) {
       this.log.warn(
-        JSON.stringify({
+        this.correlationLogJson({
           event: 'payments_v2.operation_lock_release_failed',
           paymentId,
           operation,
@@ -1952,7 +1966,7 @@ export class PaymentsV2Service {
       await this.redis.delIdempotency(cacheKey);
     } catch (error) {
       this.log.warn(
-        JSON.stringify({
+        this.correlationLogJson({
           event: 'payments_v2.operation_idempotency_release_failed',
           paymentId,
           operation,
@@ -1984,7 +1998,7 @@ export class PaymentsV2Service {
     } catch (error) {
       // Si Redis falla, degradamos a CAS por estado (evita duplicar efectos DB/webhooks).
       this.log.warn(
-        JSON.stringify({
+        this.correlationLogJson({
           event: 'payments_v2.operation_idempotency_unavailable',
           merchantId,
           paymentId,
@@ -2024,7 +2038,7 @@ export class PaymentsV2Service {
             where: { paymentId_operation: { paymentId, operation } },
           });
           this.log.warn(
-            JSON.stringify({
+            this.correlationLogJson({
               event: 'payments_v2.operation_lock_merchant_mismatch',
               paymentId,
               operation,
@@ -2128,7 +2142,7 @@ export class PaymentsV2Service {
       });
     } catch (error) {
       this.log.warn(
-        JSON.stringify({
+        this.correlationLogJson({
           event: 'payments_v2.operation_lock_complete_failed',
           paymentId,
           operation,
@@ -2256,7 +2270,7 @@ export class PaymentsV2Service {
       await this.redis.setIdempotency(cacheKey, paymentId, 24 * 3600);
     } catch (error) {
       this.log.warn(
-        JSON.stringify({
+        this.correlationLogJson({
           event: 'payments_v2.idempotency_cache_set_failed',
           merchantId,
           paymentId,
@@ -2340,7 +2354,7 @@ export class PaymentsV2Service {
     if (paymentsV2CircuitBreakerRedisFallbackWarned) return;
     paymentsV2CircuitBreakerRedisFallbackWarned = true;
     this.log.warn(
-      JSON.stringify({
+      this.correlationLogJson({
         event: 'payments_v2.circuit_breaker_redis_unavailable',
         message:
           'Payments v2 provider circuit breaker is using in-process state (not shared across replicas). Configure REDIS_URL for shared circuit breaker state.',
@@ -2357,7 +2371,7 @@ export class PaymentsV2Service {
     provider?: PaymentProviderName,
   ): void {
     this.log.warn(
-      JSON.stringify({
+      this.correlationLogJson({
         event: 'payments_v2.circuit_breaker_redis_error',
         op,
         provider: provider ?? null,
@@ -2456,7 +2470,7 @@ export class PaymentsV2Service {
       const acquired = await this.redis.tryAcquirePaymentsV2HalfOpenProbe(providerName, ttlSec);
       if (acquired) {
         this.log.log(
-          JSON.stringify({
+          this.correlationLogJson({
             event: 'payments_v2.circuit_half_open_probe',
             provider: providerName,
             ttlSec,
@@ -2465,7 +2479,7 @@ export class PaymentsV2Service {
         return { block: false, probeAcquired: true };
       }
       this.log.debug(
-        JSON.stringify({
+        this.correlationLogJson({
           event: 'payments_v2.circuit_half_open_skipped',
           provider: providerName,
           reason: 'probe_busy',
@@ -2514,7 +2528,7 @@ export class PaymentsV2Service {
       current.openedUntil = now + this.cbCooldownMs;
       if (!wasOpen) {
         this.log.warn(
-          JSON.stringify({
+          this.correlationLogJson({
             event: 'payments_v2.circuit_opened',
             provider: providerName,
             openedUntil: current.openedUntil,
@@ -2536,7 +2550,7 @@ export class PaymentsV2Service {
         );
         if (openedNow === 1) {
           this.log.warn(
-            JSON.stringify({
+            this.correlationLogJson({
               event: 'payments_v2.circuit_opened',
               provider: providerName,
               openedUntil,

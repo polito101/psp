@@ -59,6 +59,34 @@ describe('StripeProviderAdapter', () => {
     expect(body.get('confirm')).toBeNull();
   });
 
+  it('create incluye metadata psp_correlation_id cuando viene en el contexto', async () => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    global.fetch = jest.fn(async (url: string | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return {
+        ok: true,
+        json: async () => ({
+          id: 'pi_corr',
+          object: 'payment_intent',
+          status: 'requires_payment_method',
+          client_secret: 'sec',
+        }),
+      } as Response;
+    });
+
+    const adapter = adapterWithKey();
+    await adapter.run('create', {
+      merchantId: 'm_1',
+      paymentId: 'pay_1',
+      amountMinor: 500,
+      currency: 'EUR',
+      correlationId: 'corr-from-merchant-request',
+    });
+
+    const body = calls[0].init.body as URLSearchParams;
+    expect(body.get('metadata[psp_correlation_id]')).toBe('corr-from-merchant-request');
+  });
+
   it('create con payment_method confirma en servidor', async () => {
     const calls: URLSearchParams[] = [];
     global.fetch = jest.fn(async (_url: string | URL, init?: RequestInit) => {

@@ -13,6 +13,14 @@ export type MerchantRateLimitRule = { limit: number; windowSec: number };
 /** Una sola advertencia por proceso si Redis falla o no está configurado con cuota merchant activa (fail-open). */
 let paymentsV2MerchantRlRedisFailOpenWarned = false;
 
+/** Rechazo controlado cuando el INCR Redis supera el tope de tiempo (fail-open rápido). */
+class MerchantRateLimitRedisTimeoutError extends Error {
+  readonly name = 'MerchantRateLimitRedisTimeoutError';
+  constructor() {
+    super('merchant rate limit redis operation timed out');
+  }
+}
+
 @Injectable()
 export class PaymentsV2MerchantRateLimitService {
   private readonly log = new Logger(PaymentsV2MerchantRateLimitService.name);
@@ -20,6 +28,12 @@ export class PaymentsV2MerchantRateLimitService {
   private readonly createRule: MerchantRateLimitRule | null;
   private readonly captureRule: MerchantRateLimitRule | null;
   private readonly refundRule: MerchantRateLimitRule | null;
+  /** Tras un fallo/timeout de Redis, no reintentar INCR hasta este instante (circuito local por proceso). */
+  private merchantRlRedisFailOpenUntilMs = 0;
+  /** Máx. espera al INCR+EXPIRE del rate limit; evita latencia larga con Redis lento o caído. */
+  private readonly redisIncrTimeoutMs: number;
+  /** Duración del bypass de Redis tras detectar indisponibilidad. */
+  private readonly redisFailOpenBackoffMs: number;
 
   constructor(
     private readonly config: ConfigService,
@@ -35,6 +49,38 @@ export class PaymentsV2MerchantRateLimitService {
       : null;
     this.captureRule = this.enabled ? this.readOptionalPair('CAPTURE') : null;
     this.refundRule = this.enabled ? this.readOptionalPair('REFUND') : null;
+    this.redisIncrTimeoutMs = this.readOptionalBoundedMs(
+      'PAYMENTS_V2_MERCHANT_RL_REDIS_OP_TIMEOUT_MS',
+      150,
+      50,
+      2_000,
+    );
+    this.redisFailOpenBackoffMs = this.readOptionalBoundedMs(
+      'PAYMENTS_V2_MERCHANT_RL_FAIL_OPEN_BACKOFF_MS',
+      30_000,
+      5_000,
+      300_000,
+    );
+  }
+
+  private readOptionalBoundedMs(
+    key: string,
+    defaultMs: number,
+    minMs: number,
+    maxMs: number,
+  ): number {
+    const raw = this.config.get<string>(key);
+    if (raw === undefined || String(raw).trim() === '') {
+      return defaultMs;
+    }
+    const n = Number(String(raw).trim());
+    if (!Number.isFinite(n)) {
+      return defaultMs;
+    }
+    const v = Math.trunc(n);
+    if (v < minMs) return minMs;
+    if (v > maxMs) return maxMs;
+    return v;
   }
 
   private readOptionalPair(which: 'CAPTURE' | 'REFUND'): MerchantRateLimitRule | null {
@@ -86,7 +132,12 @@ export class PaymentsV2MerchantRateLimitService {
     const rule = this.ruleFor(op);
     if (!rule) return;
 
-    const nowSec = Math.floor(Date.now() / 1000);
+    const nowMs = Date.now();
+    if (nowMs < this.merchantRlRedisFailOpenUntilMs) {
+      return;
+    }
+
+    const nowSec = Math.floor(nowMs / 1000);
     const bucket = paymentsV2MerchantRateLimitBucket(nowSec, rule.windowSec);
     const key = paymentsV2MerchantRateLimitKey(merchantId, op, bucket);
 
@@ -96,7 +147,7 @@ export class PaymentsV2MerchantRateLimitService {
         this.warnFailOpen('redis_client_missing');
         return;
       }
-      const count = await this.redis.incrWithExpireOnFirst(key, rule.windowSec);
+      const count = await this.incrWithExpireOnFirstBounded(key, rule.windowSec);
       if (count > rule.limit) {
         const retryAfter = paymentsV2MerchantRateLimitRetryAfterSec(nowSec, rule.windowSec);
         this.log.warn(
@@ -121,8 +172,39 @@ export class PaymentsV2MerchantRateLimitService {
       if (e instanceof HttpException && e.getStatus() === HttpStatus.TOO_MANY_REQUESTS) {
         throw e;
       }
+      this.armRedisFailOpenCircuit();
       this.warnFailOpen('redis_error', e);
     }
+  }
+
+  /**
+   * INCR con tope de tiempo: si Redis tarda o ioredis reintenta, no retenemos la petición de pago más de `redisIncrTimeoutMs`.
+   */
+  private async incrWithExpireOnFirstBounded(key: string, windowSec: number): Promise<number> {
+    const op = this.redis.incrWithExpireOnFirst(key, windowSec);
+    const timeoutMs = this.redisIncrTimeoutMs;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new MerchantRateLimitRedisTimeoutError()), timeoutMs);
+    });
+    try {
+      return await Promise.race([op, timeoutPromise]);
+    } catch (e) {
+      if (e instanceof MerchantRateLimitRedisTimeoutError) {
+        void op.catch(() => {
+          /* Redis puede resolver/rechazar tarde; evita unhandledRejection si ganó el timeout */
+        });
+      }
+      throw e;
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  private armRedisFailOpenCircuit(): void {
+    this.merchantRlRedisFailOpenUntilMs = Date.now() + this.redisFailOpenBackoffMs;
   }
 
   private warnFailOpen(reason: string, err?: unknown): void {

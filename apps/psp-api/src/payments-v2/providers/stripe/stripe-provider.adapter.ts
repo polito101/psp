@@ -51,6 +51,11 @@ export class StripeProviderAdapter implements PaymentProvider {
     params.set('currency', context.currency.toLowerCase());
     params.set('capture_method', 'manual');
 
+    const correlationId = context.correlationId?.trim();
+    if (correlationId) {
+      params.set('metadata[psp_correlation_id]', correlationId);
+    }
+
     const pmId = context.stripePaymentMethodId?.trim();
     if (pmId) {
       params.set('payment_method', pmId);

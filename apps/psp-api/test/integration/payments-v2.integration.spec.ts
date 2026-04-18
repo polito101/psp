@@ -22,6 +22,42 @@ describe('payments-v2 integration', () => {
     await app.close();
   });
 
+  it('devuelve X-Request-Id de entrada en la respuesta', async () => {
+    const merchant = await createMerchantViaHttp(app);
+    const customId = 'integration-corr-req-xyz';
+    const res = await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .set('X-Request-Id', customId)
+      .send({ amountMinor: 1999, currency: 'EUR' })
+      .expect(201);
+    expect(res.headers['x-request-id']).toBe(customId);
+  });
+
+  it('prefiere X-Request-Id sobre X-Correlation-Id cuando ambas vienen', async () => {
+    const merchant = await createMerchantViaHttp(app);
+    const res = await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .set('X-Request-Id', 'primary-req')
+      .set('X-Correlation-Id', 'secondary-corr')
+      .send({ amountMinor: 1999, currency: 'EUR' })
+      .expect(201);
+    expect(res.headers['x-request-id']).toBe('primary-req');
+  });
+
+  it('genera X-Request-Id cuando no hay cabeceras de correlación', async () => {
+    const merchant = await createMerchantViaHttp(app);
+    const res = await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .send({ amountMinor: 1999, currency: 'EUR' })
+      .expect(201);
+    const id = res.headers['x-request-id'] as string;
+    expect(id).toBeTruthy();
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  });
+
   it('creates payment and replays idempotent request with same payment id', async () => {
     const merchant = await createMerchantViaHttp(app);
     const idempotencyKey = randomUUID();

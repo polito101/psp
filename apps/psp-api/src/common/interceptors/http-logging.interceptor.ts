@@ -10,6 +10,7 @@ import { PATH_METADATA, VERSION_METADATA } from '@nestjs/common/constants';
 import { ConfigService } from '@nestjs/config';
 import { Observable } from 'rxjs';
 import { finalize } from 'rxjs/operators';
+import { getCorrelationIdFromStore } from '../correlation/correlation-id.storage';
 
 type HttpLogMode = 'off' | 'all' | 'errors' | 'sample';
 
@@ -118,12 +119,14 @@ export class HttpLoggingInterceptor implements NestInterceptor {
         const nestRouteTemplate = this.getNestRouteTemplate(context);
         const ms = Date.now() - start;
         const path = resolveLoggablePath(req, nestRouteTemplate);
+        const correlationId = getCorrelationIdFromStore();
         const line = JSON.stringify({
           event: 'http.request',
           method: req.method ?? 'UNKNOWN',
           path,
           statusCode,
           ms,
+          ...(correlationId ? { correlationId } : {}),
         });
         this.log.log(line);
       }),
