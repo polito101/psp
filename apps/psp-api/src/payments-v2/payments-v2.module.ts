@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { LedgerModule } from '../ledger/ledger.module';
 import { PaymentLinksModule } from '../payment-links/payment-links.module';
@@ -7,6 +7,8 @@ import { PaymentsV2Controller } from './payments-v2.controller';
 import { PaymentsV2InternalController } from './payments-v2-internal.controller';
 import { PaymentsV2MerchantRateLimitService } from './payments-v2-merchant-rate-limit.service';
 import { PaymentsV2ObservabilityService } from './payments-v2-observability.service';
+import { CorrelationContextService } from '../common/correlation/correlation-context.service';
+import { CorrelationIdMiddleware } from '../common/correlation/correlation-id.middleware';
 import { PaymentsV2Service } from './payments-v2.service';
 import { AcmeProviderAdapter } from './providers/acme/acme-provider.adapter';
 import { MockProviderAdapter } from './providers/mock-provider.adapter';
@@ -20,6 +22,8 @@ import { StripeWebhookController } from './stripe-webhook.controller';
   imports: [LedgerModule, WebhooksModule, PaymentLinksModule],
   controllers: [PaymentsV2Controller, PaymentsV2InternalController, StripeWebhookController],
   providers: [
+    CorrelationContextService,
+    CorrelationIdMiddleware,
     PaymentsV2Service,
     PaymentsV2MerchantRateLimitService,
     PaymentsV2ObservabilityService,
@@ -45,4 +49,10 @@ import { StripeWebhookController } from './stripe-webhook.controller';
     ProviderRegistryService,
   ],
 })
-export class PaymentsV2Module {}
+export class PaymentsV2Module implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer
+      .apply(CorrelationIdMiddleware)
+      .forRoutes(PaymentsV2Controller, PaymentsV2InternalController, StripeWebhookController);
+  }
+}

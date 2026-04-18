@@ -40,6 +40,11 @@ export type ProviderContext = {
    * Debe mantenerse constante entre retries internos de `runWithRetry()`.
    */
   idempotencyKey?: string;
+  /**
+   * Traza HTTP comercio→PSP (misma petición y reintentos de adapter en proceso).
+   * No sustituye la idempotencyKey del proveedor ni la idempotencia de negocio del comercio.
+   */
+  correlationId?: string;
   /** Solo operación `create` + adapter Stripe: confirmación server-side. */
   stripePaymentMethodId?: string;
   /** URL de retorno si el método de pago requiere redirect tras `confirm`. */

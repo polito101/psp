@@ -88,6 +88,10 @@ describe('PaymentsV2Service', () => {
     consumeIfNeeded: jest.fn().mockResolvedValue(undefined),
   };
 
+  const correlationContext = {
+    getId: jest.fn().mockReturnValue(undefined),
+  };
+
   let service: PaymentsV2Service;
 
   const buildService = () =>
@@ -102,6 +106,7 @@ describe('PaymentsV2Service', () => {
       observability as never,
       stripeAdapter as never,
       merchantRateLimit as never,
+      correlationContext as never,
     );
 
   beforeEach(() => {
