@@ -32,8 +32,10 @@ const MERCHANT_RL_PRUNE_INTERVAL_MS = 60_000;
 const MERCHANT_RL_PRUNE_MAX_PER_CONSUME = 500;
 /** Borrados efectivos por tick en el prune periódico; el resto se encadena con `setImmediate`. */
 const MERCHANT_RL_PRUNE_PERIODIC_CHUNK = 10_000;
-/** Tope de pops del heap por prune (entradas obsoletas tras mover `purgeAtMs`). */
-const MERCHANT_RL_PRUNE_MAX_HEAP_POPS = 8_000;
+/** Pops máx. del heap en el hot path (`consumeIfNeeded`): evita CPU acotada solo por backlog de obsoletos. */
+const MERCHANT_RL_PRUNE_HOT_PATH_MAX_HEAP_POPS = 32;
+/** Pops del heap en el prune periódico (puede drenar miles de entradas obsoletas sin bloquear una petición). */
+const MERCHANT_RL_PRUNE_PERIODIC_MAX_HEAP_POPS = 10_000;
 
 @Injectable()
 export class PaymentsV2MerchantRateLimitService implements OnModuleInit, OnModuleDestroy {
@@ -59,6 +61,8 @@ export class PaymentsV2MerchantRateLimitService implements OnModuleInit, OnModul
   private readonly merchantRlStateMaxTtlMs: number;
   private pruneIntervalHandle: ReturnType<typeof setInterval> | null = null;
   private readonly merchantRlExpiryHeap: MerchantRlExpiryHeapEntry[] = [];
+  /** Índice en `merchantRlExpiryHeap` por clave lógica (`kind:key`); permite actualizar `purgeAtMs` sin duplicar nodos. */
+  private readonly merchantRlHeapIndexByLogicalKey = new Map<string, number>();
 
   constructor(
     private readonly config: ConfigService,
@@ -110,7 +114,11 @@ export class PaymentsV2MerchantRateLimitService implements OnModuleInit, OnModul
    */
   private schedulePeriodicPruneDrain(nowMs: number): void {
     const drain = (): void => {
-      this.pruneExpiredMerchantState(nowMs, MERCHANT_RL_PRUNE_PERIODIC_CHUNK);
+      this.pruneExpiredMerchantState(
+        nowMs,
+        MERCHANT_RL_PRUNE_PERIODIC_CHUNK,
+        MERCHANT_RL_PRUNE_PERIODIC_MAX_HEAP_POPS,
+      );
       const peeked = this.merchantRlExpiryHeapPeek();
       if (peeked !== undefined && peeked.purgeAtMs <= nowMs) {
         setImmediate(drain);
@@ -200,7 +208,11 @@ export class PaymentsV2MerchantRateLimitService implements OnModuleInit, OnModul
     if (!rule) return;
 
     const nowMs = Date.now();
-    this.pruneExpiredMerchantState(nowMs, MERCHANT_RL_PRUNE_MAX_PER_CONSUME);
+    this.pruneExpiredMerchantState(
+      nowMs,
+      MERCHANT_RL_PRUNE_MAX_PER_CONSUME,
+      MERCHANT_RL_PRUNE_HOT_PATH_MAX_HEAP_POPS,
+    );
 
     const circuitKey = this.circuitKey(merchantId, op);
     let circuit = this.circuitByMerchantOp.get(circuitKey);
@@ -228,14 +240,17 @@ export class PaymentsV2MerchantRateLimitService implements OnModuleInit, OnModul
         return;
       }
       const count = await this.redis.incrWithExpireOnFirstForMerchantRateLimit(key, rule.windowSec);
-      /** Espejo del INCR Redis por ventana: si el siguiente comando falla, el fallback en memoria no “pierde” los consumos ya contabilizados en Redis. */
-      const memPurgeAt = Math.min(
-        nowMs + rule.windowSec * 1000 * 2,
-        nowMs + this.merchantRlStateMaxTtlMs,
-      );
+      /** Fin de bucket en ms (constante dentro de la ventana): mismo criterio que la ventana fija Redis; evita un push al heap por request. */
+      const memPurgeAt = (bucket + 1) * rule.windowSec * 1000;
       const ck = this.circuitKey(merchantId, op);
-      this.memRlByMerchantOp.set(ck, { bucket, count, purgeAtMs: memPurgeAt });
-      this.merchantRlExpiryHeapPush({ kind: 'mem', key: ck, purgeAtMs: memPurgeAt });
+      const prevMem = this.memRlByMerchantOp.get(ck);
+      if (!prevMem || prevMem.bucket !== bucket) {
+        this.memRlByMerchantOp.set(ck, { bucket, count, purgeAtMs: memPurgeAt });
+      } else {
+        prevMem.count = count;
+        prevMem.purgeAtMs = memPurgeAt;
+      }
+      this.merchantRlExpiryHeapPushOrUpdate({ kind: 'mem', key: ck, purgeAtMs: memPurgeAt });
       if (count > rule.limit) {
         const retryAfter = paymentsV2MerchantRateLimitRetryAfterSec(nowSec, rule.windowSec);
         this.log.warn(
@@ -280,22 +295,15 @@ export class PaymentsV2MerchantRateLimitService implements OnModuleInit, OnModul
     const nowSec = Math.floor(nowMs / 1000);
     const bucket = paymentsV2MerchantRateLimitBucket(nowSec, rule.windowSec);
     const mapKey = this.circuitKey(merchantId, op);
-    const circuit = this.circuitByMerchantOp.get(mapKey);
-    const memPurgeAt =
-      circuit?.purgeAtMs ??
-      Math.min(
-        nowMs + this.redisFailOpenBackoffMs + rule.windowSec * 1000,
-        nowMs + this.merchantRlStateMaxTtlMs,
-      );
+    const bucketEndMs = (bucket + 1) * rule.windowSec * 1000;
     let st = this.memRlByMerchantOp.get(mapKey);
     if (!st || st.bucket !== bucket) {
-      st = { bucket, count: 0, purgeAtMs: memPurgeAt };
-    } else {
-      st.purgeAtMs = Math.max(st.purgeAtMs, memPurgeAt);
+      st = { bucket, count: 0, purgeAtMs: bucketEndMs };
     }
     st.count += 1;
+    st.purgeAtMs = bucketEndMs;
     this.memRlByMerchantOp.set(mapKey, st);
-    this.merchantRlExpiryHeapPush({ kind: 'mem', key: mapKey, purgeAtMs: st.purgeAtMs });
+    this.merchantRlExpiryHeapPushOrUpdate({ kind: 'mem', key: mapKey, purgeAtMs: bucketEndMs });
     if (st.count > rule.limit) {
       const retryAfter = paymentsV2MerchantRateLimitRetryAfterSec(nowSec, rule.windowSec);
       this.log.warn(
@@ -335,7 +343,21 @@ export class PaymentsV2MerchantRateLimitService implements OnModuleInit, OnModul
     );
     const ck = this.circuitKey(merchantId, op);
     this.circuitByMerchantOp.set(ck, { failOpenUntilMs, purgeAtMs });
-    this.merchantRlExpiryHeapPush({ kind: 'circuit', key: ck, purgeAtMs });
+    this.merchantRlExpiryHeapPushOrUpdate({ kind: 'circuit', key: ck, purgeAtMs });
+  }
+
+  private merchantRlHeapLogicalKey(e: MerchantRlExpiryHeapEntry): string {
+    return `${e.kind}:${e.key}`;
+  }
+
+  private merchantRlHeapSwap(i: number, j: number): void {
+    const h = this.merchantRlExpiryHeap;
+    const a = h[i]!;
+    const b = h[j]!;
+    h[i] = b;
+    h[j] = a;
+    this.merchantRlHeapIndexByLogicalKey.set(this.merchantRlHeapLogicalKey(b), i);
+    this.merchantRlHeapIndexByLogicalKey.set(this.merchantRlHeapLogicalKey(a), j);
   }
 
   private merchantRlExpiryHeapLess(a: MerchantRlExpiryHeapEntry, b: MerchantRlExpiryHeapEntry): boolean {
@@ -349,9 +371,7 @@ export class PaymentsV2MerchantRateLimitService implements OnModuleInit, OnModul
     while (i > 0) {
       const p = (i - 1) >> 1;
       if (!this.merchantRlExpiryHeapLess(h[i]!, h[p]!)) break;
-      const t = h[i]!;
-      h[i] = h[p]!;
-      h[p] = t;
+      this.merchantRlHeapSwap(i, p);
       i = p;
     }
   }
@@ -366,16 +386,31 @@ export class PaymentsV2MerchantRateLimitService implements OnModuleInit, OnModul
       if (l < n && this.merchantRlExpiryHeapLess(h[l]!, h[smallest]!)) smallest = l;
       if (r < n && this.merchantRlExpiryHeapLess(h[r]!, h[smallest]!)) smallest = r;
       if (smallest === i) break;
-      const t = h[i]!;
-      h[i] = h[smallest]!;
-      h[smallest] = t;
+      this.merchantRlHeapSwap(i, smallest);
       i = smallest;
     }
   }
 
-  private merchantRlExpiryHeapPush(e: MerchantRlExpiryHeapEntry): void {
+  /** Una entrada por `kind:key`; si ya existe, actualiza `purgeAtMs` y reordena (sin crecer el heap por request). */
+  private merchantRlExpiryHeapPushOrUpdate(e: MerchantRlExpiryHeapEntry): void {
+    const lk = this.merchantRlHeapLogicalKey(e);
+    const idx = this.merchantRlHeapIndexByLogicalKey.get(lk);
+    if (idx !== undefined) {
+      const cur = this.merchantRlExpiryHeap[idx]!;
+      const oldPurge = cur.purgeAtMs;
+      if (oldPurge === e.purgeAtMs) return;
+      cur.purgeAtMs = e.purgeAtMs;
+      if (e.purgeAtMs < oldPurge) {
+        this.merchantRlExpiryHeapSiftUp(idx);
+      } else {
+        this.merchantRlExpiryHeapSiftDown(idx);
+      }
+      return;
+    }
+    const i = this.merchantRlExpiryHeap.length;
     this.merchantRlExpiryHeap.push(e);
-    this.merchantRlExpiryHeapSiftUp(this.merchantRlExpiryHeap.length - 1);
+    this.merchantRlHeapIndexByLogicalKey.set(lk, i);
+    this.merchantRlExpiryHeapSiftUp(i);
   }
 
   private merchantRlExpiryHeapPeek(): MerchantRlExpiryHeapEntry | undefined {
@@ -386,11 +421,12 @@ export class PaymentsV2MerchantRateLimitService implements OnModuleInit, OnModul
     const h = this.merchantRlExpiryHeap;
     if (h.length === 0) return undefined;
     const top = h[0]!;
+    this.merchantRlHeapIndexByLogicalKey.delete(this.merchantRlHeapLogicalKey(top));
     const last = h.pop()!;
-    if (h.length > 0) {
-      h[0] = last;
-      this.merchantRlExpiryHeapSiftDown(0);
-    }
+    if (h.length === 0) return top;
+    h[0] = last;
+    this.merchantRlHeapIndexByLogicalKey.set(this.merchantRlHeapLogicalKey(last), 0);
+    this.merchantRlExpiryHeapSiftDown(0);
     return top;
   }
 
@@ -399,8 +435,7 @@ export class PaymentsV2MerchantRateLimitService implements OnModuleInit, OnModul
    * cuando no hay expirados). `maxDeletes` acota borrados efectivos; el heap puede tener
    * entradas obsoletas si se amplía `purgeAtMs` — se descartan al hacer pop.
    */
-  private pruneExpiredMerchantState(nowMs: number, maxDeletes: number): void {
-    const maxHeapPops = Math.min(MERCHANT_RL_PRUNE_MAX_HEAP_POPS, Math.max(maxDeletes * 16, maxDeletes + 500));
+  private pruneExpiredMerchantState(nowMs: number, maxDeletes: number, maxHeapPops: number): void {
     let deleted = 0;
     let pops = 0;
     while (deleted < maxDeletes && pops < maxHeapPops) {

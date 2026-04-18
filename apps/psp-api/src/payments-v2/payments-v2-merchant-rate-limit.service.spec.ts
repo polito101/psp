@@ -280,6 +280,31 @@ describe('PaymentsV2MerchantRateLimitService', () => {
     jest.useRealTimers();
   });
 
+  it('no duplica nodos del heap por request en el mismo bucket (mem + indice)', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(1_717_243_200_000);
+    const redis = {
+      getClient: jest.fn().mockReturnValue({}),
+      incrWithExpireOnFirstForMerchantRateLimit: jest.fn().mockResolvedValue(1),
+    };
+    const env = {
+      PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED: 'true',
+      PAYMENTS_V2_MERCHANT_CREATE_LIMIT: '500',
+      PAYMENTS_V2_MERCHANT_CREATE_WINDOW_SEC: '60',
+    };
+    const svc = new PaymentsV2MerchantRateLimitService(makeConfig(env), redis as unknown as RedisService);
+    for (let i = 0; i < 40; i++) {
+      await svc.consumeIfNeeded('m1', 'create');
+    }
+    const heap = (svc as unknown as { merchantRlExpiryHeap: unknown[] }).merchantRlExpiryHeap;
+    const idxMap = (svc as unknown as { merchantRlHeapIndexByLogicalKey: Map<string, number> })
+      .merchantRlHeapIndexByLogicalKey;
+    expect(heap.length).toBe(1);
+    expect(idxMap.size).toBe(1);
+    expect(idxMap.has('mem:m1:create')).toBe(true);
+    jest.useRealTimers();
+  });
+
   it('no aplica capture si no hay par opcional configurado', async () => {
     const redis = {
       getClient: jest.fn().mockReturnValue({}),
