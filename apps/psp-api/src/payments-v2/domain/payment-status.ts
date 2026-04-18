@@ -26,6 +26,9 @@ export type PaymentReasonCode =
   | 'provider_declined'
   | 'provider_validation_error'
   | 'provider_error'
+  | 'fee_configuration_missing'
+  /** Tarifa activa implicaría comisión bruta mayor que el importe capturado (solo captura API; ledger usa tope vía FeeService). */
+  | 'fee_exceeds_gross'
   | 'already_finalized'
   | 'not_capturable'
   | 'not_cancelable'

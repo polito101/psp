@@ -7,7 +7,11 @@ export class CreatePaymentIntentDto {
   @IsPositive()
   amountMinor!: number;
 
-  @ApiProperty({ default: 'EUR' })
+  @ApiProperty({
+    default: 'EUR',
+    description:
+      'ISO 4217 (3 letras). Debe existir una MerchantRateTable activa para esta divisa y al menos un proveedor del orden de ruteo; si no, create intent responde 409.',
+  })
   @IsString()
   @Length(3, 3)
   currency!: string;

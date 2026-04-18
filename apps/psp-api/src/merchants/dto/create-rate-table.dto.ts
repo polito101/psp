@@ -21,23 +21,28 @@ export class CreateRateTableDto {
   @MinLength(3)
   currency!: string;
 
-  @ApiProperty({ description: 'Comisión porcentual en basis points', example: 150 })
+  @ApiProperty({
+    description: 'Comisión porcentual en basis points (10000 = 100%)',
+    example: 150,
+  })
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  @Max(1_000_000)
+  @Max(10_000)
   percentageBps!: number;
 
   @ApiProperty({ description: 'Comisión fija por transacción en minor units', example: 25 })
   @Type(() => Number)
   @IsInt()
   @Min(0)
+  @Max(1_000_000_000)
   fixedMinor!: number;
 
   @ApiProperty({ description: 'Comisión mínima en minor units', example: 50 })
   @Type(() => Number)
   @IsInt()
   @Min(0)
+  @Max(1_000_000_000)
   minimumMinor!: number;
 
   @ApiProperty({ description: 'Modo de liquidación', enum: SETTLEMENT_MODES, example: 'NET' })

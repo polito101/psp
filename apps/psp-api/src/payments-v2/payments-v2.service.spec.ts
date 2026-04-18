@@ -47,6 +47,9 @@ describe('PaymentsV2Service', () => {
     paymentFeeQuote: {
       create: jest.fn(),
     },
+    paymentSettlement: {
+      create: jest.fn(),
+    },
     $transaction: jest.fn(),
   };
 
@@ -99,6 +102,8 @@ describe('PaymentsV2Service', () => {
   };
 
   const fee = {
+    findActiveRateTable: jest.fn(),
+    hasActiveRateTableForAnyProvider: jest.fn(),
     resolveActiveRateTable: jest.fn(),
     calculate: jest.fn(),
   };
@@ -174,19 +179,25 @@ describe('PaymentsV2Service', () => {
     prisma.paymentOperation.updateMany.mockResolvedValue({ count: 1 });
     prisma.paymentOperation.deleteMany.mockResolvedValue({ count: 1 });
     prisma.paymentFeeQuote.create.mockResolvedValue(undefined);
+    prisma.paymentSettlement.create.mockResolvedValue(undefined);
     stripeAdapter.retrievePaymentIntent.mockReset();
     stripeAdapter.retrievePaymentIntent.mockResolvedValue({
       status: PAYMENT_V2_STATUS.FAILED,
       reasonCode: 'provider_error',
       reasonMessage: 'retrieve stub',
     });
-    fee.resolveActiveRateTable.mockResolvedValue({
+    const defaultRateTable = {
       id: 'rt_default',
       percentageBps: 0,
       fixedMinor: 0,
       minimumMinor: 0,
       settlementMode: 'NET',
-    });
+      payoutScheduleType: 'T_PLUS_N',
+      payoutScheduleParam: 1,
+    };
+    fee.findActiveRateTable.mockResolvedValue(defaultRateTable);
+    fee.hasActiveRateTableForAnyProvider.mockResolvedValue(true);
+    fee.resolveActiveRateTable.mockResolvedValue(defaultRateTable);
     fee.calculate.mockReturnValue({
       grossMinor: 1000,
       feeMinor: 0,
@@ -1407,6 +1418,8 @@ describe('PaymentsV2Service', () => {
       fixedMinor: 25,
       minimumMinor: 50,
       settlementMode: 'NET',
+      payoutScheduleType: 'T_PLUS_N',
+      payoutScheduleParam: 1,
     });
     fee.calculate.mockReturnValue({
       grossMinor: 1000,
@@ -1440,6 +1453,108 @@ describe('PaymentsV2Service', () => {
         netMinor: 950,
       }),
     });
+  });
+
+  it('createIntent responde 409 si no hay MerchantRateTable para la divisa con ningún proveedor', async () => {
+    registry.orderedProviders.mockReturnValue(['mock']);
+    fee.hasActiveRateTableForAnyProvider.mockResolvedValue(false);
+
+    await expect(
+      service.createIntent('m_1', { amountMinor: 1000, currency: 'USD' }),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    expect(prisma.payment.create).not.toHaveBeenCalled();
+    expect(fee.hasActiveRateTableForAnyProvider).toHaveBeenCalledWith('m_1', 'USD', ['mock']);
+  });
+
+  it('capture no invoca al proveedor si falta tarifa activa para la divisa y el proveedor', async () => {
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    fee.findActiveRateTable.mockResolvedValue(null);
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_no_fee',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 1000,
+      currency: 'USD',
+      selectedProvider: 'mock',
+      providerRef: 'pi_nf',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    prisma.payment.update.mockResolvedValue({
+      id: 'pay_no_fee',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.FAILED,
+      amountMinor: 1000,
+      currency: 'USD',
+      selectedProvider: 'mock',
+      providerRef: 'pi_nf',
+      statusReason: 'fee_configuration_missing',
+      paymentLinkId: null,
+    });
+
+    await service.capture('m_1', 'pay_no_fee');
+
+    expect(mockProvider.run).not.toHaveBeenCalled();
+    expect(prisma.payment.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'pay_no_fee' },
+        data: expect.objectContaining({
+          status: PAYMENT_V2_STATUS.FAILED,
+          statusReason: 'fee_configuration_missing',
+        }),
+      }),
+    );
+  });
+
+  it('capture no invoca al proveedor si la tarifa activa implicaría comisión mayor que el bruto', async () => {
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    fee.findActiveRateTable.mockResolvedValue({
+      id: 'rt_bad',
+      percentageBps: 0,
+      fixedMinor: 0,
+      minimumMinor: 5000,
+      settlementMode: 'NET',
+      payoutScheduleType: 'T_PLUS_N',
+      payoutScheduleParam: 1,
+    });
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_fee_gt_gross',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'pi_big_fee',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    prisma.payment.update.mockResolvedValue({
+      id: 'pay_fee_gt_gross',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.FAILED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'pi_big_fee',
+      statusReason: 'fee_exceeds_gross',
+      paymentLinkId: null,
+    });
+
+    await service.capture('m_1', 'pay_fee_gt_gross');
+
+    expect(mockProvider.run).not.toHaveBeenCalled();
+    expect(prisma.payment.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'pay_fee_gt_gross' },
+        data: expect.objectContaining({
+          status: PAYMENT_V2_STATUS.FAILED,
+          statusReason: 'fee_exceeds_gross',
+        }),
+      }),
+    );
   });
 
   it('stripe webhook devuelve missing_provider_ref cuando no puede extraer providerRef', async () => {
@@ -1763,7 +1878,7 @@ describe('PaymentsV2Service', () => {
     );
   });
 
-  it('stripe webhook charge.dispute.closed lost marca DISPUTE_LOST', async () => {
+  it('stripe webhook charge.dispute.closed lost marca DISPUTE_LOST y revierte saldo', async () => {
     prisma.payment.findFirst.mockResolvedValue({
       id: 'pay_lost',
       merchantId: 'm_1',
@@ -1781,6 +1896,7 @@ describe('PaymentsV2Service', () => {
       id: 'dp_lost',
       payment_intent: 'pi_lost',
       status: 'lost',
+      amount: 700,
     });
 
     expect(result).toEqual({ handled: true, paymentId: 'pay_lost' });
@@ -1788,6 +1904,15 @@ describe('PaymentsV2Service', () => {
       expect.objectContaining({
         where: { id: 'pay_lost', status: PAYMENT_V2_STATUS.DISPUTED },
         data: expect.objectContaining({ status: PAYMENT_V2_STATUS.DISPUTE_LOST }),
+      }),
+    );
+    expect(ledger.recordSuccessfulRefund).toHaveBeenCalledWith(
+      prisma,
+      expect.objectContaining({
+        merchantId: 'm_1',
+        paymentId: 'pay_lost',
+        amountMinor: 700,
+        currency: 'EUR',
       }),
     );
   });

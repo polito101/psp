@@ -29,6 +29,19 @@ describe('FeeService', () => {
     expect(quote.netMinor).toBe(910);
   });
 
+  it('topea la comisión al bruto para que netMinor nunca sea negativo', () => {
+    const input = {
+      amountMinor: 100,
+      percentageBps: 0,
+      fixedMinor: 0,
+      minimumMinor: 500,
+    };
+    expect(FeeService.uncappedFeeMinor(input)).toBe(500);
+    const quote = FeeService.calculate(input);
+    expect(quote.feeMinor).toBe(100);
+    expect(quote.netMinor).toBe(0);
+  });
+
   it('permite modo gross settlement sin alterar fee calculado', () => {
     const quote = FeeService.calculate({
       amountMinor: 10_000,
@@ -83,5 +96,40 @@ describe('FeeService', () => {
     await expect(service.resolveActiveRateTable('m_1', 'EUR', 'acme')).rejects.toThrow(
       'No active rate table',
     );
+  });
+
+  it('findActiveRateTable devuelve null si no hay fila activa', async () => {
+    const service = new FeeService({
+      merchantRateTable: { findFirst: jest.fn().mockResolvedValue(null) },
+    } as never);
+
+    await expect(service.findActiveRateTable('m_1', 'USD', 'stripe')).resolves.toBeNull();
+  });
+
+  it('hasActiveRateTableForAnyProvider es true si existe tarifa para algún proveedor', async () => {
+    const findFirst = jest.fn().mockResolvedValue({ id: 'rt_1' });
+    const service = new FeeService({ merchantRateTable: { findFirst } } as never);
+
+    await expect(
+      service.hasActiveRateTableForAnyProvider('m_1', 'EUR', ['stripe', 'mock']),
+    ).resolves.toBe(true);
+
+    expect(findFirst).toHaveBeenCalledWith({
+      where: {
+        merchantId: 'm_1',
+        currency: 'EUR',
+        provider: { in: ['stripe', 'mock'] },
+        activeTo: null,
+      },
+      orderBy: { activeFrom: 'desc' },
+    });
+  });
+
+  it('hasActiveRateTableForAnyProvider es false con lista de proveedores vacía', async () => {
+    const findFirst = jest.fn();
+    const service = new FeeService({ merchantRateTable: { findFirst } } as never);
+
+    await expect(service.hasActiveRateTableForAnyProvider('m_1', 'EUR', [])).resolves.toBe(false);
+    expect(findFirst).not.toHaveBeenCalled();
   });
 });

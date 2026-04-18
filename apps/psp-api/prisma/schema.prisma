@@ -25,6 +25,12 @@ enum SettlementStatus {
   REVERSED
 }
 
+enum PayoutStatus {
+  CREATED
+  SENT
+  FAILED
+}
+
 model Merchant {
   id                      String    @id @default(cuid())
   name                    String
@@ -42,6 +48,8 @@ model Merchant {
   webhooks     WebhookDelivery[]
   rateTables   MerchantRateTable[]
   feeQuotes    PaymentFeeQuote[]
+  settlements  PaymentSettlement[]
+  payouts      Payout[]
 }
 
 model PaymentLink {
@@ -86,6 +94,7 @@ model Payment {
   paymentLink   PaymentLink?   @relation(fields: [paymentLinkId], references: [id], onDelete: SetNull)
   ledgerLines   LedgerLine[]
   feeQuote      PaymentFeeQuote?
+  settlement    PaymentSettlement?
   attempts      PaymentAttempt[]
   operations    PaymentOperation[]
 
@@ -194,6 +203,67 @@ model PaymentFeeQuote {
   @@index([provider, createdAt])
 }
 
+model PaymentSettlement {
+  id             String           @id @default(cuid())
+  paymentId       String           @unique @map("payment_id")
+  merchantId      String           @map("merchant_id")
+  currency        String
+  provider        String
+  settlementMode  SettlementMode   @map("settlement_mode")
+  status          SettlementStatus @default(PENDING)
+  grossMinor      Int              @map("gross_minor")
+  feeMinor        Int              @map("fee_minor")
+  netMinor        Int              @map("net_minor")
+  capturedAt      DateTime         @map("captured_at")
+  availableAt     DateTime         @map("available_at")
+  paidAt          DateTime?        @map("paid_at")
+  payoutId        String?          @map("payout_id")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+
+  payment    Payment    @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  merchant   Merchant   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  payout     Payout?    @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+  payoutItem PayoutItem?
+
+  @@index([merchantId, currency, status, availableAt])
+  @@index([payoutId])
+}
+
+model Payout {
+  id           String       @id @default(cuid())
+  merchantId    String       @map("merchant_id")
+  currency      String
+  status        PayoutStatus @default(CREATED)
+  windowStartAt DateTime     @map("window_start_at")
+  windowEndAt   DateTime     @map("window_end_at")
+  grossMinor    Int          @map("gross_minor")
+  feeMinor      Int          @map("fee_minor")
+  netMinor      Int          @map("net_minor")
+  createdAt     DateTime     @default(now()) @map("created_at")
+
+  merchant    Merchant           @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  items       PayoutItem[]
+  settlements PaymentSettlement[]
+
+  @@index([merchantId, createdAt])
+}
+
+model PayoutItem {
+  id                  String   @id @default(cuid())
+  payoutId            String   @map("payout_id")
+  paymentSettlementId String   @unique @map("payment_settlement_id")
+  grossMinor          Int      @map("gross_minor")
+  feeMinor            Int      @map("fee_minor")
+  netMinor            Int      @map("net_minor")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  payout            Payout            @relation(fields: [payoutId], references: [id], onDelete: Cascade)
+  paymentSettlement PaymentSettlement @relation(fields: [paymentSettlementId], references: [id], onDelete: Cascade)
+
+  @@index([payoutId, createdAt])
+}
+
 model LedgerLine {
   id          String   @id @default(cuid())
   merchantId  String   @map("merchant_id")
@@ -208,6 +278,8 @@ model LedgerLine {
   payment  Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
 
   @@index([merchantId, createdAt])
+  // getBalances(): groupBy currency+entryType con where merchantId + entryType IN (...)
+  @@index([merchantId, entryType, currency])
 }
 
 model WebhookDelivery {

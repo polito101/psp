@@ -25,6 +25,8 @@ export class MerchantsService {
 
   /**
    * Crea un merchant con su API key y secreto de webhook.
+   * Inserta tarifas por defecto solo en **EUR** para todos los proveedores; otras divisas requieren
+   * altas manuales en `MerchantRateTable` antes de poder crear intents en esa moneda.
    * @param dto.keyTtlDays - Días de validez de la key. Sin valor, no expira.
    * @returns id, name, apiKey (mostrar solo una vez), webhookSecret (mostrar solo una vez).
    */
@@ -32,39 +34,43 @@ export class MerchantsService {
     const webhookSecretPlain = `whsec_${randomBytes(24).toString('base64url')}`;
     const webhookSecretCiphertext = encryptUtf8(webhookSecretPlain);
     const placeholderHash = await bcrypt.hash(randomBytes(16).toString('hex'), 12);
-
-    const merchant = await this.prisma.merchant.create({
-      data: {
-        name: dto.name,
-        apiKeyHash: placeholderHash,
-        webhookUrl: dto.webhookUrl ?? null,
-        webhookSecretCiphertext,
-      },
-    });
-
-    const apiKeyPlain = `psp.${merchant.id}.${randomBytes(32).toString('base64url')}`;
-    const apiKeyHash = await bcrypt.hash(apiKeyPlain, 12);
     const apiKeyExpiresAt = dto.keyTtlDays
       ? new Date(Date.now() + dto.keyTtlDays * 86_400_000)
       : null;
 
-    await this.prisma.merchant.update({
-      where: { id: merchant.id },
-      data: { apiKeyHash, apiKeyExpiresAt },
-    });
+    const { merchant, apiKeyPlain } = await this.prisma.$transaction(async (tx) => {
+      const merchant = await tx.merchant.create({
+        data: {
+          name: dto.name,
+          apiKeyHash: placeholderHash,
+          webhookUrl: dto.webhookUrl ?? null,
+          webhookSecretCiphertext,
+        },
+      });
 
-    await this.prisma.merchantRateTable.createMany({
-      data: PAYMENT_PROVIDER_NAMES.map((provider) => ({
-        merchantId: merchant.id,
-        currency: 'EUR',
-        provider,
-        percentageBps: merchant.feeBps,
-        fixedMinor: 0,
-        minimumMinor: 0,
-        settlementMode: SettlementMode.NET,
-        payoutScheduleType: PayoutScheduleType.T_PLUS_N,
-        payoutScheduleParam: 1,
-      })),
+      const apiKeyPlain = `psp.${merchant.id}.${randomBytes(32).toString('base64url')}`;
+      const apiKeyHash = await bcrypt.hash(apiKeyPlain, 12);
+
+      await tx.merchant.update({
+        where: { id: merchant.id },
+        data: { apiKeyHash, apiKeyExpiresAt },
+      });
+
+      await tx.merchantRateTable.createMany({
+        data: PAYMENT_PROVIDER_NAMES.map((provider) => ({
+          merchantId: merchant.id,
+          currency: 'EUR',
+          provider,
+          percentageBps: merchant.feeBps,
+          fixedMinor: 0,
+          minimumMinor: 0,
+          settlementMode: SettlementMode.NET,
+          payoutScheduleType: PayoutScheduleType.T_PLUS_N,
+          payoutScheduleParam: 1,
+        })),
+      });
+
+      return { merchant, apiKeyPlain };
     });
 
     return {
