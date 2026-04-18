@@ -17,7 +17,7 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 
 | Dominio | Unit | Integration local | Smoke | Estado | Notas |
 | --- | --- | --- | --- | --- | --- |
-| `payments-v2` | Si | Si | Si | Cubierto | Create v2 sin `provider` en body: ruteo vía `PAYMENTS_PROVIDER_ORDER` + registry inyectable (`PAYMENT_PROVIDERS`); integration setup `mock,stripe`; smoke sandbox/stripe según orden en host. Flujos create/get/capture/cancel/refund + idempotencia + `paymentLink` + ops + webhooks Stripe (incl. disputas, `SMOKE_STRIPE_DISPUTE_PM_MATRIX`) + outbound E2E. Unit: `ProviderRegistryService`, adapter Acme stub, Stripe en `providers/stripe/`, CB v2 (Redis/fallback, half-open NX con validación env solo si `PAYMENTS_PROVIDER_CB_HALF_OPEN` + `REDIS_URL`, snapshot `circuitState`/`halfOpen`, backoff). Integration `jest.integration.setup` fuerza `PAYMENTS_PROVIDER_RETRY_BASE_MS=0`. Integration `volume-hourly`: totales/serie como string. |
+| `payments-v2` | Si | Si | Si | Cubierto | Create v2 sin `provider` en body: ruteo vía `PAYMENTS_PROVIDER_ORDER` + registry inyectable (`PAYMENT_PROVIDERS`); integration setup `mock,stripe`; smoke sandbox/stripe según orden en host. Flujos create/get/capture/cancel/refund + idempotencia + `paymentLink` + ops + webhooks Stripe (incl. disputas, `SMOKE_STRIPE_DISPUTE_PM_MATRIX`) + outbound E2E. Unit: `ProviderRegistryService`, adapter Acme stub, Stripe en `providers/stripe/`, CB v2 (Redis/fallback, half-open NX con validación env solo si `PAYMENTS_PROVIDER_CB_HALF_OPEN` + `REDIS_URL`, snapshot `circuitState`/`halfOpen`, backoff), cuota merchant (`payments-v2-merchant-rate-limit*.spec.ts`, `PaymentsV2MerchantRateLimitService`). Integration `jest.integration.setup` fuerza `PAYMENTS_PROVIDER_RETRY_BASE_MS=0`. Integration `volume-hourly`: totales/serie como string. Integration dedicada `payments-v2-merchant-rate-limit.integration.spec.ts` (429 + idempotencia sin consumo extra; incluida en `test:integration:critical`). |
 | `merchants` | No | Si | Parcial | Parcial | Integration cubre create+guard y ciclo revoke/rotate via servicio. Falta spec unitario del controller/service. |
 | `payment-links` | No | Si | No | Parcial | Sin endpoint HTTP activo; cobertura via `PaymentLinksService.findForMerchant`. |
 | `ledger` | Si | Si | Si | Cubierto | Unit de servicio + integration/smoke de `/api/v1/balance`. |
@@ -32,6 +32,7 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 - `test/integration/health.integration.spec.ts`
 - `test/integration/merchants.integration.spec.ts`
 - `test/integration/payments-v2.integration.spec.ts`
+- `test/integration/payments-v2-merchant-rate-limit.integration.spec.ts`
 - `test/integration/ledger.integration.spec.ts`
 - `test/integration/internal-webhooks.integration.spec.ts`
 - `test/integration/stripe-webhooks.integration.spec.ts`
@@ -47,6 +48,8 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 - `src/payments-v2/providers/stripe/stripe-provider.adapter.spec.ts`
 - `src/payments-v2/providers/acme/acme-provider.adapter.spec.ts`
 - `src/payments-v2/stripe-webhook.controller.spec.ts`
+- `src/payments-v2/payments-v2-merchant-rate-limit.spec.ts`
+- `src/payments-v2/payments-v2-merchant-rate-limit.service.spec.ts`
 - `src/config/env.validation.spec.ts`
 
 ### Smoke (`test/smoke`)

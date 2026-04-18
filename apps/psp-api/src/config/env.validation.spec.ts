@@ -154,3 +154,57 @@ describe('validateEnv payments provider retry backoff', () => {
     ).toThrow(/half-open probe/);
   });
 });
+
+describe('validateEnv payments v2 merchant rate limit', () => {
+  const minimalEnv = (): Record<string, string> => ({
+    DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
+    INTERNAL_API_SECRET: 'internal-secret',
+    APP_ENCRYPTION_KEY: '01234567890123456789012345678901',
+    NODE_ENV: 'development',
+  });
+
+  it('con flag desactivado no exige limites de create', () => {
+    const out = validateEnv({
+      ...minimalEnv(),
+      PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED: 'false',
+    });
+    expect(out.PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED).toBe('false');
+  });
+
+  it('con flag activo exige CREATE_LIMIT y CREATE_WINDOW_SEC', () => {
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED: 'true',
+      }),
+    ).toThrow(/PAYMENTS_V2_MERCHANT_CREATE_LIMIT/);
+  });
+
+  it('normaliza create y pares opcionales capture/refund', () => {
+    const out = validateEnv({
+      ...minimalEnv(),
+      PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED: 'true',
+      PAYMENTS_V2_MERCHANT_CREATE_LIMIT: '30',
+      PAYMENTS_V2_MERCHANT_CREATE_WINDOW_SEC: '10',
+      PAYMENTS_V2_MERCHANT_CAPTURE_LIMIT: '5',
+      PAYMENTS_V2_MERCHANT_CAPTURE_WINDOW_SEC: '120',
+      PAYMENTS_V2_MERCHANT_REFUND_LIMIT: '3',
+      PAYMENTS_V2_MERCHANT_REFUND_WINDOW_SEC: '60',
+    });
+    expect(out.PAYMENTS_V2_MERCHANT_CREATE_LIMIT).toBe('30');
+    expect(out.PAYMENTS_V2_MERCHANT_CAPTURE_LIMIT).toBe('5');
+    expect(out.PAYMENTS_V2_MERCHANT_REFUND_WINDOW_SEC).toBe('60');
+  });
+
+  it('rechaza par capture incompleto', () => {
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED: 'true',
+        PAYMENTS_V2_MERCHANT_CREATE_LIMIT: '1',
+        PAYMENTS_V2_MERCHANT_CREATE_WINDOW_SEC: '1',
+        PAYMENTS_V2_MERCHANT_CAPTURE_LIMIT: '5',
+      }),
+    ).toThrow(/PAYMENTS_V2_MERCHANT_CAPTURE_WINDOW_SEC/);
+  });
+});

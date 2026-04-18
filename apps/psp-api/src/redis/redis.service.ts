@@ -50,6 +50,15 @@ end
 return {failures, openedUntil, openedNow}
 `;
 
+/** INCR atómico + EXPIRE solo en la primera escritura (ventana fija por clave). */
+const INCR_EXPIRE_ON_FIRST_LUA = `
+local v = redis.call('INCR', KEYS[1])
+if v == 1 then
+  redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
+end
+return v
+`;
+
 @Injectable()
 export class RedisService implements OnModuleDestroy {
   private readonly client: Redis | null;
@@ -83,6 +92,23 @@ export class RedisService implements OnModuleDestroy {
   async delIdempotency(key: string): Promise<void> {
     if (!this.client) return;
     await this.client.del(key);
+  }
+
+  /**
+   * Incrementa una clave de cuota con TTL en la primera creación (ventana fija).
+   * @returns Valor tras INCR.
+   */
+  async incrWithExpireOnFirst(key: string, ttlSeconds: number): Promise<number> {
+    if (!this.client) {
+      throw new Error('Redis client not configured');
+    }
+    const ttl = Math.max(1, Math.trunc(ttlSeconds));
+    const raw = (await this.client.eval(INCR_EXPIRE_ON_FIRST_LUA, 1, key, String(ttl))) as unknown;
+    const n = typeof raw === 'number' ? raw : Number(raw);
+    if (!Number.isFinite(n)) {
+      throw new Error('Unexpected Redis eval result for incrWithExpireOnFirst');
+    }
+    return n;
   }
 
   private paymentsV2CircuitBreakerHashKey(provider: string): string {

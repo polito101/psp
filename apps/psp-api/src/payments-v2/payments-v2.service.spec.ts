@@ -84,6 +84,10 @@ describe('PaymentsV2Service', () => {
     retrievePaymentIntent: jest.fn(),
   };
 
+  const merchantRateLimit = {
+    consumeIfNeeded: jest.fn().mockResolvedValue(undefined),
+  };
+
   let service: PaymentsV2Service;
 
   const buildService = () =>
@@ -97,6 +101,7 @@ describe('PaymentsV2Service', () => {
       registry as never,
       observability as never,
       stripeAdapter as never,
+      merchantRateLimit as never,
     );
 
   beforeEach(() => {
