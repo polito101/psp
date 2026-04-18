@@ -1,7 +1,10 @@
 import { randomUUID } from 'crypto';
 import request from 'supertest';
 import { INestApplication } from '@nestjs/common/interfaces';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../src/prisma/prisma.service';
+import { RedisService } from '../../src/redis/redis.service';
+import { PaymentsV2MerchantRateLimitService } from '../../src/payments-v2/payments-v2-merchant-rate-limit.service';
 import { createIntegrationApp, createMerchantViaHttp, resetIntegrationDb } from './helpers/integration-app';
 
 describe('payments-v2 merchant rate limit (integration)', () => {
@@ -13,14 +16,49 @@ describe('payments-v2 merchant rate limit (integration)', () => {
     saved.PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED = process.env.PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED;
     saved.PAYMENTS_V2_MERCHANT_CREATE_LIMIT = process.env.PAYMENTS_V2_MERCHANT_CREATE_LIMIT;
     saved.PAYMENTS_V2_MERCHANT_CREATE_WINDOW_SEC = process.env.PAYMENTS_V2_MERCHANT_CREATE_WINDOW_SEC;
+    saved.PAYMENTS_V2_MERCHANT_RL_REDIS_OP_TIMEOUT_MS = process.env.PAYMENTS_V2_MERCHANT_RL_REDIS_OP_TIMEOUT_MS;
+    saved.PAYMENTS_V2_MERCHANT_RL_FAIL_OPEN_BACKOFF_MS = process.env.PAYMENTS_V2_MERCHANT_RL_FAIL_OPEN_BACKOFF_MS;
 
     process.env.PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED = 'true';
     process.env.PAYMENTS_V2_MERCHANT_CREATE_LIMIT = '2';
     process.env.PAYMENTS_V2_MERCHANT_CREATE_WINDOW_SEC = '600';
+    /**
+     * El límite merchant hace fail-open si Redis falla o si ioredis corta el INCR (`commandTimeout`, default 150 ms).
+     * Con lazyConnect, el primer comando en CI puede superar 150 ms → circuito fail-open → nunca 429.
+     */
+    process.env.PAYMENTS_V2_MERCHANT_RL_REDIS_OP_TIMEOUT_MS = '5000';
+    process.env.PAYMENTS_V2_MERCHANT_RL_FAIL_OPEN_BACKOFF_MS = '5000';
 
     const setup = await createIntegrationApp();
     app = setup.app;
     prisma = setup.prisma;
+
+    const redis = app.get(RedisService).getClient();
+    if (!redis) {
+      throw new Error(
+        'REDIS_URL debe estar definido para estos tests: sin cliente Redis el rate limit hace fail-open y no se devuelve 429.',
+      );
+    }
+    try {
+      await redis.ping();
+    } catch (e) {
+      const urlHint = (process.env.REDIS_URL ?? '').replace(/:[^:@/]+@/, ':****@');
+      throw new Error(
+        `Redis no responde en REDIS_URL=${urlHint || '(vacío)'}. ` +
+          'Arranca Redis (p. ej. en la raíz del repo: `docker compose up -d`) y vuelve a ejecutar los tests. ' +
+          `Causa: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+
+    const cfg = app.get(ConfigService);
+    const rl = app.get(PaymentsV2MerchantRateLimitService) as unknown as {
+      enabled: boolean;
+      createRule: { limit: number; windowSec: number } | null;
+    };
+    expect(cfg.get<string>('PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED')).toBe('true');
+    expect(cfg.get<string>('PAYMENTS_V2_MERCHANT_CREATE_LIMIT')).toBe('2');
+    expect(rl.enabled).toBe(true);
+    expect(rl.createRule?.limit).toBe(2);
   });
 
   beforeEach(async () => {

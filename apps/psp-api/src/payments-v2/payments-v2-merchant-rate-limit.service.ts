@@ -1,4 +1,11 @@
-import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { RedisService } from '../redis/redis.service';
 import {
@@ -10,30 +17,48 @@ import {
 
 export type MerchantRateLimitRule = { limit: number; windowSec: number };
 
+type MerchantOpCircuit = { failOpenUntilMs: number; purgeAtMs: number };
+type MemRlEntry = { bucket: number; count: number; purgeAtMs: number };
+
+/** Expiración programada para poda O(log n) sin recorrer Maps completos. */
+type MerchantRlExpiryHeapEntry =
+  | { kind: 'circuit'; key: string; purgeAtMs: number }
+  | { kind: 'mem'; key: string; purgeAtMs: number };
+
 /** Una sola advertencia por proceso si Redis falla o no está configurado con cuota merchant activa (fail-open). */
 let paymentsV2MerchantRlRedisFailOpenWarned = false;
 
-/** Rechazo controlado cuando el INCR Redis supera el tope de tiempo (fail-open rápido). */
-class MerchantRateLimitRedisTimeoutError extends Error {
-  readonly name = 'MerchantRateLimitRedisTimeoutError';
-  constructor() {
-    super('merchant rate limit redis operation timed out');
-  }
-}
+const MERCHANT_RL_PRUNE_INTERVAL_MS = 60_000;
+const MERCHANT_RL_PRUNE_MAX_PER_CONSUME = 500;
+/** Borrados efectivos por tick en el prune periódico; el resto se encadena con `setImmediate`. */
+const MERCHANT_RL_PRUNE_PERIODIC_CHUNK = 10_000;
+/** Tope de pops del heap por prune (entradas obsoletas tras mover `purgeAtMs`). */
+const MERCHANT_RL_PRUNE_MAX_HEAP_POPS = 8_000;
 
 @Injectable()
-export class PaymentsV2MerchantRateLimitService {
+export class PaymentsV2MerchantRateLimitService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger(PaymentsV2MerchantRateLimitService.name);
   private readonly enabled: boolean;
   private readonly createRule: MerchantRateLimitRule | null;
   private readonly captureRule: MerchantRateLimitRule | null;
   private readonly refundRule: MerchantRateLimitRule | null;
-  /** Tras un fallo/timeout de Redis, no reintentar INCR hasta este instante (circuito local por proceso). */
-  private merchantRlRedisFailOpenUntilMs = 0;
-  /** Máx. espera al INCR+EXPIRE del rate limit; evita latencia larga con Redis lento o caído. */
-  private readonly redisIncrTimeoutMs: number;
+  /**
+   * Circuito fail-open por merchant+op: hasta `failOpenUntilMs` no se llama Redis; `purgeAtMs` acota
+   * la vida del estado en memoria aunque ese merchant no vuelva tras un incidente (evita crecimiento
+   * ilimitado de Maps bajo alta cardinalidad).
+   */
+  private readonly circuitByMerchantOp = new Map<string, MerchantOpCircuit>();
+  /**
+   * Cuota en proceso durante fail-open por merchant+op (misma ventana fija que Redis).
+   * Evita perder del todo la protección mientras el circuito por merchant está abierto.
+   */
+  private readonly memRlByMerchantOp = new Map<string, MemRlEntry>();
   /** Duración del bypass de Redis tras detectar indisponibilidad. */
   private readonly redisFailOpenBackoffMs: number;
+  /** Tope superior de TTL de entradas en los Maps de este servicio (se fuerza ≥ backoff + ventana máxima). */
+  private readonly merchantRlStateMaxTtlMs: number;
+  private pruneIntervalHandle: ReturnType<typeof setInterval> | null = null;
+  private readonly merchantRlExpiryHeap: MerchantRlExpiryHeapEntry[] = [];
 
   constructor(
     private readonly config: ConfigService,
@@ -49,18 +74,56 @@ export class PaymentsV2MerchantRateLimitService {
       : null;
     this.captureRule = this.enabled ? this.readOptionalPair('CAPTURE') : null;
     this.refundRule = this.enabled ? this.readOptionalPair('REFUND') : null;
-    this.redisIncrTimeoutMs = this.readOptionalBoundedMs(
-      'PAYMENTS_V2_MERCHANT_RL_REDIS_OP_TIMEOUT_MS',
-      150,
-      50,
-      2_000,
-    );
     this.redisFailOpenBackoffMs = this.readOptionalBoundedMs(
       'PAYMENTS_V2_MERCHANT_RL_FAIL_OPEN_BACKOFF_MS',
       30_000,
       5_000,
       300_000,
     );
+    const maxWindowSec = Math.max(
+      this.createRule?.windowSec ?? 1,
+      this.captureRule?.windowSec ?? 1,
+      this.refundRule?.windowSec ?? 1,
+    );
+    const readMaxTtl = this.readOptionalBoundedMs(
+      'PAYMENTS_V2_MERCHANT_RL_STATE_MAX_TTL_MS',
+      600_000,
+      60_000,
+      3_600_000,
+    );
+    const minTtlForCircuit = this.redisFailOpenBackoffMs + maxWindowSec * 1000 + 1_000;
+    this.merchantRlStateMaxTtlMs = Math.max(readMaxTtl, minTtlForCircuit);
+  }
+
+  onModuleInit(): void {
+    if (!this.enabled) return;
+    if (this.pruneIntervalHandle) return;
+    this.pruneIntervalHandle = setInterval(() => {
+      this.schedulePeriodicPruneDrain(Date.now());
+    }, MERCHANT_RL_PRUNE_INTERVAL_MS);
+    this.pruneIntervalHandle.unref?.();
+  }
+
+  /**
+   * Prune periódico en chunks para no monopolizar un tick del event loop; si queda trabajo
+   * (expirados o pops obsoletos que agotaron el presupuesto de heap), continúa en `setImmediate`.
+   */
+  private schedulePeriodicPruneDrain(nowMs: number): void {
+    const drain = (): void => {
+      this.pruneExpiredMerchantState(nowMs, MERCHANT_RL_PRUNE_PERIODIC_CHUNK);
+      const peeked = this.merchantRlExpiryHeapPeek();
+      if (peeked !== undefined && peeked.purgeAtMs <= nowMs) {
+        setImmediate(drain);
+      }
+    };
+    setImmediate(drain);
+  }
+
+  onModuleDestroy(): void {
+    if (this.pruneIntervalHandle) {
+      clearInterval(this.pruneIntervalHandle);
+      this.pruneIntervalHandle = null;
+    }
   }
 
   private readOptionalBoundedMs(
@@ -126,15 +189,32 @@ export class PaymentsV2MerchantRateLimitService {
 
   /**
    * Incrementa contador Redis por ventana fija; si supera el tope → 429 con `retryAfter` en segundos.
-   * Fail-open si no hay cliente Redis o error de Redis (no bloquea pagos; log único acotado).
+   * Sin cliente Redis: fail-open (no bloquea pagos; log único acotado).
+   * Si Redis falla tras INCRs exitosos, se conserva el contador en memoria y esta misma petición puede 429;
+   * el backoff por merchant+op sigue aplicando cuota en memoria mientras el circuito está abierto.
+   * El espejo `memRlByMerchantOp` no se limpia al cerrar el backoff: solo se reemplaza tras un INCR Redis
+   * exitoso o se purga por `purgeAtMs`/TTL, para no perder continuidad ante flapping prolongado.
    */
   async consumeIfNeeded(merchantId: string, op: PaymentsV2MerchantRateLimitOperation): Promise<void> {
     const rule = this.ruleFor(op);
     if (!rule) return;
 
     const nowMs = Date.now();
-    if (nowMs < this.merchantRlRedisFailOpenUntilMs) {
+    this.pruneExpiredMerchantState(nowMs, MERCHANT_RL_PRUNE_MAX_PER_CONSUME);
+
+    const circuitKey = this.circuitKey(merchantId, op);
+    let circuit = this.circuitByMerchantOp.get(circuitKey);
+    if (circuit && nowMs >= circuit.purgeAtMs) {
+      this.circuitByMerchantOp.delete(circuitKey);
+      circuit = undefined;
+    }
+    const failOpenUntil = circuit?.failOpenUntilMs ?? 0;
+    if (nowMs < failOpenUntil) {
+      this.consumeInMemoryOrThrow(merchantId, op, rule, nowMs);
       return;
+    }
+    if (failOpenUntil > 0) {
+      this.circuitByMerchantOp.delete(circuitKey);
     }
 
     const nowSec = Math.floor(nowMs / 1000);
@@ -147,7 +227,15 @@ export class PaymentsV2MerchantRateLimitService {
         this.warnFailOpen('redis_client_missing');
         return;
       }
-      const count = await this.incrWithExpireOnFirstBounded(key, rule.windowSec);
+      const count = await this.redis.incrWithExpireOnFirstForMerchantRateLimit(key, rule.windowSec);
+      /** Espejo del INCR Redis por ventana: si el siguiente comando falla, el fallback en memoria no “pierde” los consumos ya contabilizados en Redis. */
+      const memPurgeAt = Math.min(
+        nowMs + rule.windowSec * 1000 * 2,
+        nowMs + this.merchantRlStateMaxTtlMs,
+      );
+      const ck = this.circuitKey(merchantId, op);
+      this.memRlByMerchantOp.set(ck, { bucket, count, purgeAtMs: memPurgeAt });
+      this.merchantRlExpiryHeapPush({ kind: 'mem', key: ck, purgeAtMs: memPurgeAt });
       if (count > rule.limit) {
         const retryAfter = paymentsV2MerchantRateLimitRetryAfterSec(nowSec, rule.windowSec);
         this.log.warn(
@@ -172,39 +260,166 @@ export class PaymentsV2MerchantRateLimitService {
       if (e instanceof HttpException && e.getStatus() === HttpStatus.TOO_MANY_REQUESTS) {
         throw e;
       }
-      this.armRedisFailOpenCircuit();
+      this.armRedisFailOpenCircuit(merchantId, op, rule);
       this.warnFailOpen('redis_error', e);
+      this.consumeInMemoryOrThrow(merchantId, op, rule, nowMs);
     }
+  }
+
+  private circuitKey(merchantId: string, op: PaymentsV2MerchantRateLimitOperation): string {
+    return `${merchantId}:${op}`;
+  }
+
+  /** Misma semántica de ventana fija que la clave Redis; puede lanzar 429. */
+  private consumeInMemoryOrThrow(
+    merchantId: string,
+    op: PaymentsV2MerchantRateLimitOperation,
+    rule: MerchantRateLimitRule,
+    nowMs: number,
+  ): void {
+    const nowSec = Math.floor(nowMs / 1000);
+    const bucket = paymentsV2MerchantRateLimitBucket(nowSec, rule.windowSec);
+    const mapKey = this.circuitKey(merchantId, op);
+    const circuit = this.circuitByMerchantOp.get(mapKey);
+    const memPurgeAt =
+      circuit?.purgeAtMs ??
+      Math.min(
+        nowMs + this.redisFailOpenBackoffMs + rule.windowSec * 1000,
+        nowMs + this.merchantRlStateMaxTtlMs,
+      );
+    let st = this.memRlByMerchantOp.get(mapKey);
+    if (!st || st.bucket !== bucket) {
+      st = { bucket, count: 0, purgeAtMs: memPurgeAt };
+    } else {
+      st.purgeAtMs = Math.max(st.purgeAtMs, memPurgeAt);
+    }
+    st.count += 1;
+    this.memRlByMerchantOp.set(mapKey, st);
+    this.merchantRlExpiryHeapPush({ kind: 'mem', key: mapKey, purgeAtMs: st.purgeAtMs });
+    if (st.count > rule.limit) {
+      const retryAfter = paymentsV2MerchantRateLimitRetryAfterSec(nowSec, rule.windowSec);
+      this.log.warn(
+        JSON.stringify({
+          event: 'payments_v2.merchant_rate_limited',
+          merchantId,
+          operation: op,
+          windowSec: rule.windowSec,
+          limit: rule.limit,
+          source: 'memory_fail_open',
+        }),
+      );
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.TOO_MANY_REQUESTS,
+          message: 'Merchant rate limit exceeded',
+          retryAfter,
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+  }
+
+  private armRedisFailOpenCircuit(
+    merchantId: string,
+    op: PaymentsV2MerchantRateLimitOperation,
+    rule: MerchantRateLimitRule,
+  ): void {
+    const nowMs = Date.now();
+    const failOpenUntilMs = nowMs + this.redisFailOpenBackoffMs;
+    const purgeAtMs = Math.max(
+      failOpenUntilMs + 1,
+      Math.min(
+        nowMs + this.redisFailOpenBackoffMs + rule.windowSec * 1000,
+        nowMs + this.merchantRlStateMaxTtlMs,
+      ),
+    );
+    const ck = this.circuitKey(merchantId, op);
+    this.circuitByMerchantOp.set(ck, { failOpenUntilMs, purgeAtMs });
+    this.merchantRlExpiryHeapPush({ kind: 'circuit', key: ck, purgeAtMs });
+  }
+
+  private merchantRlExpiryHeapLess(a: MerchantRlExpiryHeapEntry, b: MerchantRlExpiryHeapEntry): boolean {
+    if (a.purgeAtMs !== b.purgeAtMs) return a.purgeAtMs < b.purgeAtMs;
+    if (a.kind !== b.kind) return a.kind === 'circuit';
+    return a.key < b.key;
+  }
+
+  private merchantRlExpiryHeapSiftUp(i: number): void {
+    const h = this.merchantRlExpiryHeap;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (!this.merchantRlExpiryHeapLess(h[i]!, h[p]!)) break;
+      const t = h[i]!;
+      h[i] = h[p]!;
+      h[p] = t;
+      i = p;
+    }
+  }
+
+  private merchantRlExpiryHeapSiftDown(i: number): void {
+    const h = this.merchantRlExpiryHeap;
+    const n = h.length;
+    while (true) {
+      let smallest = i;
+      const l = i * 2 + 1;
+      const r = i * 2 + 2;
+      if (l < n && this.merchantRlExpiryHeapLess(h[l]!, h[smallest]!)) smallest = l;
+      if (r < n && this.merchantRlExpiryHeapLess(h[r]!, h[smallest]!)) smallest = r;
+      if (smallest === i) break;
+      const t = h[i]!;
+      h[i] = h[smallest]!;
+      h[smallest] = t;
+      i = smallest;
+    }
+  }
+
+  private merchantRlExpiryHeapPush(e: MerchantRlExpiryHeapEntry): void {
+    this.merchantRlExpiryHeap.push(e);
+    this.merchantRlExpiryHeapSiftUp(this.merchantRlExpiryHeap.length - 1);
+  }
+
+  private merchantRlExpiryHeapPeek(): MerchantRlExpiryHeapEntry | undefined {
+    return this.merchantRlExpiryHeap[0];
+  }
+
+  private merchantRlExpiryHeapPop(): MerchantRlExpiryHeapEntry | undefined {
+    const h = this.merchantRlExpiryHeap;
+    if (h.length === 0) return undefined;
+    const top = h[0]!;
+    const last = h.pop()!;
+    if (h.length > 0) {
+      h[0] = last;
+      this.merchantRlExpiryHeapSiftDown(0);
+    }
+    return top;
   }
 
   /**
-   * INCR con tope de tiempo: si Redis tarda o ioredis reintenta, no retenemos la petición de pago más de `redisIncrTimeoutMs`.
+   * Elimina entradas expiradas usando un min-heap por `purgeAtMs` (sin escanear Maps enteros
+   * cuando no hay expirados). `maxDeletes` acota borrados efectivos; el heap puede tener
+   * entradas obsoletas si se amplía `purgeAtMs` — se descartan al hacer pop.
    */
-  private async incrWithExpireOnFirstBounded(key: string, windowSec: number): Promise<number> {
-    const op = this.redis.incrWithExpireOnFirst(key, windowSec);
-    const timeoutMs = this.redisIncrTimeoutMs;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new MerchantRateLimitRedisTimeoutError()), timeoutMs);
-    });
-    try {
-      return await Promise.race([op, timeoutPromise]);
-    } catch (e) {
-      if (e instanceof MerchantRateLimitRedisTimeoutError) {
-        void op.catch(() => {
-          /* Redis puede resolver/rechazar tarde; evita unhandledRejection si ganó el timeout */
-        });
-      }
-      throw e;
-    } finally {
-      if (timer !== undefined) {
-        clearTimeout(timer);
+  private pruneExpiredMerchantState(nowMs: number, maxDeletes: number): void {
+    const maxHeapPops = Math.min(MERCHANT_RL_PRUNE_MAX_HEAP_POPS, Math.max(maxDeletes * 16, maxDeletes + 500));
+    let deleted = 0;
+    let pops = 0;
+    while (deleted < maxDeletes && pops < maxHeapPops) {
+      const peeked = this.merchantRlExpiryHeapPeek();
+      if (peeked === undefined || peeked.purgeAtMs > nowMs) return;
+      pops += 1;
+      const top = this.merchantRlExpiryHeapPop()!;
+      if (top.kind === 'circuit') {
+        const c = this.circuitByMerchantOp.get(top.key);
+        if (!c || c.purgeAtMs !== top.purgeAtMs) continue;
+        this.circuitByMerchantOp.delete(top.key);
+        deleted += 1;
+      } else {
+        const m = this.memRlByMerchantOp.get(top.key);
+        if (!m || m.purgeAtMs !== top.purgeAtMs) continue;
+        this.memRlByMerchantOp.delete(top.key);
+        deleted += 1;
       }
     }
-  }
-
-  private armRedisFailOpenCircuit(): void {
-    this.merchantRlRedisFailOpenUntilMs = Date.now() + this.redisFailOpenBackoffMs;
   }
 
   private warnFailOpen(reason: string, err?: unknown): void {
