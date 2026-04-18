@@ -19,6 +19,34 @@ describe('PaymentsV2MerchantRateLimitService', () => {
     expect(redis.getClient).not.toHaveBeenCalled();
   });
 
+  it('si Redis falla tras INCRs previos exitosos, el fallback en memoria aun puede 429 en la misma peticion', async () => {
+    const redis = {
+      getClient: jest.fn().mockReturnValue({}),
+      incrWithExpireOnFirstForMerchantRateLimit: jest
+        .fn()
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(2)
+        .mockRejectedValueOnce(new Error('ECONNRESET')),
+    };
+    const env = {
+      PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED: 'true',
+      PAYMENTS_V2_MERCHANT_CREATE_LIMIT: '2',
+      PAYMENTS_V2_MERCHANT_CREATE_WINDOW_SEC: '60',
+      PAYMENTS_V2_MERCHANT_RL_FAIL_OPEN_BACKOFF_MS: '60000',
+    };
+    const svc = new PaymentsV2MerchantRateLimitService(makeConfig(env), redis as unknown as RedisService);
+    await svc.consumeIfNeeded('m1', 'create');
+    await svc.consumeIfNeeded('m1', 'create');
+    try {
+      await svc.consumeIfNeeded('m1', 'create');
+      throw new Error('expected HttpException');
+    } catch (e) {
+      expect(e).toBeInstanceOf(HttpException);
+      expect((e as HttpException).getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+    }
+    expect(redis.incrWithExpireOnFirstForMerchantRateLimit).toHaveBeenCalledTimes(3);
+  });
+
   it('lanza 429 cuando el contador supera el limite', async () => {
     const redis = {
       getClient: jest.fn().mockReturnValue({}),
@@ -108,7 +136,6 @@ describe('PaymentsV2MerchantRateLimitService', () => {
     const svc = new PaymentsV2MerchantRateLimitService(makeConfig(env), redis as unknown as RedisService);
     await expect(svc.consumeIfNeeded('m1', 'create')).resolves.toBeUndefined();
     await expect(svc.consumeIfNeeded('m1', 'create')).resolves.toBeUndefined();
-    await expect(svc.consumeIfNeeded('m1', 'create')).resolves.toBeUndefined();
     try {
       await svc.consumeIfNeeded('m1', 'create');
       throw new Error('expected HttpException');
@@ -187,6 +214,40 @@ describe('PaymentsV2MerchantRateLimitService', () => {
     const svc = new PaymentsV2MerchantRateLimitService(makeConfig(env), redis as unknown as RedisService);
     await expect(svc.consumeIfNeeded('m1', 'create')).resolves.toBeUndefined();
     expect(redis.incrWithExpireOnFirstForMerchantRateLimit).not.toHaveBeenCalled();
+  });
+
+  it('purga estado huérfano por TTL sin que el mismo merchant+op vuelva a ejecutarse', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(1_000_000_000);
+    const redis = {
+      getClient: jest.fn().mockReturnValue({}),
+      incrWithExpireOnFirstForMerchantRateLimit: jest.fn().mockRejectedValue(new Error('ECONNRESET')),
+    };
+    const env = {
+      PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED: 'true',
+      PAYMENTS_V2_MERCHANT_CREATE_LIMIT: '10',
+      PAYMENTS_V2_MERCHANT_CREATE_WINDOW_SEC: '2',
+      /** 1000 queda por debajo del mínimo del servicio (5000ms); purge ≈ T + 5000 + 2000ms */
+      PAYMENTS_V2_MERCHANT_RL_FAIL_OPEN_BACKOFF_MS: '1000',
+      PAYMENTS_V2_MERCHANT_RL_STATE_MAX_TTL_MS: '120000',
+    };
+    const svc = new PaymentsV2MerchantRateLimitService(makeConfig(env), redis as unknown as RedisService);
+
+    await expect(svc.consumeIfNeeded('m-orphan', 'create')).resolves.toBeUndefined();
+    expect(redis.incrWithExpireOnFirstForMerchantRateLimit).toHaveBeenCalledTimes(1);
+
+    jest.setSystemTime(1_000_000_000 + 8_000);
+    redis.incrWithExpireOnFirstForMerchantRateLimit.mockResolvedValueOnce(1);
+    await expect(svc.consumeIfNeeded('m-other', 'create')).resolves.toBeUndefined();
+    expect(redis.incrWithExpireOnFirstForMerchantRateLimit).toHaveBeenCalledTimes(2);
+
+    const circuitMap = (svc as unknown as { circuitByMerchantOp: Map<string, unknown> }).circuitByMerchantOp;
+    expect(circuitMap.has('m-orphan:create')).toBe(false);
+
+    await expect(svc.consumeIfNeeded('m-orphan', 'create')).resolves.toBeUndefined();
+    expect(redis.incrWithExpireOnFirstForMerchantRateLimit).toHaveBeenCalledTimes(3);
+
+    jest.useRealTimers();
   });
 
   it('no aplica capture si no hay par opcional configurado', async () => {
