@@ -123,7 +123,8 @@ describe('SettlementService', () => {
         netMinor: 2850,
       }),
     );
-    expect(tx.ledgerLine.createMany).toHaveBeenCalledTimes(1);
-    expect(tx.ledgerLine.createMany.mock.calls[0][0].data).toHaveLength(5);
+    expect(tx.ledgerLine.createMany).toHaveBeenCalledTimes(2);
+    expect(tx.ledgerLine.createMany.mock.calls[0][0].data).toHaveLength(4);
+    expect(tx.ledgerLine.createMany.mock.calls[1][0].data).toHaveLength(1);
   });
 });

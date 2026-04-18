@@ -21,6 +21,9 @@ type LockedAvailableSettlementRow = {
   available_at: Date;
 };
 
+/** Filas reclamadas por tanda; evita UPDATE sin límite y arrays enormes en memoria. */
+const RELEASE_PENDING_BATCH_SIZE = 500;
+
 function isPrismaUniqueViolation(e: unknown): boolean {
   return (
     typeof e === 'object' &&
@@ -82,46 +85,84 @@ export class SettlementService {
   }
 
   async releasePendingToAvailable(now: Date): Promise<number> {
-    return this.prisma.$transaction(async (tx) => {
-      const claimed = await tx.$queryRaw<ClaimedSettlementRow[]>(Prisma.sql`
-        UPDATE "PaymentSettlement"
-        SET
-          status = 'AVAILABLE'::"SettlementStatus",
-          "updated_at" = CURRENT_TIMESTAMP
-        WHERE
-          status = 'PENDING'::"SettlementStatus"
-          AND "available_at" <= ${now}
-        RETURNING id, merchant_id, payment_id, currency, net_minor
-      `);
+    let total = 0;
+    for (;;) {
+      const n = await this.prisma.$transaction(async (tx) => {
+        const claimed = await tx.$queryRaw<ClaimedSettlementRow[]>(Prisma.sql`
+          UPDATE "PaymentSettlement" ps
+          SET
+            status = 'AVAILABLE'::"SettlementStatus",
+            "updated_at" = CURRENT_TIMESTAMP
+          FROM (
+            SELECT id
+            FROM "PaymentSettlement"
+            WHERE
+              status = 'PENDING'::"SettlementStatus"
+              AND "available_at" <= ${now}
+            ORDER BY id
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${RELEASE_PENDING_BATCH_SIZE}
+          ) AS sub
+          WHERE ps.id = sub.id
+          RETURNING ps.id, ps.merchant_id, ps.payment_id, ps.currency, ps.net_minor
+        `);
 
-      if (claimed.length === 0) {
-        return 0;
+        if (claimed.length === 0) {
+          return 0;
+        }
+
+        await tx.ledgerLine.createMany({
+          data: buildReleaseLedgerEntries(claimed),
+        });
+
+        return claimed.length;
+      });
+
+      if (n === 0) {
+        break;
       }
-
-      const ledgerEntries = buildReleaseLedgerEntries(claimed);
-      await tx.ledgerLine.createMany({ data: ledgerEntries });
-
-      return claimed.length;
-    });
+      total += n;
+      if (n < RELEASE_PENDING_BATCH_SIZE) {
+        break;
+      }
+    }
+    return total;
   }
 
   async createPayout(params: { merchantId: string; currency: string; now?: Date }) {
     const now = params.now ?? new Date();
     return this.prisma.$transaction(async (tx) => {
-      const claimedRelease = await tx.$queryRaw<ClaimedSettlementRow[]>(Prisma.sql`
-        UPDATE "PaymentSettlement"
-        SET
-          status = 'AVAILABLE'::"SettlementStatus",
-          "updated_at" = CURRENT_TIMESTAMP
-        WHERE
-          merchant_id = ${params.merchantId}
-          AND currency = ${params.currency}
-          AND status = 'PENDING'::"SettlementStatus"
-          AND "available_at" <= ${now}
-        RETURNING id, merchant_id, payment_id, currency, net_minor
-      `);
-
-      const releaseLedgerEntries = buildReleaseLedgerEntries(claimedRelease);
+      for (;;) {
+        const batch = await tx.$queryRaw<ClaimedSettlementRow[]>(Prisma.sql`
+          UPDATE "PaymentSettlement" ps
+          SET
+            status = 'AVAILABLE'::"SettlementStatus",
+            "updated_at" = CURRENT_TIMESTAMP
+          FROM (
+            SELECT id
+            FROM "PaymentSettlement"
+            WHERE
+              merchant_id = ${params.merchantId}
+              AND currency = ${params.currency}
+              AND status = 'PENDING'::"SettlementStatus"
+              AND "available_at" <= ${now}
+            ORDER BY id
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${RELEASE_PENDING_BATCH_SIZE}
+          ) AS sub
+          WHERE ps.id = sub.id
+          RETURNING ps.id, ps.merchant_id, ps.payment_id, ps.currency, ps.net_minor
+        `);
+        if (batch.length === 0) {
+          break;
+        }
+        await tx.ledgerLine.createMany({
+          data: buildReleaseLedgerEntries(batch),
+        });
+        if (batch.length < RELEASE_PENDING_BATCH_SIZE) {
+          break;
+        }
+      }
 
       const lockedRaw = await tx.$queryRaw<LockedAvailableSettlementRow[]>(Prisma.sql`
         SELECT
@@ -144,9 +185,6 @@ export class SettlementService {
       `);
 
       if (lockedRaw.length === 0) {
-        if (releaseLedgerEntries.length > 0) {
-          await tx.ledgerLine.createMany({ data: releaseLedgerEntries });
-        }
         return null;
       }
 
@@ -191,9 +229,6 @@ export class SettlementService {
         });
       } catch (e) {
         if (isPrismaUniqueViolation(e)) {
-          if (releaseLedgerEntries.length > 0) {
-            await tx.ledgerLine.createMany({ data: releaseLedgerEntries });
-          }
           await tx.payout.delete({ where: { id: payout.id } });
           return null;
         }
@@ -209,18 +244,18 @@ export class SettlementService {
         },
       });
 
-      const ledgerEntries: Prisma.LedgerLineCreateManyInput[] = [
-        ...releaseLedgerEntries,
-        {
-          merchantId: params.merchantId,
-          paymentId: null,
-          entryType: 'merchant_available',
-          amountMinor: -netMinor,
-          currency: params.currency,
-          description: `Payout ${payout.id} created`,
-        },
-      ];
-      await tx.ledgerLine.createMany({ data: ledgerEntries });
+      await tx.ledgerLine.createMany({
+        data: [
+          {
+            merchantId: params.merchantId,
+            paymentId: null,
+            entryType: 'merchant_available',
+            amountMinor: -netMinor,
+            currency: params.currency,
+            description: `Payout ${payout.id} created`,
+          },
+        ],
+      });
 
       return {
         id: payout.id,
