@@ -50,10 +50,11 @@ end
 return {failures, openedUntil, openedNow}
 `;
 
-/** INCR atómico + EXPIRE solo en la primera escritura (ventana fija por clave). */
+/** INCR atómico + EXPIRE en primera escritura o si la clave existía sin TTL (corrige buckets “pegados”). */
 const INCR_EXPIRE_ON_FIRST_LUA = `
 local v = redis.call('INCR', KEYS[1])
-if v == 1 then
+local ttl = redis.call('TTL', KEYS[1])
+if v == 1 or ttl == -1 then
   redis.call('EXPIRE', KEYS[1], tonumber(ARGV[1]))
 end
 return v
