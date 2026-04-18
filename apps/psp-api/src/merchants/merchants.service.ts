@@ -3,6 +3,21 @@ import { randomBytes } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import { encryptUtf8 } from '../crypto/secret-box';
 import { PrismaService } from '../prisma/prisma.service';
+import { PaymentProviderName } from '../payments-v2/domain/payment-provider-names';
+import { PAYMENT_PROVIDER_NAMES } from '../payments-v2/domain/payment-provider-names';
+import { PayoutScheduleType, SettlementMode } from '../generated/prisma/enums';
+
+type CreateRateTableInput = {
+  provider: PaymentProviderName;
+  currency: string;
+  percentageBps: number;
+  fixedMinor: number;
+  minimumMinor: number;
+  settlementMode: SettlementMode;
+  payoutScheduleType: PayoutScheduleType;
+  payoutScheduleParam: number;
+  contractRef?: string;
+};
 
 @Injectable()
 export class MerchantsService {
@@ -36,6 +51,20 @@ export class MerchantsService {
     await this.prisma.merchant.update({
       where: { id: merchant.id },
       data: { apiKeyHash, apiKeyExpiresAt },
+    });
+
+    await this.prisma.merchantRateTable.createMany({
+      data: PAYMENT_PROVIDER_NAMES.map((provider) => ({
+        merchantId: merchant.id,
+        currency: 'EUR',
+        provider,
+        percentageBps: merchant.feeBps,
+        fixedMinor: 0,
+        minimumMinor: 0,
+        settlementMode: SettlementMode.NET,
+        payoutScheduleType: PayoutScheduleType.T_PLUS_N,
+        payoutScheduleParam: 1,
+      })),
     });
 
     return {
@@ -108,5 +137,48 @@ export class MerchantsService {
       revokedAt: new Date().toISOString(),
       message: 'API key revocada. Usa rotate-key para emitir una nueva.',
     };
+  }
+
+  async createRateTable(merchantId: string, dto: CreateRateTableInput) {
+    const merchant = await this.prisma.merchant.findUnique({
+      where: { id: merchantId },
+      select: { id: true },
+    });
+    if (!merchant) {
+      throw new NotFoundException('Merchant not found');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.merchantRateTable.updateMany({
+        where: {
+          merchantId,
+          currency: dto.currency,
+          provider: dto.provider,
+          activeTo: null,
+        },
+        data: { activeTo: new Date() },
+      });
+      return tx.merchantRateTable.create({
+        data: {
+          merchantId,
+          provider: dto.provider,
+          currency: dto.currency,
+          percentageBps: dto.percentageBps,
+          fixedMinor: dto.fixedMinor,
+          minimumMinor: dto.minimumMinor,
+          settlementMode: dto.settlementMode,
+          payoutScheduleType: dto.payoutScheduleType,
+          payoutScheduleParam: dto.payoutScheduleParam,
+          contractRef: dto.contractRef ?? null,
+        },
+      });
+    });
+  }
+
+  async listRateTables(merchantId: string) {
+    return this.prisma.merchantRateTable.findMany({
+      where: { merchantId },
+      orderBy: { activeFrom: 'desc' },
+    });
   }
 }

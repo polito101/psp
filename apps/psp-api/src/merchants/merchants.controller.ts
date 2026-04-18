@@ -1,4 +1,4 @@
-import { Body, Controller, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import {
   ApiBody,
   ApiOperation,
@@ -8,9 +8,10 @@ import {
   ApiSecurity,
   ApiTags,
 } from '@nestjs/swagger';
-import { IsInt, IsOptional, Max, Min } from 'class-validator';
+import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 import { InternalSecretGuard } from '../common/guards/internal-secret.guard';
 import { CreateMerchantDto } from './dto/create-merchant.dto';
+import { CreateRateTableDto } from './dto/create-rate-table.dto';
 import { MerchantsService } from './merchants.service';
 
 class RotateKeyDto {
@@ -27,6 +28,7 @@ class RotateKeyDto {
 
 class MerchantIdParam {
   @ApiProperty({ description: 'ID del merchant', example: 'clxxx...' })
+  @IsString()
   id!: string;
 }
 
@@ -70,5 +72,28 @@ export class MerchantsController {
   @UseGuards(InternalSecretGuard)
   revokeKey(@Param() params: MerchantIdParam) {
     return this.merchants.revokeApiKey(params.id);
+  }
+
+  @Post(':id/rate-tables')
+  @ApiOperation({
+    summary: 'Crear/actualizar tarifa vigente por merchant+currency+provider (requiere X-Internal-Secret)',
+  })
+  @ApiParam({ name: 'id', description: 'ID del merchant' })
+  @ApiBody({ type: CreateRateTableDto })
+  @ApiSecurity('InternalSecret')
+  @UseGuards(InternalSecretGuard)
+  createRateTable(@Param() params: MerchantIdParam, @Body() dto: CreateRateTableDto) {
+    return this.merchants.createRateTable(params.id, dto);
+  }
+
+  @Get(':id/rate-tables')
+  @ApiOperation({
+    summary: 'Listar histórico de tarifas del merchant (requiere X-Internal-Secret)',
+  })
+  @ApiParam({ name: 'id', description: 'ID del merchant' })
+  @ApiSecurity('InternalSecret')
+  @UseGuards(InternalSecretGuard)
+  listRateTables(@Param() params: MerchantIdParam) {
+    return this.merchants.listRateTables(params.id);
   }
 }

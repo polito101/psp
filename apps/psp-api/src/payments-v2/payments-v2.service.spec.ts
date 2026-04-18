@@ -44,6 +44,9 @@ describe('PaymentsV2Service', () => {
     merchant: {
       findUniqueOrThrow: jest.fn(),
     },
+    paymentFeeQuote: {
+      create: jest.fn(),
+    },
     $transaction: jest.fn(),
   };
 
@@ -95,6 +98,11 @@ describe('PaymentsV2Service', () => {
     consumeIfNeeded: jest.fn().mockResolvedValue(undefined),
   };
 
+  const fee = {
+    resolveActiveRateTable: jest.fn(),
+    calculate: jest.fn(),
+  };
+
   const correlationContext = {
     getId: jest.fn().mockReturnValue(undefined),
   };
@@ -112,6 +120,7 @@ describe('PaymentsV2Service', () => {
       registry as never,
       observability as never,
       stripeAdapter as never,
+      fee as never,
       merchantRateLimit as never,
       correlationContext as never,
     );
@@ -164,11 +173,25 @@ describe('PaymentsV2Service', () => {
     prisma.paymentOperation.update.mockResolvedValue(undefined);
     prisma.paymentOperation.updateMany.mockResolvedValue({ count: 1 });
     prisma.paymentOperation.deleteMany.mockResolvedValue({ count: 1 });
+    prisma.paymentFeeQuote.create.mockResolvedValue(undefined);
     stripeAdapter.retrievePaymentIntent.mockReset();
     stripeAdapter.retrievePaymentIntent.mockResolvedValue({
       status: PAYMENT_V2_STATUS.FAILED,
       reasonCode: 'provider_error',
       reasonMessage: 'retrieve stub',
+    });
+    fee.resolveActiveRateTable.mockResolvedValue({
+      id: 'rt_default',
+      percentageBps: 0,
+      fixedMinor: 0,
+      minimumMinor: 0,
+      settlementMode: 'NET',
+    });
+    fee.calculate.mockReturnValue({
+      grossMinor: 1000,
+      feeMinor: 0,
+      netMinor: 1000,
+      percentageMinor: 0,
     });
   });
 
@@ -1345,6 +1368,78 @@ describe('PaymentsV2Service', () => {
     });
     expect(prisma.paymentOperation.create).toHaveBeenCalled();
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.SUCCEEDED);
+  });
+
+  it('capture usa rate table por provider y persiste fee quote snapshot', async () => {
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    prisma.payment.findFirst.mockResolvedValue({
+      id: 'pay_fee_quote',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'pi_fee',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    mockProvider.run.mockResolvedValue({
+      status: PAYMENT_V2_STATUS.SUCCEEDED,
+      providerPaymentId: 'pi_fee',
+      nextAction: { type: 'none' },
+    });
+    prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+    prisma.payment.findUniqueOrThrow.mockResolvedValue({
+      id: 'pay_fee_quote',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.SUCCEEDED,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'pi_fee',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    fee.resolveActiveRateTable.mockResolvedValue({
+      id: 'rt_1',
+      percentageBps: 150,
+      fixedMinor: 25,
+      minimumMinor: 50,
+      settlementMode: 'NET',
+    });
+    fee.calculate.mockReturnValue({
+      grossMinor: 1000,
+      feeMinor: 50,
+      netMinor: 950,
+      percentageMinor: 15,
+    });
+
+    await service.capture('m_1', 'pay_fee_quote');
+
+    expect(fee.resolveActiveRateTable).toHaveBeenCalledWith('m_1', 'EUR', 'mock');
+    expect(ledger.recordSuccessfulCapture).toHaveBeenCalledWith(
+      prisma,
+      expect.objectContaining({
+        merchantId: 'm_1',
+        paymentId: 'pay_fee_quote',
+        grossMinor: 1000,
+        feeMinor: 50,
+        netMinor: 950,
+        currency: 'EUR',
+      }),
+    );
+    expect(prisma.paymentFeeQuote.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        paymentId: 'pay_fee_quote',
+        merchantId: 'm_1',
+        rateTableId: 'rt_1',
+        provider: 'mock',
+        grossMinor: 1000,
+        feeMinor: 50,
+        netMinor: 950,
+      }),
+    });
   });
 
   it('stripe webhook devuelve missing_provider_ref cuando no puede extraer providerRef', async () => {

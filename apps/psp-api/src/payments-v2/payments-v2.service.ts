@@ -12,6 +12,7 @@ import { Prisma } from '../generated/prisma/client';
 import { LedgerService } from '../ledger/ledger.service';
 import { PaymentLinksService } from '../payment-links/payment-links.service';
 import { CorrelationContextService } from '../common/correlation/correlation-context.service';
+import { FeeService } from '../fees/fee.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
@@ -168,6 +169,7 @@ export class PaymentsV2Service {
     private readonly registry: ProviderRegistryService,
     private readonly observability: PaymentsV2ObservabilityService,
     private readonly stripeAdapter: StripeProviderAdapter,
+    private readonly fee: FeeService,
     private readonly merchantRateLimit: PaymentsV2MerchantRateLimitService,
     private readonly correlationContext: CorrelationContextService,
   ) {
@@ -1885,9 +1887,16 @@ export class PaymentsV2Service {
     providerName: PaymentProviderName,
     result: ProviderResult,
   ): Promise<OperationResult['payment']> {
-    const merchant = await this.prisma.merchant.findUniqueOrThrow({
-      where: { id: payment.merchantId },
-      select: { feeBps: true },
+    const rateTable = await this.fee.resolveActiveRateTable(
+      payment.merchantId,
+      payment.currency,
+      providerName,
+    );
+    const feeQuote = FeeService.calculate({
+      amountMinor: payment.amountMinor,
+      percentageBps: rateTable.percentageBps,
+      fixedMinor: rateTable.fixedMinor,
+      minimumMinor: rateTable.minimumMinor,
     });
     const { updated, transitioned } = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const cas = await tx.payment.updateMany({
@@ -1925,12 +1934,29 @@ export class PaymentsV2Service {
         return { updated: next, transitioned: false as const };
       }
 
+      await tx.paymentFeeQuote.create({
+        data: {
+          paymentId: payment.id,
+          merchantId: payment.merchantId,
+          rateTableId: rateTable.id,
+          provider: providerName,
+          currency: payment.currency,
+          percentageBps: rateTable.percentageBps,
+          fixedMinor: rateTable.fixedMinor,
+          minimumMinor: rateTable.minimumMinor,
+          grossMinor: feeQuote.grossMinor,
+          feeMinor: feeQuote.feeMinor,
+          netMinor: feeQuote.netMinor,
+          settlementMode: rateTable.settlementMode,
+        },
+      });
       await this.ledger.recordSuccessfulCapture(tx, {
         merchantId: payment.merchantId,
         paymentId: payment.id,
-        amountMinor: payment.amountMinor,
+        grossMinor: feeQuote.grossMinor,
+        feeMinor: feeQuote.feeMinor,
+        netMinor: feeQuote.netMinor,
         currency: payment.currency,
-        feeBps: merchant.feeBps,
       });
       if (payment.paymentLinkId) {
         await tx.paymentLink.updateMany({
