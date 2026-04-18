@@ -1,4 +1,11 @@
-import { BadRequestException, ConflictException, ForbiddenException, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  HttpException,
+  HttpStatus,
+  Logger,
+} from '@nestjs/common';
 import { hashCreatePaymentIntentPayload } from './create-payment-intent-payload-hash';
 import { PaymentsV2Service } from './payments-v2.service';
 import { PAYMENT_V2_STATUS } from './domain/payment-status';
@@ -108,6 +115,10 @@ describe('PaymentsV2Service', () => {
       merchantRateLimit as never,
       correlationContext as never,
     );
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -932,6 +943,236 @@ describe('PaymentsV2Service', () => {
     expect(observability.registerAttempt).toHaveBeenCalledTimes(1);
   });
 
+  it('Error genérico del adapter no es transitorio: un solo intento en runWithRetry', async () => {
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    prisma.payment.create.mockResolvedValue({
+      id: 'pay_generic_throw',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.PROCESSING,
+      amountMinor: 500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    mockProvider.run.mockRejectedValueOnce(new Error('logic bug'));
+    prisma.payment.update.mockResolvedValue({
+      id: 'pay_generic_throw',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.FAILED,
+      amountMinor: 500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: 'provider_error',
+      paymentLinkId: null,
+    });
+
+    await service.createIntent('m_1', {
+      amountMinor: 500,
+      currency: 'EUR',
+    });
+
+    expect(mockProvider.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('ErrnoException ECONNRESET del adapter es transitorio: reintenta hasta agotar maxRetries', async () => {
+    process.env.PAYMENTS_PROVIDER_MAX_RETRIES = '2';
+    service = buildService();
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    prisma.payment.create.mockResolvedValue({
+      id: 'pay_econn',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.PROCESSING,
+      amountMinor: 500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    const econn = new Error('read ECONNRESET') as NodeJS.ErrnoException;
+    econn.code = 'ECONNRESET';
+    mockProvider.run
+      .mockRejectedValueOnce(econn)
+      .mockRejectedValueOnce(econn)
+      .mockResolvedValueOnce({
+        status: PAYMENT_V2_STATUS.AUTHORIZED,
+        providerPaymentId: 'mock_pi_econn',
+        nextAction: { type: 'none' },
+      });
+    prisma.payment.update.mockResolvedValue({
+      id: 'pay_econn',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 500,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'mock_pi_econn',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+
+    const result = await service.createIntent('m_1', { amountMinor: 500, currency: 'EUR' });
+
+    expect(mockProvider.run).toHaveBeenCalledTimes(3);
+    expect(result.payment.status).toBe(PAYMENT_V2_STATUS.AUTHORIZED);
+  });
+
+  it('computeProviderRetryBackoffMs: exponencial acotada por max y jitter en [0.5,1) del cap por intento', () => {
+    process.env.PAYMENTS_PROVIDER_RETRY_BASE_MS = '100';
+    process.env.PAYMENTS_PROVIDER_RETRY_MAX_MS = '250';
+    service = buildService();
+    const backoff = (service as unknown as { computeProviderRetryBackoffMs: (i: number) => number })
+      .computeProviderRetryBackoffMs.bind(service);
+    for (let trial = 0; trial < 25; trial += 1) {
+      const v0 = backoff(0);
+      expect(v0).toBeGreaterThanOrEqual(50);
+      expect(v0).toBeLessThanOrEqual(100);
+      const v1 = backoff(1);
+      expect(v1).toBeGreaterThanOrEqual(100);
+      expect(v1).toBeLessThanOrEqual(200);
+      const v2 = backoff(2);
+      expect(v2).toBeGreaterThanOrEqual(125);
+      expect(v2).toBeLessThanOrEqual(250);
+    }
+  });
+
+  it('computeProviderRetryBackoffMs: con PAYMENTS_PROVIDER_RETRY_BASE_MS=0 no hay espera', () => {
+    process.env.PAYMENTS_PROVIDER_RETRY_BASE_MS = '0';
+    process.env.PAYMENTS_PROVIDER_RETRY_MAX_MS = '3000';
+    service = buildService();
+    const backoff = (service as unknown as { computeProviderRetryBackoffMs: (i: number) => number })
+      .computeProviderRetryBackoffMs.bind(service);
+    expect(backoff(0)).toBe(0);
+    expect(backoff(5)).toBe(0);
+  });
+
+  it('con PAYMENTS_PROVIDER_RETRY_BASE_MS=0 y fake timers, reintento transitorio completa sin avanzar el reloj', async () => {
+    jest.useFakeTimers();
+    process.env.PAYMENTS_PROVIDER_RETRY_BASE_MS = '0';
+    process.env.PAYMENTS_PROVIDER_MAX_RETRIES = '1';
+    service = buildService();
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    prisma.payment.create.mockResolvedValue({
+      id: 'pay_no_backoff_timer',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.PROCESSING,
+      amountMinor: 100,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    mockProvider.run
+      .mockResolvedValueOnce({
+        status: PAYMENT_V2_STATUS.FAILED,
+        transientError: true,
+        reasonCode: 'provider_timeout',
+      })
+      .mockResolvedValueOnce({
+        status: PAYMENT_V2_STATUS.AUTHORIZED,
+        providerPaymentId: 'mock_pi_nt',
+        nextAction: { type: 'none' },
+      });
+    prisma.payment.update.mockResolvedValue({
+      id: 'pay_no_backoff_timer',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 100,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'mock_pi_nt',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+
+    const p = service.createIntent('m_1', { amountMinor: 100, currency: 'EUR' });
+    const result = await p;
+
+    expect(result.payment.status).toBe(PAYMENT_V2_STATUS.AUTHORIZED);
+    expect(mockProvider.run).toHaveBeenCalledTimes(2);
+  });
+
+  it('con PAYMENTS_PROVIDER_RETRY_BASE_MS>0 y fake timers, runAllTimersAsync desbloquea el backoff entre reintentos', async () => {
+    jest.useFakeTimers();
+    process.env.PAYMENTS_PROVIDER_RETRY_BASE_MS = '10';
+    process.env.PAYMENTS_PROVIDER_RETRY_MAX_MS = '50';
+    process.env.PAYMENTS_PROVIDER_MAX_RETRIES = '1';
+    service = buildService();
+    registry.orderedProviders.mockReturnValue(['mock']);
+    registry.getProvider.mockReturnValue(mockProvider);
+    prisma.payment.create.mockResolvedValue({
+      id: 'pay_backoff_timer',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.PROCESSING,
+      amountMinor: 100,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: null,
+      statusReason: null,
+      paymentLinkId: null,
+    });
+    mockProvider.run
+      .mockResolvedValueOnce({
+        status: PAYMENT_V2_STATUS.FAILED,
+        transientError: true,
+        reasonCode: 'provider_timeout',
+      })
+      .mockResolvedValueOnce({
+        status: PAYMENT_V2_STATUS.AUTHORIZED,
+        providerPaymentId: 'mock_pi_bt',
+        nextAction: { type: 'none' },
+      });
+    prisma.payment.update.mockResolvedValue({
+      id: 'pay_backoff_timer',
+      merchantId: 'm_1',
+      status: PAYMENT_V2_STATUS.AUTHORIZED,
+      amountMinor: 100,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'mock_pi_bt',
+      statusReason: null,
+      paymentLinkId: null,
+    });
+
+    const p = service.createIntent('m_1', { amountMinor: 100, currency: 'EUR' });
+    await jest.runAllTimersAsync();
+    const result = await p;
+
+    expect(result.payment.status).toBe(PAYMENT_V2_STATUS.AUTHORIZED);
+    expect(mockProvider.run).toHaveBeenCalledTimes(2);
+  });
+
+  it('createIntent propaga 429 + retryAfter cuando merchant rate limit lo indica', async () => {
+    merchantRateLimit.consumeIfNeeded.mockRejectedValueOnce(
+      new HttpException(
+        {
+          statusCode: HttpStatus.TOO_MANY_REQUESTS,
+          message: 'Merchant rate limit exceeded',
+          retryAfter: 55,
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      ),
+    );
+    try {
+      await service.createIntent('m_1', { amountMinor: 100, currency: 'EUR' });
+      throw new Error('expected HttpException');
+    } catch (e) {
+      expect(e).toBeInstanceOf(HttpException);
+      expect((e as HttpException).getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
+      expect((e as HttpException).getResponse()).toEqual(
+        expect.objectContaining({ message: 'Merchant rate limit exceeded', retryAfter: 55 }),
+      );
+    }
+    expect(prisma.payment.create).not.toHaveBeenCalled();
+  });
+
   it('aplica backoff entre reintentos por fallo transitorio del adapter', async () => {
     process.env.PAYMENTS_PROVIDER_RETRY_BASE_MS = '2';
     process.env.PAYMENTS_PROVIDER_RETRY_MAX_MS = '50';
@@ -1496,6 +1737,9 @@ describe('PaymentsV2Service', () => {
   type CbSvc = {
     registerProviderFailure: (p: 'stripe' | 'mock') => Promise<void>;
     resetProviderFailure: (p: 'stripe' | 'mock') => Promise<void>;
+    resolveProviderCircuitGate: (
+      p: 'stripe' | 'mock',
+    ) => Promise<{ block: boolean; blockReason?: string; probeAcquired: boolean }>;
     getCircuitBreakerSnapshot: () => Promise<
       Record<
         string,
@@ -1563,7 +1807,7 @@ describe('PaymentsV2Service', () => {
     await cb.registerProviderFailure('stripe');
     expect(state.failures).toBe(3);
     await cb.resetProviderFailure('stripe');
-    expect(redis.resetPaymentsV2ProviderCircuit).toHaveBeenCalledWith('stripe');
+    expect(redis.resetPaymentsV2ProviderCircuit).toHaveBeenCalledWith('stripe', expect.any(Number));
     const snap = await cb.getCircuitBreakerSnapshot();
     expect(snap.stripe.failures).toBe(0);
     expect(snap.stripe.open).toBe(false);
@@ -1850,6 +2094,38 @@ describe('PaymentsV2Service', () => {
     expect(mockProvider.run).not.toHaveBeenCalled();
     expect(redis.tryAcquirePaymentsV2HalfOpenProbe).toHaveBeenCalledWith('mock', expect.any(Number));
     expect(redis.releasePaymentsV2HalfOpenProbe).not.toHaveBeenCalled();
+  });
+
+  it('con Redis y half-open: error Redis en tryAcquire de sonda bloquea (no fail-open a tráfico pleno)', async () => {
+    process.env.PAYMENTS_PROVIDER_CB_HALF_OPEN = 'true';
+    redis.getClient.mockReturnValue({});
+    redis.getPaymentsV2ProviderCircuitState.mockResolvedValue({ failures: 3, openedUntil: 0 });
+    redis.tryAcquirePaymentsV2HalfOpenProbe.mockRejectedValue(new Error('redis unavailable'));
+    service = buildService();
+    const gate = await (service as unknown as CbSvc).resolveProviderCircuitGate('mock');
+    expect(gate.block).toBe(true);
+    expect(gate.probeAcquired).toBe(false);
+    expect(gate.blockReason).toContain('half-open');
+  });
+
+  it('con Redis y half-open: dos resoluciones concurrentes del gate: solo una gana la sonda NX', async () => {
+    process.env.PAYMENTS_PROVIDER_CB_HALF_OPEN = 'true';
+    redis.getClient.mockReturnValue({});
+    redis.getPaymentsV2ProviderCircuitState.mockResolvedValue({ failures: 3, openedUntil: 0 });
+    let probeTaken = false;
+    redis.tryAcquirePaymentsV2HalfOpenProbe.mockImplementation(async () => {
+      if (probeTaken) return false;
+      probeTaken = true;
+      return true;
+    });
+    service = buildService();
+    const s = service as unknown as CbSvc;
+    const [a, b] = await Promise.all([s.resolveProviderCircuitGate('mock'), s.resolveProviderCircuitGate('mock')]);
+    const winners = [a, b].filter((g) => !g.block && g.probeAcquired);
+    const blocked = [a, b].filter((g) => g.block);
+    expect(winners).toHaveLength(1);
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0].blockReason).toContain('half-open');
   });
 
   it('con Redis y PAYMENTS_PROVIDER_CB_HALF_OPEN: tras sonda exitosa se libera la clave probe', async () => {

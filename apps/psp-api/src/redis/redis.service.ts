@@ -4,6 +4,7 @@ import Redis from 'ioredis';
 /**
  * Prefijo de clave Redis HASH por proveedor para el circuit breaker de Payments V2.
  * Campos: `failures` (contador), `openedUntil` (epoch ms hasta el que el circuito se considera abierto).
+ * Tras cada mutación se renueva `EXPIRE` (TTL ~ cooldown + margen, acotado) para no dejar HASH huérfanos indefinidamente.
  */
 export const PAYMENTS_V2_CB_HASH_PREFIX = 'payv2:cb';
 
@@ -47,6 +48,10 @@ local openedUntil = 0
 if openedRaw then
   openedUntil = tonumber(openedRaw) or 0
 end
+local ttl = tonumber(ARGV[4])
+if ttl and ttl > 0 then
+  redis.call('EXPIRE', key, ttl)
+end
 return {failures, openedUntil, openedNow}
 `;
 
@@ -60,15 +65,29 @@ end
 return v
 `;
 
+export type RedisServiceMerchantRateLimitOptions = {
+  /** `commandTimeout` de ioredis para INCR merchant RL (fail-fast alineado con SLA del endpoint). */
+  merchantRateLimitCommandTimeoutMs: number;
+};
+
 @Injectable()
 export class RedisService implements OnModuleDestroy {
   private readonly client: Redis | null;
+  private readonly redisUrl: string | undefined;
+  private readonly merchantRateLimitOptions: RedisServiceMerchantRateLimitOptions | undefined;
+  private merchantRateLimitClient: Redis | null = null;
 
-  constructor(url: string | undefined) {
+  constructor(url: string | undefined, merchantRateLimitOptions?: RedisServiceMerchantRateLimitOptions) {
+    this.redisUrl = url;
+    this.merchantRateLimitOptions = merchantRateLimitOptions;
     this.client = url ? new Redis(url, { maxRetriesPerRequest: 3, lazyConnect: true }) : null;
   }
 
   async onModuleDestroy() {
+    if (this.merchantRateLimitClient) {
+      await this.merchantRateLimitClient.quit();
+      this.merchantRateLimitClient = null;
+    }
     if (this.client) {
       await this.client.quit();
     }
@@ -112,6 +131,41 @@ export class RedisService implements OnModuleDestroy {
     return n;
   }
 
+  /**
+   * INCR+EXPIRE para rate limit merchant (Payments V2) sobre conexión dedicada:
+   * `commandTimeout` real (ioredis), sin reintentos por petición y sin cola offline,
+   * para no acumular trabajo en Redis caído/lento cuando el path ya debe fallar rápido.
+   */
+  async incrWithExpireOnFirstForMerchantRateLimit(key: string, ttlSeconds: number): Promise<number> {
+    const rl = this.getMerchantRateLimitRedisOrThrow();
+    const ttl = Math.max(1, Math.trunc(ttlSeconds));
+    const raw = (await rl.eval(INCR_EXPIRE_ON_FIRST_LUA, 1, key, String(ttl))) as unknown;
+    const n = typeof raw === 'number' ? raw : Number(raw);
+    if (!Number.isFinite(n)) {
+      throw new Error('Unexpected Redis eval result for incrWithExpireOnFirstForMerchantRateLimit');
+    }
+    return n;
+  }
+
+  private getMerchantRateLimitRedisOrThrow(): Redis {
+    if (!this.redisUrl) {
+      throw new Error('Redis client not configured');
+    }
+    if (!this.merchantRateLimitOptions) {
+      throw new Error('Merchant rate limit Redis options not configured');
+    }
+    if (!this.merchantRateLimitClient) {
+      this.merchantRateLimitClient = new Redis(this.redisUrl, {
+        lazyConnect: true,
+        maxRetriesPerRequest: 0,
+        commandTimeout: this.merchantRateLimitOptions.merchantRateLimitCommandTimeoutMs,
+        enableOfflineQueue: false,
+        connectionName: 'psp-api-payv2-merchant-rl',
+      });
+    }
+    return this.merchantRateLimitClient;
+  }
+
   private paymentsV2CircuitBreakerHashKey(provider: string): string {
     return `${PAYMENTS_V2_CB_HASH_PREFIX}:${provider}`;
   }
@@ -128,11 +182,13 @@ export class RedisService implements OnModuleDestroy {
     failuresThreshold: number,
     cooldownMs: number,
     nowMs: number,
+    hashTtlSeconds: number,
   ): Promise<{ failures: number; openedUntil: number; openedNow: number }> {
     if (!this.client) {
       throw new Error('Redis client not configured');
     }
     const key = this.paymentsV2CircuitBreakerHashKey(provider);
+    const ttl = Math.max(0, Math.trunc(hashTtlSeconds));
     const raw = (await this.client.eval(
       PAYMENTS_V2_CB_LUA_INCREMENT,
       1,
@@ -140,6 +196,7 @@ export class RedisService implements OnModuleDestroy {
       String(failuresThreshold),
       String(cooldownMs),
       String(Math.trunc(nowMs)),
+      String(ttl),
     )) as unknown;
     if (!Array.isArray(raw) || raw.length < 2) {
       throw new Error('Unexpected Redis eval result for payments v2 circuit breaker');
@@ -154,10 +211,14 @@ export class RedisService implements OnModuleDestroy {
   }
 
   /** Pone el estado del CB v2 del proveedor a cerrado (fallos 0, sin ventana abierta). */
-  async resetPaymentsV2ProviderCircuit(provider: string): Promise<void> {
+  async resetPaymentsV2ProviderCircuit(provider: string, hashTtlSeconds?: number): Promise<void> {
     if (!this.client) return;
     const key = this.paymentsV2CircuitBreakerHashKey(provider);
     await this.client.hset(key, 'failures', '0', 'openedUntil', '0');
+    const ttl = hashTtlSeconds === undefined ? undefined : Math.max(0, Math.trunc(hashTtlSeconds));
+    if (ttl !== undefined && ttl > 0) {
+      await this.client.expire(key, ttl);
+    }
   }
 
   /**

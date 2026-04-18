@@ -2,7 +2,6 @@ import { RequestMethod, ValidationPipe, VersioningType } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common/interfaces';
 import request from 'supertest';
-import { AppModule } from '../../../src/app.module';
 import { PrismaService } from '../../../src/prisma/prisma.service';
 import { PaymentLinksService } from '../../../src/payment-links/payment-links.service';
 import { MerchantsService } from '../../../src/merchants/merchants.service';
@@ -19,6 +18,13 @@ export async function createIntegrationApp(): Promise<{
   paymentLinks: PaymentLinksService;
   merchants: MerchantsService;
 }> {
+  /**
+   * Import dinámico: `ConfigModule.forRoot(validate)` se ejecuta al evaluar `AppModule`.
+   * Si este archivo importara `AppModule` arriba del todo, se validaría el entorno antes del
+   * `beforeAll` de los specs que ajustan `process.env` (p. ej. cuota merchant), y quedaría
+   * `PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED=false` en caché de módulo.
+   */
+  const { AppModule } = await import('../../../src/app.module');
   const moduleRef = await Test.createTestingModule({
     imports: [AppModule],
   }).compile();

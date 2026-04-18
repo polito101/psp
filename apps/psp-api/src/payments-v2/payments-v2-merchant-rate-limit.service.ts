@@ -13,14 +13,6 @@ export type MerchantRateLimitRule = { limit: number; windowSec: number };
 /** Una sola advertencia por proceso si Redis falla o no está configurado con cuota merchant activa (fail-open). */
 let paymentsV2MerchantRlRedisFailOpenWarned = false;
 
-/** Rechazo controlado cuando el INCR Redis supera el tope de tiempo (fail-open rápido). */
-class MerchantRateLimitRedisTimeoutError extends Error {
-  readonly name = 'MerchantRateLimitRedisTimeoutError';
-  constructor() {
-    super('merchant rate limit redis operation timed out');
-  }
-}
-
 @Injectable()
 export class PaymentsV2MerchantRateLimitService {
   private readonly log = new Logger(PaymentsV2MerchantRateLimitService.name);
@@ -28,10 +20,16 @@ export class PaymentsV2MerchantRateLimitService {
   private readonly createRule: MerchantRateLimitRule | null;
   private readonly captureRule: MerchantRateLimitRule | null;
   private readonly refundRule: MerchantRateLimitRule | null;
-  /** Tras un fallo/timeout de Redis, no reintentar INCR hasta este instante (circuito local por proceso). */
-  private merchantRlRedisFailOpenUntilMs = 0;
-  /** Máx. espera al INCR+EXPIRE del rate limit; evita latencia larga con Redis lento o caído. */
-  private readonly redisIncrTimeoutMs: number;
+  /**
+   * Tras un fallo/timeout de Redis para un par merchant+op, no reintentar INCR hasta este instante.
+   * Aislado por merchant (y operación): un incidente no abre el bypass al resto del pod.
+   */
+  private readonly redisFailOpenUntilByMerchantOp = new Map<string, number>();
+  /**
+   * Cuota en proceso durante fail-open por merchant+op (misma ventana fija que Redis).
+   * Evita perder del todo la protección mientras el circuito por merchant está abierto.
+   */
+  private readonly memRlByMerchantOp = new Map<string, { bucket: number; count: number }>();
   /** Duración del bypass de Redis tras detectar indisponibilidad. */
   private readonly redisFailOpenBackoffMs: number;
 
@@ -49,12 +47,6 @@ export class PaymentsV2MerchantRateLimitService {
       : null;
     this.captureRule = this.enabled ? this.readOptionalPair('CAPTURE') : null;
     this.refundRule = this.enabled ? this.readOptionalPair('REFUND') : null;
-    this.redisIncrTimeoutMs = this.readOptionalBoundedMs(
-      'PAYMENTS_V2_MERCHANT_RL_REDIS_OP_TIMEOUT_MS',
-      150,
-      50,
-      2_000,
-    );
     this.redisFailOpenBackoffMs = this.readOptionalBoundedMs(
       'PAYMENTS_V2_MERCHANT_RL_FAIL_OPEN_BACKOFF_MS',
       30_000,
@@ -127,14 +119,22 @@ export class PaymentsV2MerchantRateLimitService {
   /**
    * Incrementa contador Redis por ventana fija; si supera el tope → 429 con `retryAfter` en segundos.
    * Fail-open si no hay cliente Redis o error de Redis (no bloquea pagos; log único acotado).
+   * El circuito de backoff por indisponibilidad de Redis es por merchant y operación; durante ese
+   * período se aplica una cuota en memoria en el proceso para no abrir el bypass al resto de merchants.
    */
   async consumeIfNeeded(merchantId: string, op: PaymentsV2MerchantRateLimitOperation): Promise<void> {
     const rule = this.ruleFor(op);
     if (!rule) return;
 
     const nowMs = Date.now();
-    if (nowMs < this.merchantRlRedisFailOpenUntilMs) {
+    const circuitKey = this.circuitKey(merchantId, op);
+    const failOpenUntil = this.redisFailOpenUntilByMerchantOp.get(circuitKey) ?? 0;
+    if (nowMs < failOpenUntil) {
+      this.consumeInMemoryOrThrow(merchantId, op, rule, nowMs);
       return;
+    }
+    if (failOpenUntil > 0) {
+      this.redisFailOpenUntilByMerchantOp.delete(circuitKey);
     }
 
     const nowSec = Math.floor(nowMs / 1000);
@@ -147,7 +147,8 @@ export class PaymentsV2MerchantRateLimitService {
         this.warnFailOpen('redis_client_missing');
         return;
       }
-      const count = await this.incrWithExpireOnFirstBounded(key, rule.windowSec);
+      const count = await this.redis.incrWithExpireOnFirstForMerchantRateLimit(key, rule.windowSec);
+      this.clearInMemoryMerchantOp(merchantId, op);
       if (count > rule.limit) {
         const retryAfter = paymentsV2MerchantRateLimitRetryAfterSec(nowSec, rule.windowSec);
         this.log.warn(
@@ -172,39 +173,63 @@ export class PaymentsV2MerchantRateLimitService {
       if (e instanceof HttpException && e.getStatus() === HttpStatus.TOO_MANY_REQUESTS) {
         throw e;
       }
-      this.armRedisFailOpenCircuit();
+      this.armRedisFailOpenCircuit(merchantId, op);
       this.warnFailOpen('redis_error', e);
     }
   }
 
-  /**
-   * INCR con tope de tiempo: si Redis tarda o ioredis reintenta, no retenemos la petición de pago más de `redisIncrTimeoutMs`.
-   */
-  private async incrWithExpireOnFirstBounded(key: string, windowSec: number): Promise<number> {
-    const op = this.redis.incrWithExpireOnFirst(key, windowSec);
-    const timeoutMs = this.redisIncrTimeoutMs;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new MerchantRateLimitRedisTimeoutError()), timeoutMs);
-    });
-    try {
-      return await Promise.race([op, timeoutPromise]);
-    } catch (e) {
-      if (e instanceof MerchantRateLimitRedisTimeoutError) {
-        void op.catch(() => {
-          /* Redis puede resolver/rechazar tarde; evita unhandledRejection si ganó el timeout */
-        });
-      }
-      throw e;
-    } finally {
-      if (timer !== undefined) {
-        clearTimeout(timer);
-      }
+  private circuitKey(merchantId: string, op: PaymentsV2MerchantRateLimitOperation): string {
+    return `${merchantId}:${op}`;
+  }
+
+  private clearInMemoryMerchantOp(merchantId: string, op: PaymentsV2MerchantRateLimitOperation): void {
+    this.memRlByMerchantOp.delete(this.circuitKey(merchantId, op));
+  }
+
+  /** Misma semántica de ventana fija que la clave Redis; puede lanzar 429. */
+  private consumeInMemoryOrThrow(
+    merchantId: string,
+    op: PaymentsV2MerchantRateLimitOperation,
+    rule: MerchantRateLimitRule,
+    nowMs: number,
+  ): void {
+    const nowSec = Math.floor(nowMs / 1000);
+    const bucket = paymentsV2MerchantRateLimitBucket(nowSec, rule.windowSec);
+    const mapKey = this.circuitKey(merchantId, op);
+    let st = this.memRlByMerchantOp.get(mapKey);
+    if (!st || st.bucket !== bucket) {
+      st = { bucket, count: 0 };
+    }
+    st.count += 1;
+    this.memRlByMerchantOp.set(mapKey, st);
+    if (st.count > rule.limit) {
+      const retryAfter = paymentsV2MerchantRateLimitRetryAfterSec(nowSec, rule.windowSec);
+      this.log.warn(
+        JSON.stringify({
+          event: 'payments_v2.merchant_rate_limited',
+          merchantId,
+          operation: op,
+          windowSec: rule.windowSec,
+          limit: rule.limit,
+          source: 'memory_fail_open',
+        }),
+      );
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.TOO_MANY_REQUESTS,
+          message: 'Merchant rate limit exceeded',
+          retryAfter,
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
   }
 
-  private armRedisFailOpenCircuit(): void {
-    this.merchantRlRedisFailOpenUntilMs = Date.now() + this.redisFailOpenBackoffMs;
+  private armRedisFailOpenCircuit(merchantId: string, op: PaymentsV2MerchantRateLimitOperation): void {
+    this.redisFailOpenUntilByMerchantOp.set(
+      this.circuitKey(merchantId, op),
+      Date.now() + this.redisFailOpenBackoffMs,
+    );
   }
 
   private warnFailOpen(reason: string, err?: unknown): void {

@@ -1489,7 +1489,8 @@ export class PaymentsV2Service {
   }
 
   /**
-   * Heurística: errores de programación típicos no se reintentan; ECONNRESET/ETIMEDOUT/etc. sí.
+   * Opt-in: solo errores con señal clara de red/timeout/5xx; un `Error` genérico no reintenta
+   * (evita tratar bugs de programación como transitorios).
    */
   private isTransientProviderRunThrow(caught: unknown): boolean {
     if (
@@ -1500,20 +1501,47 @@ export class PaymentsV2Service {
     ) {
       return false;
     }
-    if (caught instanceof Error && typeof (caught as NodeJS.ErrnoException).code === 'string') {
-      const code = (caught as NodeJS.ErrnoException).code;
-      if (
-        code === 'ECONNRESET' ||
-        code === 'ETIMEDOUT' ||
-        code === 'ECONNREFUSED' ||
-        code === 'ENOTFOUND' ||
-        code === 'EPIPE' ||
-        code === 'ECANCELED'
-      ) {
+    if (!(caught instanceof Error)) {
+      return false;
+    }
+    const err = caught as Error &
+      NodeJS.ErrnoException & { statusCode?: number; response?: { status?: number } };
+
+    if (typeof err.code === 'string') {
+      const transientCodes = new Set([
+        'ECONNRESET',
+        'ECONNREFUSED',
+        'ECONNABORTED',
+        'ETIMEDOUT',
+        'ENOTFOUND',
+        'ENETUNREACH',
+        'EHOSTUNREACH',
+        'EPIPE',
+        'ECANCELED',
+        'EAI_AGAIN',
+        'UND_ERR_CONNECT_TIMEOUT',
+        'UND_ERR_HEADERS_TIMEOUT',
+        'UND_ERR_BODY_TIMEOUT',
+      ]);
+      if (transientCodes.has(err.code)) {
         return true;
       }
     }
-    return true;
+
+    if (err.name === 'AbortError') {
+      return true;
+    }
+
+    const responseStatus = err.response?.status;
+    if (typeof responseStatus === 'number' && responseStatus >= 500 && responseStatus < 600) {
+      return true;
+    }
+    const statusCode = err.statusCode;
+    if (typeof statusCode === 'number' && statusCode >= 500 && statusCode < 600) {
+      return true;
+    }
+
+    return false;
   }
 
   private async safeCreateAttempt(
@@ -2442,6 +2470,16 @@ export class PaymentsV2Service {
   }
 
   /**
+   * TTL del HASH `payv2:cb:{provider}`: cooldown + margen (1h), acotado [60s, 7d].
+   * Se renueva en cada incremento/reset para no acumular claves eternas si un proveedor deja de usarse.
+   */
+  private paymentsV2CircuitBreakerHashTtlSec(): number {
+    const marginMs = 3_600_000;
+    const sec = Math.ceil((this.cbCooldownMs + marginMs) / 1000);
+    return Math.min(604_800, Math.max(60, sec));
+  }
+
+  /**
    * Transiciones (con `PAYMENTS_PROVIDER_CB_HALF_OPEN=true` y Redis):
    * - **open**: `openedUntil > now` → bloqueo total (igual que hoy).
    * - **half-open**: cooldown vencido (`openedUntil <= now`) y aún `failures >= umbral` → solo la petición
@@ -2492,7 +2530,16 @@ export class PaymentsV2Service {
       };
     } catch (error) {
       this.logCircuitBreakerRedisError('half_open_probe', error, providerName);
-      return { block: false, probeAcquired: false };
+      /**
+       * Si Redis no puede ejecutar la sonda NX, no asumimos “sin lock”: sin coordinación half-open
+       * todas las peticiones en ventana de recuperación golpearían al PSP (thundering herd).
+       * Bloqueamos como sonda ocupada (misma semántica operativa que `SET NX` no ganado).
+       */
+      return {
+        block: true,
+        blockReason: 'Provider circuit breaker half-open probe coordination unavailable',
+        probeAcquired: false,
+      };
     }
   }
 
@@ -2547,6 +2594,7 @@ export class PaymentsV2Service {
           this.cbFailures,
           this.cbCooldownMs,
           Date.now(),
+          this.paymentsV2CircuitBreakerHashTtlSec(),
         );
         if (openedNow === 1) {
           this.log.warn(
@@ -2572,7 +2620,10 @@ export class PaymentsV2Service {
   private async resetProviderFailure(providerName: PaymentProviderName): Promise<void> {
     if (this.cbRedisEnabled) {
       try {
-        await this.redis.resetPaymentsV2ProviderCircuit(providerName);
+        await this.redis.resetPaymentsV2ProviderCircuit(
+          providerName,
+          this.paymentsV2CircuitBreakerHashTtlSec(),
+        );
         return;
       } catch (error) {
         this.logCircuitBreakerRedisError('reset', error, providerName);
