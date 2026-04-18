@@ -1,6 +1,60 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '../generated/prisma/client';
 import { PayoutScheduleType, SettlementStatus } from '../generated/prisma/enums';
 import { PrismaService } from '../prisma/prisma.service';
+
+type ClaimedSettlementRow = {
+  id: string;
+  merchant_id: string;
+  payment_id: string;
+  currency: string;
+  net_minor: number;
+};
+
+/** Fila devuelta por SELECT ... FOR UPDATE SKIP LOCKED (nombres en snake_case). */
+type LockedAvailableSettlementRow = {
+  id: string;
+  gross_minor: number;
+  fee_minor: number;
+  net_minor: number;
+  captured_at: Date;
+  available_at: Date;
+};
+
+function isPrismaUniqueViolation(e: unknown): boolean {
+  return (
+    typeof e === 'object' &&
+    e !== null &&
+    'code' in e &&
+    (e as { code: string }).code === 'P2002'
+  );
+}
+
+/** Dos líneas de ledger por settlement liberado (PENDING → AVAILABLE); una sola tanda `createMany`. */
+function buildReleaseLedgerEntries(claimed: ClaimedSettlementRow[]) {
+  const ledgerEntries: Prisma.LedgerLineCreateManyInput[] = [];
+  for (const row of claimed) {
+    ledgerEntries.push(
+      {
+        merchantId: row.merchant_id,
+        paymentId: row.payment_id,
+        entryType: 'merchant_pending',
+        amountMinor: -row.net_minor,
+        currency: row.currency,
+        description: 'Settlement release to available',
+      },
+      {
+        merchantId: row.merchant_id,
+        paymentId: row.payment_id,
+        entryType: 'merchant_available',
+        amountMinor: row.net_minor,
+        currency: row.currency,
+        description: 'Settlement released and available',
+      },
+    );
+  }
+  return ledgerEntries;
+}
 
 @Injectable()
 export class SettlementService {
@@ -28,122 +82,82 @@ export class SettlementService {
   }
 
   async releasePendingToAvailable(now: Date): Promise<number> {
-    const pending = await this.prisma.paymentSettlement.findMany({
-      where: {
-        status: SettlementStatus.PENDING,
-        availableAt: { lte: now },
-      },
-      select: {
-        id: true,
-        merchantId: true,
-        paymentId: true,
-        currency: true,
-        netMinor: true,
-      },
-    });
+    return this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.$queryRaw<ClaimedSettlementRow[]>(Prisma.sql`
+        UPDATE "PaymentSettlement"
+        SET
+          status = 'AVAILABLE'::"SettlementStatus",
+          "updated_at" = CURRENT_TIMESTAMP
+        WHERE
+          status = 'PENDING'::"SettlementStatus"
+          AND "available_at" <= ${now}
+        RETURNING id, merchant_id, payment_id, currency, net_minor
+      `);
 
-    if (pending.length === 0) {
-      return 0;
-    }
-
-    await this.prisma.$transaction(async (tx) => {
-      for (const settlement of pending) {
-        await tx.ledgerLine.createMany({
-          data: [
-            {
-              merchantId: settlement.merchantId,
-              paymentId: settlement.paymentId,
-              entryType: 'merchant_pending',
-              amountMinor: -settlement.netMinor,
-              currency: settlement.currency,
-              description: 'Settlement release to available',
-            },
-            {
-              merchantId: settlement.merchantId,
-              paymentId: settlement.paymentId,
-              entryType: 'merchant_available',
-              amountMinor: settlement.netMinor,
-              currency: settlement.currency,
-              description: 'Settlement released and available',
-            },
-          ],
-        });
+      if (claimed.length === 0) {
+        return 0;
       }
-      await tx.paymentSettlement.updateMany({
-        where: { id: { in: pending.map((row) => row.id) } },
-        data: { status: SettlementStatus.AVAILABLE },
-      });
-    });
 
-    return pending.length;
+      const ledgerEntries = buildReleaseLedgerEntries(claimed);
+      await tx.ledgerLine.createMany({ data: ledgerEntries });
+
+      return claimed.length;
+    });
   }
 
   async createPayout(params: { merchantId: string; currency: string; now?: Date }) {
     const now = params.now ?? new Date();
     return this.prisma.$transaction(async (tx) => {
-      const releasable = await tx.paymentSettlement.findMany({
-        where: {
-          merchantId: params.merchantId,
-          currency: params.currency,
-          status: SettlementStatus.PENDING,
-          availableAt: { lte: now },
-        },
-        select: {
-          id: true,
-          merchantId: true,
-          paymentId: true,
-          currency: true,
-          netMinor: true,
-        },
-      });
-      if (releasable.length > 0) {
-        for (const settlement of releasable) {
-          await tx.ledgerLine.createMany({
-            data: [
-              {
-                merchantId: settlement.merchantId,
-                paymentId: settlement.paymentId,
-                entryType: 'merchant_pending',
-                amountMinor: -settlement.netMinor,
-                currency: settlement.currency,
-                description: 'Settlement release to available',
-              },
-              {
-                merchantId: settlement.merchantId,
-                paymentId: settlement.paymentId,
-                entryType: 'merchant_available',
-                amountMinor: settlement.netMinor,
-                currency: settlement.currency,
-                description: 'Settlement released and available',
-              },
-            ],
-          });
-        }
-        await tx.paymentSettlement.updateMany({
-          where: { id: { in: releasable.map((row) => row.id) } },
-          data: { status: SettlementStatus.AVAILABLE },
-        });
-      }
+      const claimedRelease = await tx.$queryRaw<ClaimedSettlementRow[]>(Prisma.sql`
+        UPDATE "PaymentSettlement"
+        SET
+          status = 'AVAILABLE'::"SettlementStatus",
+          "updated_at" = CURRENT_TIMESTAMP
+        WHERE
+          merchant_id = ${params.merchantId}
+          AND currency = ${params.currency}
+          AND status = 'PENDING'::"SettlementStatus"
+          AND "available_at" <= ${now}
+        RETURNING id, merchant_id, payment_id, currency, net_minor
+      `);
 
-      const rows = await tx.paymentSettlement.findMany({
-        where: {
-          merchantId: params.merchantId,
-          currency: params.currency,
-          status: SettlementStatus.AVAILABLE,
-          payoutItem: null,
-        },
-        select: {
-          id: true,
-          grossMinor: true,
-          feeMinor: true,
-          netMinor: true,
-          capturedAt: true,
-          availableAt: true,
-        },
-      });
-      if (rows.length === 0) {
+      const releaseLedgerEntries = buildReleaseLedgerEntries(claimedRelease);
+
+      const lockedRaw = await tx.$queryRaw<LockedAvailableSettlementRow[]>(Prisma.sql`
+        SELECT
+          ps.id,
+          ps.gross_minor,
+          ps.fee_minor,
+          ps.net_minor,
+          ps.captured_at,
+          ps.available_at
+        FROM "PaymentSettlement" ps
+        WHERE
+          ps.merchant_id = ${params.merchantId}
+          AND ps.currency = ${params.currency}
+          AND ps.status = 'AVAILABLE'::"SettlementStatus"
+          AND ps.payout_id IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM "PayoutItem" pi WHERE pi.payment_settlement_id = ps.id
+          )
+        FOR UPDATE OF ps SKIP LOCKED
+      `);
+
+      if (lockedRaw.length === 0) {
+        if (releaseLedgerEntries.length > 0) {
+          await tx.ledgerLine.createMany({ data: releaseLedgerEntries });
+        }
         return null;
       }
+
+      const rows = lockedRaw.map((row) => ({
+        id: row.id,
+        grossMinor: row.gross_minor,
+        feeMinor: row.fee_minor,
+        netMinor: row.net_minor,
+        capturedAt: row.captured_at,
+        availableAt: row.available_at,
+      }));
 
       const grossMinor = rows.reduce((acc, row) => acc + row.grossMinor, 0);
       const feeMinor = rows.reduce((acc, row) => acc + row.feeMinor, 0);
@@ -165,15 +179,26 @@ export class SettlementService {
         select: { id: true },
       });
 
-      await tx.payoutItem.createMany({
-        data: rows.map((row) => ({
-          payoutId: payout.id,
-          paymentSettlementId: row.id,
-          grossMinor: row.grossMinor,
-          feeMinor: row.feeMinor,
-          netMinor: row.netMinor,
-        })),
-      });
+      try {
+        await tx.payoutItem.createMany({
+          data: rows.map((row) => ({
+            payoutId: payout.id,
+            paymentSettlementId: row.id,
+            grossMinor: row.grossMinor,
+            feeMinor: row.feeMinor,
+            netMinor: row.netMinor,
+          })),
+        });
+      } catch (e) {
+        if (isPrismaUniqueViolation(e)) {
+          if (releaseLedgerEntries.length > 0) {
+            await tx.ledgerLine.createMany({ data: releaseLedgerEntries });
+          }
+          await tx.payout.delete({ where: { id: payout.id } });
+          return null;
+        }
+        throw e;
+      }
 
       await tx.paymentSettlement.updateMany({
         where: { id: { in: rows.map((row) => row.id) } },
@@ -184,18 +209,18 @@ export class SettlementService {
         },
       });
 
-      await tx.ledgerLine.createMany({
-        data: [
-          {
-            merchantId: params.merchantId,
-            paymentId: null,
-            entryType: 'merchant_available',
-            amountMinor: -netMinor,
-            currency: params.currency,
-            description: `Payout ${payout.id} created`,
-          },
-        ],
-      });
+      const ledgerEntries: Prisma.LedgerLineCreateManyInput[] = [
+        ...releaseLedgerEntries,
+        {
+          merchantId: params.merchantId,
+          paymentId: null,
+          entryType: 'merchant_available',
+          amountMinor: -netMinor,
+          currency: params.currency,
+          description: `Payout ${payout.id} created`,
+        },
+      ];
+      await tx.ledgerLine.createMany({ data: ledgerEntries });
 
       return {
         id: payout.id,

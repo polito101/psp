@@ -16,9 +16,10 @@ describe('SettlementService', () => {
 
   it('createPayout devuelve null cuando no hay settlements disponibles', async () => {
     const tx: any = {
-      paymentSettlement: {
-        findMany: jest.fn().mockResolvedValue([]),
-      },
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([]) // UPDATE PENDING → AVAILABLE
+        .mockResolvedValueOnce([]), // SELECT … FOR UPDATE (ninguno disponible)
     };
     const prisma: any = {
       ...tx,
@@ -36,44 +37,60 @@ describe('SettlementService', () => {
   });
 
   it('createPayout agrupa disponibles y marca settlements como PAID', async () => {
-    const settlements = [
+    const lockedRawRows = [
       {
         id: 'ps_1',
-        merchantId: 'm_1',
-        currency: 'EUR',
-        grossMinor: 1000,
-        feeMinor: 50,
-        netMinor: 950,
-        capturedAt: new Date('2026-04-18T10:00:00.000Z'),
-        availableAt: new Date('2026-04-19T10:00:00.000Z'),
+        gross_minor: 1000,
+        fee_minor: 50,
+        net_minor: 950,
+        captured_at: new Date('2026-04-18T10:00:00.000Z'),
+        available_at: new Date('2026-04-19T10:00:00.000Z'),
       },
       {
         id: 'ps_2',
-        merchantId: 'm_1',
-        currency: 'EUR',
-        grossMinor: 2000,
-        feeMinor: 100,
-        netMinor: 1900,
-        capturedAt: new Date('2026-04-18T11:00:00.000Z'),
-        availableAt: new Date('2026-04-19T11:00:00.000Z'),
+        gross_minor: 2000,
+        fee_minor: 100,
+        net_minor: 1900,
+        captured_at: new Date('2026-04-18T11:00:00.000Z'),
+        available_at: new Date('2026-04-19T11:00:00.000Z'),
       },
     ];
     const payoutCreate = jest.fn().mockResolvedValue({
       id: 'po_1',
     });
+    const claimedRelease = [
+      {
+        id: 'ps_1',
+        merchant_id: 'm_1',
+        payment_id: 'pay_1',
+        currency: 'EUR',
+        net_minor: 950,
+      },
+      {
+        id: 'ps_2',
+        merchant_id: 'm_1',
+        payment_id: 'pay_2',
+        currency: 'EUR',
+        net_minor: 1900,
+      },
+    ];
     const tx: any = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce(claimedRelease) // UPDATE PENDING → AVAILABLE
+        .mockResolvedValueOnce(lockedRawRows), // SELECT … FOR UPDATE SKIP LOCKED
       paymentSettlement: {
         updateMany: jest.fn().mockResolvedValue({ count: 2 }),
-        findMany: jest.fn().mockResolvedValue(settlements),
       },
       payout: {
         create: payoutCreate,
+        delete: jest.fn(),
       },
       payoutItem: {
         createMany: jest.fn().mockResolvedValue({ count: 2 }),
       },
       ledgerLine: {
-        createMany: jest.fn().mockResolvedValue({ count: 3 }),
+        createMany: jest.fn().mockResolvedValue({ count: 5 }),
       },
     };
     const prisma: any = {
@@ -106,5 +123,7 @@ describe('SettlementService', () => {
         netMinor: 2850,
       }),
     );
+    expect(tx.ledgerLine.createMany).toHaveBeenCalledTimes(1);
+    expect(tx.ledgerLine.createMany.mock.calls[0][0].data).toHaveLength(5);
   });
 });
