@@ -13,13 +13,32 @@ export class LedgerService {
 
   async getBalances(merchantId: string) {
     const rows = await this.prisma.ledgerLine.groupBy({
-      by: ['currency'],
-      where: { merchantId, entryType: 'available' },
+      by: ['currency', 'entryType'],
+      where: {
+        merchantId,
+        entryType: { in: ['merchant_pending', 'merchant_available', 'available'] },
+      },
       _sum: { amountMinor: true },
     });
-    return rows.map((r) => ({
-      currency: r.currency,
-      availableMinor: r._sum.amountMinor ?? 0,
+    const byCurrency = new Map<string, { pendingMinor: number; availableMinor: number }>();
+    for (const row of rows) {
+      const current = byCurrency.get(row.currency) ?? { pendingMinor: 0, availableMinor: 0 };
+      const value = row._sum.amountMinor ?? 0;
+      if (row.entryType === 'merchant_pending') {
+        current.pendingMinor += value;
+      }
+      if (row.entryType === 'merchant_available') {
+        current.availableMinor += value;
+      }
+      if (row.entryType === 'available') {
+        current.availableMinor += value;
+      }
+      byCurrency.set(row.currency, current);
+    }
+    return [...byCurrency.entries()].map(([currency, totals]) => ({
+      currency,
+      pendingMinor: totals.pendingMinor,
+      availableMinor: totals.availableMinor,
     }));
   }
 
@@ -28,33 +47,53 @@ export class LedgerService {
     params: {
       merchantId: string;
       paymentId: string;
-      amountMinor: number;
       currency: string;
-      feeBps: number;
-    },
+    } & (
+      | {
+          amountMinor: number;
+          feeBps: number;
+        }
+      | {
+          grossMinor: number;
+          feeMinor: number;
+          netMinor: number;
+        }
+    ),
   ) {
-    const fee = LedgerService.feeAmount(params.amountMinor, params.feeBps);
-    const net = params.amountMinor - fee;
+    const gross = 'grossMinor' in params ? params.grossMinor : params.amountMinor;
+    const fee = 'feeMinor' in params ? params.feeMinor : LedgerService.feeAmount(params.amountMinor, params.feeBps);
+    const net = 'netMinor' in params ? params.netMinor : params.amountMinor - fee;
+    if (net !== gross - fee) {
+      throw new Error('Invalid fee breakdown: net must equal gross - fee');
+    }
 
-    await tx.ledgerLine.create({
-      data: {
-        merchantId: params.merchantId,
-        paymentId: params.paymentId,
-        entryType: 'available',
-        amountMinor: net,
-        currency: params.currency,
-        description: 'Neto tras comisión PSP',
-      },
-    });
-    await tx.ledgerLine.create({
-      data: {
-        merchantId: params.merchantId,
-        paymentId: params.paymentId,
-        entryType: 'fee',
-        amountMinor: fee,
-        currency: params.currency,
-        description: `Comisión PSP (${params.feeBps} bps)`,
-      },
+    await tx.ledgerLine.createMany({
+      data: [
+        {
+          merchantId: params.merchantId,
+          paymentId: params.paymentId,
+          entryType: 'merchant_pending',
+          amountMinor: gross,
+          currency: params.currency,
+          description: 'Gross captured (pending settlement)',
+        },
+        {
+          merchantId: params.merchantId,
+          paymentId: params.paymentId,
+          entryType: 'merchant_pending',
+          amountMinor: -fee,
+          currency: params.currency,
+          description: 'Fee charged to merchant (pending)',
+        },
+        {
+          merchantId: params.merchantId,
+          paymentId: params.paymentId,
+          entryType: 'platform_fee_revenue',
+          amountMinor: fee,
+          currency: params.currency,
+          description: 'Platform fee revenue',
+        },
+      ],
     });
   }
 
@@ -67,11 +106,20 @@ export class LedgerService {
       currency: string;
     },
   ) {
+    const pendingEntry = await tx.ledgerLine.findFirst({
+      where: {
+        merchantId: params.merchantId,
+        paymentId: params.paymentId,
+        entryType: 'merchant_pending',
+      },
+      select: { id: true },
+    });
+
     await tx.ledgerLine.create({
       data: {
         merchantId: params.merchantId,
         paymentId: params.paymentId,
-        entryType: 'available',
+        entryType: pendingEntry ? 'merchant_pending' : 'available',
         amountMinor: -params.amountMinor,
         currency: params.currency,
         description: 'Reversa por reembolso',

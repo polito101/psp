@@ -21,7 +21,7 @@ describe('ledger integration', () => {
     await app.close();
   });
 
-  it('exposes available balance after successful capture', async () => {
+  it('exposes pending and available balances after successful capture', async () => {
     const merchant = await createMerchantViaHttp(app);
 
     const created = await request(app.getHttpServer())
@@ -43,7 +43,8 @@ describe('ledger integration', () => {
     expect(Array.isArray(balance.body)).toBe(true);
     expect(balance.body.length).toBeGreaterThan(0);
     expect(balance.body[0].currency).toBe('EUR');
+    expect(typeof balance.body[0].pendingMinor).toBe('number');
     expect(typeof balance.body[0].availableMinor).toBe('number');
-    expect(balance.body[0].availableMinor).toBeGreaterThan(0);
+    expect(balance.body[0].pendingMinor).toBeGreaterThan(0);
   });
 });

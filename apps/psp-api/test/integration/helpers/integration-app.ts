@@ -59,6 +59,11 @@ export async function resetIntegrationDb(prisma: PrismaService): Promise<void> {
   await prisma.paymentOperation.deleteMany();
   await prisma.paymentAttempt.deleteMany();
   await prisma.webhookDelivery.deleteMany();
+  await prisma.payoutItem.deleteMany();
+  await prisma.paymentSettlement.deleteMany();
+  await prisma.payout.deleteMany();
+  await prisma.paymentFeeQuote.deleteMany();
+  await prisma.merchantRateTable.deleteMany();
   await prisma.ledgerLine.deleteMany();
   await prisma.payment.deleteMany();
   await prisma.paymentLink.deleteMany();

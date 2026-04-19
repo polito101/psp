@@ -12,8 +12,10 @@ import { Prisma } from '../generated/prisma/client';
 import { LedgerService } from '../ledger/ledger.service';
 import { PaymentLinksService } from '../payment-links/payment-links.service';
 import { CorrelationContextService } from '../common/correlation/correlation-context.service';
+import { FeeService } from '../fees/fee.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
+import { SettlementService } from '../settlements/settlement.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { hashCreatePaymentIntentPayload } from './create-payment-intent-payload-hash';
 import { CreatePaymentIntentDto } from './dto/create-payment-intent.dto';
@@ -168,6 +170,7 @@ export class PaymentsV2Service {
     private readonly registry: ProviderRegistryService,
     private readonly observability: PaymentsV2ObservabilityService,
     private readonly stripeAdapter: StripeProviderAdapter,
+    private readonly fee: FeeService,
     private readonly merchantRateLimit: PaymentsV2MerchantRateLimitService,
     private readonly correlationContext: CorrelationContextService,
   ) {
@@ -277,6 +280,18 @@ export class PaymentsV2Service {
     await this.merchantRateLimit.consumeIfNeeded(merchantId, 'create');
 
     const providerOrder = this.registry.orderedProviders();
+    const currencyUpper = dto.currency.toUpperCase();
+    const canSettleFees = await this.fee.hasActiveRateTableForAnyProvider(
+      merchantId,
+      currencyUpper,
+      providerOrder,
+    );
+    if (!canSettleFees) {
+      throw new ConflictException(
+        'No hay tarifas configuradas (MerchantRateTable activa) para esta divisa con ningún proveedor. Configura tarifas o usa una divisa soportada.',
+      );
+    }
+
     const selectedProvider = providerOrder[0];
     let payment: OperationResult['payment'];
     try {
@@ -287,7 +302,7 @@ export class PaymentsV2Service {
           idempotencyKey: idempotencyKey ?? null,
           createPayloadHash: hashCreatePaymentIntentPayload(dto),
           amountMinor: dto.amountMinor,
-          currency: dto.currency.toUpperCase(),
+          currency: currencyUpper,
           status: PAYMENT_V2_STATUS.PROCESSING,
           rail: 'fiat',
           selectedProvider,
@@ -1109,6 +1124,19 @@ export class PaymentsV2Service {
     }
 
     if (eventType === 'payment_intent.succeeded') {
+      const rateRow = await this.fee.findActiveRateTable(payment.merchantId, payment.currency, 'stripe');
+      if (!rateRow) {
+        this.log.error(
+          this.correlationLogJson({
+            event: 'payments_v2.stripe_webhook.capture_blocked_missing_fee_rate',
+            paymentId: payment.id,
+            merchantId: payment.merchantId,
+            currency: payment.currency,
+            provider: 'stripe',
+          }),
+        );
+        return { handled: false, reason: 'fee_configuration_missing' };
+      }
       await this.captureSucceeded(payment, 'stripe', {
         status: PAYMENT_V2_STATUS.SUCCEEDED,
         providerPaymentId: providerRef,
@@ -1257,16 +1285,26 @@ export class PaymentsV2Service {
         return { handled: true, paymentId: payment.id };
       }
       if (outcome === 'lost') {
-        await this.prisma.payment.updateMany({
-          where: { id: payment.id, status: PAYMENT_V2_STATUS.DISPUTED },
-          data: {
-            status: PAYMENT_V2_STATUS.DISPUTE_LOST,
-            statusReason: null,
-            failedAt: null,
-            selectedProvider: 'stripe',
-            providerRef,
-            lastAttemptAt: new Date(),
-          },
+        const amountMinor = this.toStripeDisputeAmount(eventObject, payment.amountMinor);
+        await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+          const cas = await tx.payment.updateMany({
+            where: { id: payment.id, status: PAYMENT_V2_STATUS.DISPUTED },
+            data: {
+              status: PAYMENT_V2_STATUS.DISPUTE_LOST,
+              statusReason: null,
+              failedAt: null,
+              selectedProvider: 'stripe',
+              providerRef,
+              lastAttemptAt: new Date(),
+            },
+          });
+          if (cas.count === 0) return;
+          await this.ledger.recordSuccessfulRefund(tx, {
+            merchantId: payment.merchantId,
+            paymentId: payment.id,
+            amountMinor,
+            currency: payment.currency,
+          });
         });
         return { handled: true, paymentId: payment.id };
       }
@@ -1284,18 +1322,60 @@ export class PaymentsV2Service {
     createExtras?: Pick<ProviderContext, 'stripePaymentMethodId' | 'stripeReturnUrl'>,
   ): Promise<OperationResult> {
     let lastProviderAttempted: PaymentProviderName | null = null;
+    let lastTerminalFailureReason: PaymentReasonCode = 'provider_unavailable';
     for (let providerIndex = 0; providerIndex < providerOrder.length; providerIndex += 1) {
       const providerName = providerOrder[providerIndex];
       lastProviderAttempted = providerName;
       const isLastProvider = providerIndex === providerOrder.length - 1;
       const circuitGate = await this.resolveProviderCircuitGate(providerName);
       if (circuitGate.block) {
+        lastTerminalFailureReason = 'provider_unavailable';
         await this.safeCreateAttempt(payment, operation, providerName, {
           status: PAYMENT_V2_STATUS.FAILED,
           reasonCode: 'provider_unavailable',
           reasonMessage: circuitGate.blockReason ?? 'Provider circuit breaker is open',
         }, 0);
         continue;
+      }
+      if (operation === 'capture') {
+        const rateRow = await this.fee.findActiveRateTable(payment.merchantId, payment.currency, providerName);
+        if (!rateRow) {
+          lastTerminalFailureReason = 'fee_configuration_missing';
+          await this.safeCreateAttempt(
+            payment,
+            operation,
+            providerName,
+            {
+              status: PAYMENT_V2_STATUS.FAILED,
+              reasonCode: 'fee_configuration_missing',
+              reasonMessage: 'No active fee rate table for this currency and provider',
+            },
+            0,
+          );
+          continue;
+        }
+        const feeInput = {
+          amountMinor: payment.amountMinor,
+          percentageBps: rateRow.percentageBps,
+          fixedMinor: rateRow.fixedMinor,
+          minimumMinor: rateRow.minimumMinor,
+        };
+        if (FeeService.uncappedFeeMinor(feeInput) > payment.amountMinor) {
+          lastTerminalFailureReason = 'fee_exceeds_gross';
+          await this.safeCreateAttempt(
+            payment,
+            operation,
+            providerName,
+            {
+              status: PAYMENT_V2_STATUS.FAILED,
+              reasonCode: 'fee_exceeds_gross',
+              reasonMessage:
+                'Active fee rate would charge more than the payment gross; adjust the rate table or payment amount',
+            },
+            0,
+          );
+          continue;
+        }
       }
       try {
         const result = await this.runWithRetry(providerName, operation, payment, amountMinor, createExtras);
@@ -1346,7 +1426,7 @@ export class PaymentsV2Service {
     }
     const failed = await this.markPaymentFailed(
       payment.id,
-      'provider_unavailable',
+      operation === 'capture' ? lastTerminalFailureReason : 'provider_unavailable',
       lastProviderAttempted ?? providerOrder[providerOrder.length - 1] ?? this.toProviderName(payment.selectedProvider),
     );
     return { payment: failed, nextAction: null };
@@ -1719,6 +1799,15 @@ export class PaymentsV2Service {
     return rounded <= fallbackAmountMinor ? rounded : fallbackAmountMinor;
   }
 
+  private toStripeDisputeAmount(eventObject: Record<string, unknown>, fallbackAmountMinor: number): number {
+    const amount = eventObject.amount;
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
+      return fallbackAmountMinor;
+    }
+    const rounded = Math.floor(amount);
+    return rounded <= fallbackAmountMinor ? rounded : fallbackAmountMinor;
+  }
+
   private safeGetString(value: unknown): string | undefined {
     return typeof value === 'string' ? value : undefined;
   }
@@ -1885,10 +1974,32 @@ export class PaymentsV2Service {
     providerName: PaymentProviderName,
     result: ProviderResult,
   ): Promise<OperationResult['payment']> {
-    const merchant = await this.prisma.merchant.findUniqueOrThrow({
-      where: { id: payment.merchantId },
-      select: { feeBps: true },
-    });
+    const rateTable = await this.fee.resolveActiveRateTable(
+      payment.merchantId,
+      payment.currency,
+      providerName,
+    );
+    const feeInput = {
+      amountMinor: payment.amountMinor,
+      percentageBps: rateTable.percentageBps,
+      fixedMinor: rateTable.fixedMinor,
+      minimumMinor: rateTable.minimumMinor,
+    };
+    const uncappedFee = FeeService.uncappedFeeMinor(feeInput);
+    const feeQuote = FeeService.calculate(feeInput);
+    if (uncappedFee > payment.amountMinor) {
+      this.log.warn(
+        this.correlationLogJson({
+          event: 'payments_v2.fee_clamped_to_gross',
+          paymentId: payment.id,
+          merchantId: payment.merchantId,
+          currency: payment.currency,
+          provider: providerName,
+          grossMinor: payment.amountMinor,
+          uncappedFeeMinor: uncappedFee,
+        }),
+      );
+    }
     const { updated, transitioned } = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const cas = await tx.payment.updateMany({
         where: {
@@ -1925,12 +2036,48 @@ export class PaymentsV2Service {
         return { updated: next, transitioned: false as const };
       }
 
+      await tx.paymentFeeQuote.create({
+        data: {
+          paymentId: payment.id,
+          merchantId: payment.merchantId,
+          rateTableId: rateTable.id,
+          provider: providerName,
+          currency: payment.currency,
+          percentageBps: rateTable.percentageBps,
+          fixedMinor: rateTable.fixedMinor,
+          minimumMinor: rateTable.minimumMinor,
+          grossMinor: feeQuote.grossMinor,
+          feeMinor: feeQuote.feeMinor,
+          netMinor: feeQuote.netMinor,
+          settlementMode: rateTable.settlementMode,
+        },
+      });
+      await tx.paymentSettlement.create({
+        data: {
+          paymentId: payment.id,
+          merchantId: payment.merchantId,
+          currency: payment.currency,
+          provider: providerName,
+          settlementMode: rateTable.settlementMode,
+          status: 'PENDING',
+          grossMinor: feeQuote.grossMinor,
+          feeMinor: feeQuote.feeMinor,
+          netMinor: feeQuote.netMinor,
+          capturedAt: new Date(),
+          availableAt: SettlementService.computeAvailableAt(
+            new Date(),
+            rateTable.payoutScheduleType,
+            rateTable.payoutScheduleParam,
+          ),
+        },
+      });
       await this.ledger.recordSuccessfulCapture(tx, {
         merchantId: payment.merchantId,
         paymentId: payment.id,
-        amountMinor: payment.amountMinor,
+        grossMinor: feeQuote.grossMinor,
+        feeMinor: feeQuote.feeMinor,
+        netMinor: feeQuote.netMinor,
         currency: payment.currency,
-        feeBps: merchant.feeBps,
       });
       if (payment.paymentLinkId) {
         await tx.paymentLink.updateMany({
@@ -2367,6 +2514,8 @@ export class PaymentsV2Service {
       'provider_declined',
       'provider_validation_error',
       'provider_error',
+      'fee_configuration_missing',
+      'fee_exceeds_gross',
       'already_finalized',
       'not_capturable',
       'not_cancelable',

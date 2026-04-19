@@ -88,10 +88,14 @@ describe('stripe inbound webhooks integration', () => {
       orderBy: { entryType: 'asc' },
       select: { entryType: true, amountMinor: true },
     });
-    expect(ledgerLines).toEqual([
-      { entryType: 'available', amountMinor: 1942 },
-      { entryType: 'fee', amountMinor: 58 },
-    ]);
+    expect(ledgerLines).toHaveLength(3);
+    expect(ledgerLines).toEqual(
+      expect.arrayContaining([
+        { entryType: 'merchant_pending', amountMinor: 2000 },
+        { entryType: 'merchant_pending', amountMinor: -58 },
+        { entryType: 'platform_fee_revenue', amountMinor: 58 },
+      ]),
+    );
   });
 
   it('marks payment as canceled for payment_intent.canceled and replay keeps stable state', async () => {

@@ -3,6 +3,21 @@ import { randomBytes } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import { encryptUtf8 } from '../crypto/secret-box';
 import { PrismaService } from '../prisma/prisma.service';
+import { PaymentProviderName } from '../payments-v2/domain/payment-provider-names';
+import { PAYMENT_PROVIDER_NAMES } from '../payments-v2/domain/payment-provider-names';
+import { PayoutScheduleType, SettlementMode } from '../generated/prisma/enums';
+
+type CreateRateTableInput = {
+  provider: PaymentProviderName;
+  currency: string;
+  percentageBps: number;
+  fixedMinor: number;
+  minimumMinor: number;
+  settlementMode: SettlementMode;
+  payoutScheduleType: PayoutScheduleType;
+  payoutScheduleParam: number;
+  contractRef?: string;
+};
 
 @Injectable()
 export class MerchantsService {
@@ -10,6 +25,8 @@ export class MerchantsService {
 
   /**
    * Crea un merchant con su API key y secreto de webhook.
+   * Inserta tarifas por defecto solo en **EUR** para todos los proveedores; otras divisas requieren
+   * altas manuales en `MerchantRateTable` antes de poder crear intents en esa moneda.
    * @param dto.keyTtlDays - Días de validez de la key. Sin valor, no expira.
    * @returns id, name, apiKey (mostrar solo una vez), webhookSecret (mostrar solo una vez).
    */
@@ -17,25 +34,43 @@ export class MerchantsService {
     const webhookSecretPlain = `whsec_${randomBytes(24).toString('base64url')}`;
     const webhookSecretCiphertext = encryptUtf8(webhookSecretPlain);
     const placeholderHash = await bcrypt.hash(randomBytes(16).toString('hex'), 12);
-
-    const merchant = await this.prisma.merchant.create({
-      data: {
-        name: dto.name,
-        apiKeyHash: placeholderHash,
-        webhookUrl: dto.webhookUrl ?? null,
-        webhookSecretCiphertext,
-      },
-    });
-
-    const apiKeyPlain = `psp.${merchant.id}.${randomBytes(32).toString('base64url')}`;
-    const apiKeyHash = await bcrypt.hash(apiKeyPlain, 12);
     const apiKeyExpiresAt = dto.keyTtlDays
       ? new Date(Date.now() + dto.keyTtlDays * 86_400_000)
       : null;
 
-    await this.prisma.merchant.update({
-      where: { id: merchant.id },
-      data: { apiKeyHash, apiKeyExpiresAt },
+    const { merchant, apiKeyPlain } = await this.prisma.$transaction(async (tx) => {
+      const merchant = await tx.merchant.create({
+        data: {
+          name: dto.name,
+          apiKeyHash: placeholderHash,
+          webhookUrl: dto.webhookUrl ?? null,
+          webhookSecretCiphertext,
+        },
+      });
+
+      const apiKeyPlain = `psp.${merchant.id}.${randomBytes(32).toString('base64url')}`;
+      const apiKeyHash = await bcrypt.hash(apiKeyPlain, 12);
+
+      await tx.merchant.update({
+        where: { id: merchant.id },
+        data: { apiKeyHash, apiKeyExpiresAt },
+      });
+
+      await tx.merchantRateTable.createMany({
+        data: PAYMENT_PROVIDER_NAMES.map((provider) => ({
+          merchantId: merchant.id,
+          currency: 'EUR',
+          provider,
+          percentageBps: merchant.feeBps,
+          fixedMinor: 0,
+          minimumMinor: 0,
+          settlementMode: SettlementMode.NET,
+          payoutScheduleType: PayoutScheduleType.T_PLUS_N,
+          payoutScheduleParam: 1,
+        })),
+      });
+
+      return { merchant, apiKeyPlain };
     });
 
     return {
@@ -108,5 +143,48 @@ export class MerchantsService {
       revokedAt: new Date().toISOString(),
       message: 'API key revocada. Usa rotate-key para emitir una nueva.',
     };
+  }
+
+  async createRateTable(merchantId: string, dto: CreateRateTableInput) {
+    const merchant = await this.prisma.merchant.findUnique({
+      where: { id: merchantId },
+      select: { id: true },
+    });
+    if (!merchant) {
+      throw new NotFoundException('Merchant not found');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.merchantRateTable.updateMany({
+        where: {
+          merchantId,
+          currency: dto.currency,
+          provider: dto.provider,
+          activeTo: null,
+        },
+        data: { activeTo: new Date() },
+      });
+      return tx.merchantRateTable.create({
+        data: {
+          merchantId,
+          provider: dto.provider,
+          currency: dto.currency,
+          percentageBps: dto.percentageBps,
+          fixedMinor: dto.fixedMinor,
+          minimumMinor: dto.minimumMinor,
+          settlementMode: dto.settlementMode,
+          payoutScheduleType: dto.payoutScheduleType,
+          payoutScheduleParam: dto.payoutScheduleParam,
+          contractRef: dto.contractRef ?? null,
+        },
+      });
+    });
+  }
+
+  async listRateTables(merchantId: string) {
+    return this.prisma.merchantRateTable.findMany({
+      where: { merchantId },
+      orderBy: { activeFrom: 'desc' },
+    });
   }
 }
