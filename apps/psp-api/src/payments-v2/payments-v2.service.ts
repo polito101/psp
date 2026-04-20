@@ -620,9 +620,10 @@ export class PaymentsV2Service {
       createdAt.lte = new Date(params.createdTo);
     }
 
+    const paymentId = params.paymentId?.trim();
     return {
       ...(params.merchantId ? { merchantId: params.merchantId } : {}),
-      ...(params.paymentId ? { id: { contains: params.paymentId, mode: 'insensitive' } } : {}),
+      ...(paymentId ? { id: { startsWith: paymentId } } : {}),
       ...(params.status ? { status: params.status } : {}),
       ...(params.provider ? { selectedProvider: params.provider } : {}),
       ...(Object.keys(createdAt).length > 0 ? { createdAt } : {}),
@@ -2052,6 +2053,7 @@ export class PaymentsV2Service {
           settlementMode: rateTable.settlementMode,
         },
       });
+      const capturedAt = new Date();
       await tx.paymentSettlement.create({
         data: {
           paymentId: payment.id,
@@ -2063,9 +2065,9 @@ export class PaymentsV2Service {
           grossMinor: feeQuote.grossMinor,
           feeMinor: feeQuote.feeMinor,
           netMinor: feeQuote.netMinor,
-          capturedAt: new Date(),
+          capturedAt,
           availableAt: SettlementService.computeAvailableAt(
-            new Date(),
+            capturedAt,
             rateTable.payoutScheduleType,
             rateTable.payoutScheduleParam,
           ),

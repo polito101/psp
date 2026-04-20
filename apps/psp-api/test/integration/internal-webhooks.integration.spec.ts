@@ -113,6 +113,37 @@ describe('internal/webhooks integration', () => {
     expect(Array.isArray(response.body.items)).toBe(true);
   });
 
+  it('filters ops transactions by paymentId prefix (index-friendly)', async () => {
+    const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
+    const merchant = await createMerchantViaHttp(app);
+
+    const first = await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .send({ amountMinor: 100, currency: 'EUR' })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .send({ amountMinor: 200, currency: 'EUR' })
+      .expect(201);
+
+    const paymentId = first.body.payment.id as string;
+    const prefix = paymentId.slice(0, 8);
+
+    const response = await request(app.getHttpServer())
+      .get('/api/v2/payments/ops/transactions')
+      .set('X-Internal-Secret', internalSecret)
+      .query({ merchantId: merchant.id, paymentId: prefix, pageSize: 10, provider: 'mock' })
+      .expect(200);
+
+    const items = response.body.items as Array<{ id: string }>;
+    expect(items.length).toBeGreaterThanOrEqual(1);
+    expect(items.every((row) => row.id.startsWith(prefix))).toBe(true);
+    expect(items.some((row) => row.id === paymentId)).toBe(true);
+  });
+
   it('requeues failed webhook deliveries from internal endpoint', async () => {
     const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
     const merchant = await createMerchantViaHttp(app);

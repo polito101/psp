@@ -207,4 +207,13 @@ describe('validateEnv payments v2 merchant rate limit', () => {
       }),
     ).toThrow(/PAYMENTS_V2_MERCHANT_CAPTURE_WINDOW_SEC/);
   });
+
+  it('rechaza PAYMENTS_ALLOW_MOCK inválido citando el nombre de variable', () => {
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        PAYMENTS_ALLOW_MOCK: 'yes',
+      }),
+    ).toThrow(/PAYMENTS_ALLOW_MOCK must be "true" or "false"/);
+  });
 });
