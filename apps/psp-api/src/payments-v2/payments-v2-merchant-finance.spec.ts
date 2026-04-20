@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { PaymentsV2InternalController } from './payments-v2-internal.controller';
 import { PaymentsV2Service } from './payments-v2.service';
 
@@ -9,6 +10,7 @@ describe('PaymentsV2 merchant finance', () => {
   const prisma: Record<string, unknown> & {
     $transaction: jest.Mock;
     paymentFeeQuote: Record<string, jest.Mock>;
+    payment: Record<string, jest.Mock>;
     payout: Record<string, jest.Mock>;
   } = {
     $transaction: jest.fn(),
@@ -17,6 +19,9 @@ describe('PaymentsV2 merchant finance', () => {
       findMany: jest.fn(),
       count: jest.fn(),
       findFirst: jest.fn(),
+    },
+    payment: {
+      aggregate: jest.fn(),
     },
     payout: {
       findMany: jest.fn(),
@@ -107,6 +112,7 @@ describe('PaymentsV2 merchant finance', () => {
     prisma.paymentFeeQuote.aggregate.mockResolvedValue({
       _sum: { grossMinor: 12_000, feeMinor: 450, netMinor: 11_550 },
     });
+    prisma.payment.aggregate.mockResolvedValue({ _sum: { amountMinor: null } });
 
     const result = await service.getOpsMerchantFinanceSummary('merch_1', {
       currency: 'EUR',
@@ -127,11 +133,58 @@ describe('PaymentsV2 merchant finance', () => {
       },
       _sum: { grossMinor: true, feeMinor: true, netMinor: true },
     });
+    expect(prisma.payment.aggregate).toHaveBeenCalledWith({
+      where: {
+        merchantId: 'merch_1',
+        feeQuote: null,
+        status: { in: ['succeeded', 'refunded'] },
+        succeededAt: { not: null, gte: new Date('2026-04-01T00:00:00.000Z'), lte: new Date('2026-04-30T23:59:59.999Z') },
+        currency: 'EUR',
+        selectedProvider: 'stripe',
+      },
+      _sum: { amountMinor: true },
+    });
     expect(result.totals).toEqual({
       grossMinor: '12000',
       feeMinor: '450',
       netMinor: '11550',
     });
+  });
+
+  it('suma pagos huérfanos (sin fee quote) al gross y net del resumen', async () => {
+    const service = buildService();
+    prisma.paymentFeeQuote.aggregate.mockResolvedValue({
+      _sum: { grossMinor: 1000, feeMinor: 30, netMinor: 970 },
+    });
+    prisma.payment.aggregate.mockResolvedValue({ _sum: { amountMinor: 500 } });
+
+    const result = await service.getOpsMerchantFinanceSummary('merch_1', {
+      currency: 'EUR',
+    });
+
+    expect(result.totals).toEqual({
+      grossMinor: '1500',
+      feeMinor: '30',
+      netMinor: '1470',
+    });
+  });
+
+  it('rechaza createdFrom posterior a createdTo en summary, transacciones y payouts', async () => {
+    const service = buildService();
+    const q = {
+      currency: 'EUR',
+      createdFrom: '2026-04-30T00:00:00.000Z',
+      createdTo: '2026-04-01T00:00:00.000Z',
+    };
+
+    await expect(service.getOpsMerchantFinanceSummary('merch_1', q)).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.listOpsMerchantFinanceTransactions('merch_1', { ...q, page: 1, pageSize: 25 })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(service.listOpsMerchantFinancePayouts('merch_1', { ...q, page: 1, pageSize: 25 })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(prisma.paymentFeeQuote.aggregate).not.toHaveBeenCalled();
   });
 
   it('lists merchant finance transactions with gross/fee/net', async () => {

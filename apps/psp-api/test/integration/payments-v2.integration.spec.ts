@@ -294,6 +294,27 @@ describe('payments-v2 integration', () => {
       .expect(401);
   });
 
+  it('rechaza merchant finance cuando createdFrom es posterior a createdTo', async () => {
+    const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
+    const merchant = await createMerchantViaHttp(app);
+    const base = `/api/v2/payments/ops/merchants/${merchant.id}/finance`;
+    const badQuery =
+      'currency=EUR&createdFrom=2026-04-30T00:00:00.000Z&createdTo=2026-04-01T00:00:00.000Z';
+
+    await request(app.getHttpServer())
+      .get(`${base}/summary?${badQuery}`)
+      .set('X-Internal-Secret', internalSecret)
+      .expect(400);
+    await request(app.getHttpServer())
+      .get(`${base}/transactions?${badQuery}&pageSize=10`)
+      .set('X-Internal-Secret', internalSecret)
+      .expect(400);
+    await request(app.getHttpServer())
+      .get(`${base}/payouts?${badQuery}`)
+      .set('X-Internal-Secret', internalSecret)
+      .expect(400);
+  });
+
   it('expone resumen y transacciones financieras por merchant (interno)', async () => {
     const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
     const merchant = await createMerchantViaHttp(app);

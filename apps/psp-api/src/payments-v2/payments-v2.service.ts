@@ -664,20 +664,73 @@ export class PaymentsV2Service {
     };
   }
 
+  /** Rechaza rangos de fecha invertidos (misma semántica en summary, transacciones y payouts). */
+  private assertMerchantFinanceDateOrder(createdFrom?: string, createdTo?: string): void {
+    if (!createdFrom?.trim() || !createdTo?.trim()) {
+      return;
+    }
+    const from = new Date(createdFrom);
+    const to = new Date(createdTo);
+    if (Number.isNaN(from.valueOf()) || Number.isNaN(to.valueOf())) {
+      return;
+    }
+    if (from.getTime() > to.getTime()) {
+      throw new BadRequestException('createdFrom must be before or equal to createdTo');
+    }
+  }
+
+  /**
+   * Pagos liquidados (`succeeded` / `refunded`) sin fila `PaymentFeeQuote` (datos legacy o huecos de ingesta).
+   * Se suman al resumen como gross=net=`amountMinor`, fee=0, para no infraestimar ingresos en el panel.
+   */
+  private buildMerchantFinanceOrphanPaymentWhere(
+    merchantId: string,
+    query: Pick<OpsMerchantFinanceSummaryQueryDto, 'provider' | 'currency' | 'createdFrom' | 'createdTo'>,
+  ): Prisma.PaymentWhereInput {
+    const succeededAt: Prisma.DateTimeFilter = {};
+    if (query.createdFrom) {
+      succeededAt.gte = new Date(query.createdFrom);
+    }
+    if (query.createdTo) {
+      succeededAt.lte = new Date(query.createdTo);
+    }
+
+    return {
+      merchantId,
+      feeQuote: null,
+      status: { in: [PAYMENT_V2_STATUS.SUCCEEDED, PAYMENT_V2_STATUS.REFUNDED] },
+      succeededAt: { not: null, ...succeededAt },
+      ...(query.currency ? { currency: query.currency.toUpperCase() } : {}),
+      ...(query.provider ? { selectedProvider: query.provider } : {}),
+    };
+  }
+
   async getOpsMerchantFinanceSummary(merchantId: string, query: OpsMerchantFinanceSummaryQueryDto) {
+    this.assertMerchantFinanceDateOrder(query.createdFrom, query.createdTo);
     const where = this.buildOpsMerchantFinanceFeeQuoteWhere(merchantId, query);
-    const sums = await this.prisma.paymentFeeQuote.aggregate({
-      where,
-      _sum: { grossMinor: true, feeMinor: true, netMinor: true },
-    });
+    const [sums, orphanSums] = await Promise.all([
+      this.prisma.paymentFeeQuote.aggregate({
+        where,
+        _sum: { grossMinor: true, feeMinor: true, netMinor: true },
+      }),
+      this.prisma.payment.aggregate({
+        where: this.buildMerchantFinanceOrphanPaymentWhere(merchantId, query),
+        _sum: { amountMinor: true },
+      }),
+    ]);
+
+    const quoteGross = BigInt(sums._sum.grossMinor ?? 0);
+    const quoteFee = BigInt(sums._sum.feeMinor ?? 0);
+    const quoteNet = BigInt(sums._sum.netMinor ?? 0);
+    const orphanGross = BigInt(orphanSums._sum.amountMinor ?? 0);
 
     return {
       merchantId,
       currency: query.currency?.toUpperCase() ?? null,
       totals: {
-        grossMinor: BigInt(sums._sum.grossMinor ?? 0).toString(),
-        feeMinor: BigInt(sums._sum.feeMinor ?? 0).toString(),
-        netMinor: BigInt(sums._sum.netMinor ?? 0).toString(),
+        grossMinor: (quoteGross + orphanGross).toString(),
+        feeMinor: quoteFee.toString(),
+        netMinor: (quoteNet + orphanGross).toString(),
       },
     };
   }
@@ -688,6 +741,7 @@ export class PaymentsV2Service {
    * @param query.includeTotal - Por defecto `true`. Con `false` no se ejecuta `count()`; `page.total` y `page.totalPages` serán `null`.
    */
   async listOpsMerchantFinanceTransactions(merchantId: string, query: OpsMerchantFinanceTransactionsQueryDto) {
+    this.assertMerchantFinanceDateOrder(query.createdFrom, query.createdTo);
     const includeTotal = query.includeTotal !== false;
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 25;
@@ -885,6 +939,7 @@ export class PaymentsV2Service {
    * @param query.includeTotal - Por defecto `true`. Con `false` no se ejecuta `count()`; `page.total` y `page.totalPages` serán `null`.
    */
   async listOpsMerchantFinancePayouts(merchantId: string, query: OpsMerchantFinancePayoutsQueryDto) {
+    this.assertMerchantFinanceDateOrder(query.createdFrom, query.createdTo);
     const includeTotal = query.includeTotal !== false;
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 25;
