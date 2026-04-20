@@ -163,6 +163,8 @@ const STATUS_LABELS_ES: Record<TransactionStatus, string> = {
   requires_action: "Requiere acción",
   authorized: "Autorizado",
   succeeded: "Exitoso",
+  disputed: "Disputado",
+  dispute_lost: "Disputa perdida",
   failed: "Error",
   canceled: "Cancelado",
   refunded: "Reembolsado",
@@ -587,6 +589,13 @@ export function TransactionsDashboard() {
             >
               Ver detalle
             </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => {
+                router.push(`/merchants/${row.original.raw.merchantId}/finance`);
+              }}
+            >
+              Finanzas merchant
+            </DropdownMenuItem>
           </DropdownMenu>
         ),
         enableHiding: false,
@@ -633,6 +642,8 @@ export function TransactionsDashboard() {
       failed: cFailed,
       canceled: cCanceled,
       authorized: cAuthorized,
+      disputed: countsData !== undefined ? (countsData.byStatus.disputed ?? 0) : null,
+      dispute_lost: countsData !== undefined ? (countsData.byStatus.dispute_lost ?? 0) : null,
       pending: null,
       processing: null,
       requires_action: null,
@@ -640,7 +651,7 @@ export function TransactionsDashboard() {
     let pageMinor = 0;
     for (const r of pageRows) pageMinor += r.amountMinor;
     return { byApi, pageMinor, displayTotal };
-  }, [cSucceeded, cRefunded, cFailed, cCanceled, cAuthorized, pageRows, displayTotal]);
+  }, [cSucceeded, cRefunded, cFailed, cCanceled, cAuthorized, countsData, pageRows, displayTotal]);
 
   const pageSumMajors = analyzeStats.pageMinor / 100;
 

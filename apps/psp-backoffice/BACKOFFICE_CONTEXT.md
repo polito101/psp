@@ -30,10 +30,14 @@ src/
 │   ├── transactions/page.tsx         # `/transactions` listado ops
 │   ├── monitor/page.tsx              # `/monitor`
 │   ├── payments/[paymentId]/page.tsx # detalle pago
+│   ├── merchants/[merchantId]/finance/page.tsx # finanzas merchant (gross/fee/net, payouts)
 │   └── api/internal/                 # BFF (solo servidor)
 │       ├── transactions/route.ts
 │       ├── transactions/counts/route.ts
 │       ├── transactions/volume-hourly/route.ts
+│       ├── merchants/[merchantId]/finance/summary/route.ts
+│       ├── merchants/[merchantId]/finance/transactions/route.ts
+│       ├── merchants/[merchantId]/finance/payouts/route.ts
 │       ├── payments/[paymentId]/route.ts
 │       └── provider-health/route.ts
 ├── components/                       # UI por feature
@@ -59,11 +63,12 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 - **`/transactions`** — Dashboard de transacciones (lista ops, filtros, export CSV de pagina visible, conteos por estado, cursores).
 - **`/monitor`** — Vista compacta + health de proveedores.
 - **`/payments/[paymentId]`** — Detalle de pago (intentos acotados a los 200 más recientes si el historial crece; aviso en UI si `attemptsTruncated`), metadatos, enlaces operativos.
+- **`/merchants/[merchantId]/finance`** — Resumen gross/fee/net (EUR), tabla de fee quotes y payouts; enlaces desde transacciones y detalle de pago.
 
 ## 6) BFF y seguridad
 
 - El merchant **no** envía proveedor en `POST /api/v2/payments` (ruteo del PSP en API); los filtros por `provider` en este panel son solo operativos sobre datos ya persistidos. Los valores permitidos en BFF/UI siguen `OPS_PAYMENT_PROVIDERS` en `src/lib/api/payment-providers.ts` (debe mantenerse alineado con `PAYMENT_PROVIDER_NAMES` en `psp-api`).
-- Las rutas `app/api/internal/*` reenvian a endpoints internos de Nest (`/api/v2/payments/ops/...`, health, etc.) con `X-Internal-Secret` solo en servidor. El listado ops va a `.../ops/transactions`; los conteos agregados por estado del dashboard a `.../ops/transactions/counts` (`GET /api/internal/transactions/counts`); la serie de volumen horario a `.../ops/transactions/volume-hourly` (`GET /api/internal/transactions/volume-hourly`). La respuesta de `volume-hourly` expone acumulados y totales en **unidades menores como string** (mismo contrato que la API Nest); el panel las convierte a `bigint` para el gráfico y el formateo.
+- Las rutas `app/api/internal/*` reenvian a endpoints internos de Nest (`/api/v2/payments/ops/...`, health, etc.) con `X-Internal-Secret` solo en servidor. El listado ops va a `.../ops/transactions`; los conteos agregados por estado del dashboard a `.../ops/transactions/counts` (`GET /api/internal/transactions/counts`); la serie de volumen horario a `.../ops/transactions/volume-hourly` (`GET /api/internal/transactions/volume-hourly`). Finanzas por merchant (resumen gross/fee/net, filas por `PaymentFeeQuote`, payouts): `GET /api/internal/merchants/:merchantId/finance/summary|transactions|payouts` → `.../ops/merchants/:merchantId/finance/...`. La respuesta de `volume-hourly` expone acumulados y totales en **unidades menores como string** (mismo contrato que la API Nest); el panel las convierte a `bigint` para el gráfico y el formateo.
 - Detalle de pago: `GET /api/internal/payments/:paymentId` hace proxy a `.../ops/payments/:id`. Por defecto **no** se incluye `responsePayload` por intento (menos payload y menos metadata de proveedor en el navegador). Solo si la peticion al BFF lleva `?includePayload=true` se reenvia ese flag a la API (uso depuracion).
 - Cada request al BFF debe llevar auth explícita: header `Authorization: Bearer <BACKOFFICE_ADMIN_SECRET>` o cookie HttpOnly `backoffice_admin_token` (valor igual al secreto configurado). Sin eso: `401`/`403`. Si faltan secretos o `BACKOFFICE_ADMIN_SECRET` no puede usarse de forma segura (p. ej. igual que `PSP_INTERNAL_API_SECRET`), el BFF responde `500` (fail-closed) en cualquier entorno.
 - Errores del proxy hacia `psp-api`: el cliente recibe un mensaje genérico; el detalle del fallo se registra en el servidor, no en el JSON de respuesta.

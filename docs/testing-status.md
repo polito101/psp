@@ -28,7 +28,7 @@ La CI del monorepo incluye `api-ci` (lint/test/build API) y `backoffice-ci` (lin
 | `settlements` | Si | Si | No | Parcial | Unit `SettlementService` (ventanas T+N/WEEKLY, agrupación e idempotencia de payout) e integración `settlements.integration.spec.ts`. Falta cobertura de chargeback/refund post-payout y estados `SENT/FAILED` del payout. |
 | `health` | Si | Si | Si | Cubierto | Unit + integration `/health` + smoke readiness. |
 | `webhooks` | Si | Si | Si | Cubierto | Unit worker/outbox + integration retry interno + inbound Stripe firmado (firma/tolerancia/json/payload) + outbound a receptor real con worker + smoke backlog/métricas. |
-| `internal endpoints` | Si (guards) | Si | Si | Cubierto | `/api/v2/payments/ops/metrics`, `/api/v2/payments/ops/transactions` (cursor por `createdAt/id`; `includeTotal=false` sin COUNT), `/api/v2/payments/ops/transactions/counts` (`groupBy` status), `/api/v2/payments/ops/transactions/volume-hourly` (volumen succeeded acumulado por hora UTC hoy vs ayer según `succeeded_at`; payload con enteros minor como string), finanzas merchant `GET .../ops/merchants/:merchantId/finance/{summary,transactions,payouts}` (totales y filas en minor como string; cubierto en `payments-v2.integration.spec.ts`), guard `X-Internal-Secret`, hardening del script CI ante redirects/URL insegura y spec dedicada bloqueante en `api-ci`. |
+| `internal endpoints` | Si (guards) | Si | Si | Cubierto | `/api/v2/payments/ops/metrics`, `/api/v2/payments/ops/transactions` (cursor por `createdAt/id`; `includeTotal=false` sin COUNT), `/api/v2/payments/ops/transactions/counts` (`groupBy` status), `/api/v2/payments/ops/transactions/volume-hourly` (volumen succeeded acumulado por hora UTC hoy vs ayer según `succeeded_at`; payload con enteros minor como string), finanzas merchant `GET .../ops/merchants/:merchantId/finance/{summary,transactions,payouts}` (transacciones/payouts: cursor `createdAt/id`, `includeTotal=false` sin COUNT, rechazo `page>1`; totales y filas en minor como string; cubierto en `payments-v2.integration.spec.ts`), guard `X-Internal-Secret`, hardening del script CI ante redirects/URL insegura y spec dedicada bloqueante en `api-ci`. |
 
 ## Inventario actual de archivos
 
@@ -52,6 +52,7 @@ La CI del monorepo incluye `api-ci` (lint/test/build API) y `backoffice-ci` (lin
 
 - `src/lib/server/internal-route-auth.spec.ts`
 - `src/lib/server/backoffice-api.spec.ts`
+- `src/lib/server/merchant-finance-internal-routes.spec.ts`
 
 ### Unit relevantes API (`apps/psp-api/src`)
 

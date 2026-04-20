@@ -306,6 +306,8 @@ export function TransactionsMonitor() {
               <option value="requires_action">requires_action</option>
               <option value="authorized">authorized</option>
               <option value="succeeded">succeeded</option>
+              <option value="disputed">disputed</option>
+              <option value="dispute_lost">dispute_lost</option>
               <option value="failed">failed</option>
               <option value="canceled">canceled</option>
               <option value="refunded">refunded</option>

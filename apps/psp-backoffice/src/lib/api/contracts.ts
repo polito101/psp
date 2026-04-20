@@ -6,6 +6,8 @@ export type TransactionStatus =
   | "requires_action"
   | "authorized"
   | "succeeded"
+  | "disputed"
+  | "dispute_lost"
   | "failed"
   | "canceled"
   | "refunded";
@@ -155,4 +157,93 @@ export type OpsPaymentDetailResponse = {
   /** True si la lista `attempts` está acotada (solo los más recientes). */
   attemptsTruncated: boolean;
   attempts: OpsPaymentAttemptDetail[];
+};
+
+/** Respuesta de `GET .../ops/merchants/:merchantId/finance/summary` (montos en minor como string). */
+export type MerchantFinanceSummaryResponse = {
+  merchantId: string;
+  currency: string | null;
+  totals: {
+    grossMinor: string;
+    feeMinor: string;
+    netMinor: string;
+  };
+};
+
+export type MerchantFinanceTransactionItem = {
+  id: string;
+  paymentId: string;
+  merchantId: string;
+  provider: string;
+  selectedProvider: string | null;
+  status: string;
+  currency: string;
+  settlementMode: string;
+  grossMinor: string;
+  feeMinor: string;
+  netMinor: string;
+  createdAt: string;
+  paymentCreatedAt: string;
+};
+
+/** Respuesta de `GET .../ops/merchants/:merchantId/finance/transactions`. */
+export type MerchantFinanceTransactionsResponse = {
+  items: MerchantFinanceTransactionItem[];
+  page: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
+};
+
+export type MerchantFinancePayoutItem = {
+  id: string;
+  merchantId: string;
+  currency: string;
+  status: string;
+  windowStartAt: string;
+  windowEndAt: string;
+  grossMinor: string;
+  feeMinor: string;
+  netMinor: string;
+  createdAt: string;
+};
+
+/** Respuesta de `GET .../ops/merchants/:merchantId/finance/payouts`. */
+export type MerchantFinancePayoutsResponse = {
+  items: MerchantFinancePayoutItem[];
+  page: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
+};
+
+export type MerchantFinanceSummaryFilters = {
+  provider?: TransactionProvider;
+  currency?: string;
+  createdFrom?: string;
+  createdTo?: string;
+};
+
+export type MerchantFinanceTransactionsFilters = {
+  page?: number;
+  pageSize?: number;
+  status?: TransactionStatus;
+  provider?: TransactionProvider;
+  currency?: string;
+  paymentId?: string;
+  createdFrom?: string;
+  createdTo?: string;
+};
+
+export type MerchantFinancePayoutsFilters = {
+  page?: number;
+  pageSize?: number;
+  status?: "CREATED" | "SENT" | "FAILED";
+  currency?: string;
+  createdFrom?: string;
+  createdTo?: string;
 };
