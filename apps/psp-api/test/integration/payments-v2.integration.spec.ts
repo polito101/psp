@@ -2,16 +2,36 @@ import { randomUUID } from 'crypto';
 import request from 'supertest';
 import { INestApplication } from '@nestjs/common/interfaces';
 import { PrismaService } from '../../src/prisma/prisma.service';
+import { SettlementService } from '../../src/settlements/settlement.service';
 import { createIntegrationApp, createMerchantViaHttp, resetIntegrationDb } from './helpers/integration-app';
+
+/** `createPayout({ now })` exige `now >= available_at` del settlement (T+N conserva hora del capture). */
+async function payoutEligibleNow(
+  prisma: PrismaService,
+  merchantId: string,
+  currency: string,
+): Promise<Date> {
+  const settlement = await prisma.paymentSettlement.findFirst({
+    where: { merchantId, currency },
+    orderBy: { id: 'desc' },
+    select: { availableAt: true },
+  });
+  if (!settlement) {
+    throw new Error('Se esperaba un PaymentSettlement tras el capture');
+  }
+  return new Date(settlement.availableAt.getTime() + 60_000);
+}
 
 describe('payments-v2 integration', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let settlements: SettlementService;
 
   beforeAll(async () => {
     const setup = await createIntegrationApp();
     app = setup.app;
     prisma = setup.prisma;
+    settlements = app.get(SettlementService);
   });
 
   beforeEach(async () => {
@@ -265,5 +285,87 @@ describe('payments-v2 integration', () => {
       .set('X-API-Key', merchant.apiKey)
       .expect(200);
     expect(found.body.status).toBe('canceled');
+  });
+
+  it('rechaza merchant finance sin X-Internal-Secret', async () => {
+    const merchant = await createMerchantViaHttp(app);
+    await request(app.getHttpServer())
+      .get(`/api/v2/payments/ops/merchants/${merchant.id}/finance/summary?currency=EUR`)
+      .expect(401);
+  });
+
+  it('expone resumen y transacciones financieras por merchant (interno)', async () => {
+    const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
+    const merchant = await createMerchantViaHttp(app);
+    const created = await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .send({ amountMinor: 2_500, currency: 'EUR' })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/api/v2/payments/${created.body.payment.id}/capture`)
+      .set('X-API-Key', merchant.apiKey)
+      .expect(201);
+
+    const summary = await request(app.getHttpServer())
+      .get(`/api/v2/payments/ops/merchants/${merchant.id}/finance/summary?currency=EUR`)
+      .set('X-Internal-Secret', internalSecret)
+      .expect(200);
+
+    expect(summary.body.merchantId).toBe(merchant.id);
+    expect(summary.body.currency).toBe('EUR');
+    expect(typeof summary.body.totals.grossMinor).toBe('string');
+    expect(typeof summary.body.totals.feeMinor).toBe('string');
+    expect(typeof summary.body.totals.netMinor).toBe('string');
+    expect(BigInt(summary.body.totals.grossMinor)).toBeGreaterThan(0n);
+
+    const txs = await request(app.getHttpServer())
+      .get(`/api/v2/payments/ops/merchants/${merchant.id}/finance/transactions?currency=EUR&pageSize=10`)
+      .set('X-Internal-Secret', internalSecret)
+      .expect(200);
+
+    expect(Array.isArray(txs.body.items)).toBe(true);
+    expect(txs.body.items.length).toBeGreaterThanOrEqual(1);
+    const row = txs.body.items[0];
+    expect(typeof row.grossMinor).toBe('string');
+    expect(typeof row.feeMinor).toBe('string');
+    expect(typeof row.netMinor).toBe('string');
+    expect(row.paymentId).toBe(created.body.payment.id);
+    expect(txs.body.page.total).toBeGreaterThanOrEqual(1);
+  });
+
+  it('lista payouts por merchant tras createPayout (interno)', async () => {
+    const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
+    const merchant = await createMerchantViaHttp(app);
+    const created = await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .send({ amountMinor: 1_999, currency: 'EUR' })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post(`/api/v2/payments/${created.body.payment.id}/capture`)
+      .set('X-API-Key', merchant.apiKey)
+      .expect(201);
+
+    const now = await payoutEligibleNow(prisma, merchant.id, 'EUR');
+    const payout = await settlements.createPayout({ merchantId: merchant.id, currency: 'EUR', now });
+    expect(payout).not.toBeNull();
+
+    const res = await request(app.getHttpServer())
+      .get(`/api/v2/payments/ops/merchants/${merchant.id}/finance/payouts?currency=EUR`)
+      .set('X-Internal-Secret', internalSecret)
+      .expect(200);
+
+    expect(Array.isArray(res.body.items)).toBe(true);
+    expect(res.body.items.length).toBeGreaterThanOrEqual(1);
+    const item = res.body.items[0];
+    expect(typeof item.grossMinor).toBe('string');
+    expect(typeof item.feeMinor).toBe('string');
+    expect(typeof item.netMinor).toBe('string');
+    expect(item.merchantId).toBe(merchant.id);
+    expect(item.currency).toBe('EUR');
+    expect(res.body.page.total).toBeGreaterThanOrEqual(1);
   });
 });
