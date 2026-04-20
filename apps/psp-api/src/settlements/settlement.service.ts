@@ -33,6 +33,19 @@ const PAYOUT_MAX_SETTLEMENTS_PER_RUN = 1000;
 /** Batch defensivo para `createMany` / `updateMany` cuando hay muchos ids. */
 const PAYOUT_WRITE_BATCH_SIZE = 500;
 
+/** Límites de columnas Prisma/PostgreSQL `Int` (`integer` / int4). */
+const INT32_MIN = -2_147_483_648;
+const INT32_MAX = 2_147_483_647;
+
+function assertTotalFitsInt32(label: string, total: bigint): number {
+  if (total < INT32_MIN || total > INT32_MAX) {
+    throw new Error(
+      `createPayout: total ${label}=${total.toString()} is outside int32 range; expected a bug or schema mismatch after SQL prefix filter`,
+    );
+  }
+  return Number(total);
+}
+
 function chunkArray<T>(items: T[], chunkSize: number): T[][] {
   if (chunkSize <= 0) {
     throw new Error('chunkSize must be > 0');
@@ -189,6 +202,9 @@ export class SettlementService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      // Prefijo (orden `id`) de hasta PAYOUT_MAX_SETTLEMENTS_PER_RUN filas cuyos
+      // acumulados de gross/fee/net caben en int4; solo esas filas se bloquean.
+      // `SUM(...)::bigint` evita desbordes internos en la ventana sobre int4.
       const lockedRaw = await tx.$queryRaw<LockedAvailableSettlementRow[]>(Prisma.sql`
         SELECT
           ps.id,
@@ -198,17 +214,49 @@ export class SettlementService {
           ps.captured_at,
           ps.available_at
         FROM "PaymentSettlement" ps
-        WHERE
-          ps.merchant_id = ${params.merchantId}
-          AND ps.currency = ${params.currency}
-          AND ps.status = 'AVAILABLE'::"SettlementStatus"
-          AND ps.payout_id IS NULL
-          AND NOT EXISTS (
-            SELECT 1 FROM "PayoutItem" pi WHERE pi.payment_settlement_id = ps.id
+        INNER JOIN (
+          WITH pool AS (
+            SELECT
+              p.id,
+              p.gross_minor,
+              p.fee_minor,
+              p.net_minor,
+              p.captured_at,
+              p.available_at
+            FROM "PaymentSettlement" p
+            WHERE
+              p.merchant_id = ${params.merchantId}
+              AND p.currency = ${params.currency}
+              AND p.status = 'AVAILABLE'::"SettlementStatus"
+              AND p.payout_id IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM "PayoutItem" pi WHERE pi.payment_settlement_id = p.id
+              )
+            ORDER BY p.id
+            LIMIT ${PAYOUT_MAX_SETTLEMENTS_PER_RUN}
+          ),
+          ranked AS (
+            SELECT
+              pool.id,
+              pool.gross_minor,
+              pool.fee_minor,
+              pool.net_minor,
+              pool.captured_at,
+              pool.available_at,
+              SUM(pool.gross_minor::bigint) OVER (ORDER BY pool.id) AS cum_gross,
+              SUM(pool.fee_minor::bigint) OVER (ORDER BY pool.id) AS cum_fee,
+              SUM(pool.net_minor::bigint) OVER (ORDER BY pool.id) AS cum_net
+            FROM pool
           )
+          SELECT ranked.id
+          FROM ranked
+          WHERE
+            ranked.cum_gross BETWEEN ${INT32_MIN}::bigint AND ${INT32_MAX}::bigint
+            AND ranked.cum_fee BETWEEN ${INT32_MIN}::bigint AND ${INT32_MAX}::bigint
+            AND ranked.cum_net BETWEEN ${INT32_MIN}::bigint AND ${INT32_MAX}::bigint
+        ) AS pick ON ps.id = pick.id
         ORDER BY ps.id
         FOR UPDATE OF ps SKIP LOCKED
-        LIMIT ${PAYOUT_MAX_SETTLEMENTS_PER_RUN}
       `);
 
       if (lockedRaw.length === 0) {
@@ -224,9 +272,9 @@ export class SettlementService {
         availableAt: Date;
       }> = [];
 
-      let grossMinor = 0;
-      let feeMinor = 0;
-      let netMinor = 0;
+      let grossAcc = 0n;
+      let feeAcc = 0n;
+      let netAcc = 0n;
       let minCapturedAtMs = Number.POSITIVE_INFINITY;
       let maxAvailableAtMs = 0;
 
@@ -239,12 +287,16 @@ export class SettlementService {
           capturedAt: row.captured_at,
           availableAt: row.available_at,
         });
-        grossMinor += row.gross_minor;
-        feeMinor += row.fee_minor;
-        netMinor += row.net_minor;
+        grossAcc += BigInt(row.gross_minor);
+        feeAcc += BigInt(row.fee_minor);
+        netAcc += BigInt(row.net_minor);
         minCapturedAtMs = Math.min(minCapturedAtMs, row.captured_at.getTime());
         maxAvailableAtMs = Math.max(maxAvailableAtMs, row.available_at.getTime());
       }
+
+      const grossMinor = assertTotalFitsInt32('grossMinor', grossAcc);
+      const feeMinor = assertTotalFitsInt32('feeMinor', feeAcc);
+      const netMinor = assertTotalFitsInt32('netMinor', netAcc);
 
       const windowStartAt = new Date(minCapturedAtMs);
       const windowEndAt = new Date(maxAvailableAtMs);
