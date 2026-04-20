@@ -96,7 +96,11 @@ export function validateEnv(input: EnvInput): EnvInput {
   }
   env.PORT = String(port);
 
-  const swaggerEnabled = parseBoolean(getString(env.ENABLE_SWAGGER), nodeEnv !== 'production');
+  const swaggerEnabled = parseBoolean(
+    getString(env.ENABLE_SWAGGER),
+    nodeEnv !== 'production',
+    'ENABLE_SWAGGER',
+  );
   env.ENABLE_SWAGGER = String(swaggerEnabled);
 
   const corsAllowedOrigins = getString(env.CORS_ALLOWED_ORIGINS) ?? '';
@@ -118,8 +122,12 @@ export function validateEnv(input: EnvInput): EnvInput {
   env.HTTP_LOG_SKIP_PATH_PREFIXES = httpLogSkipPrefixes;
 
   env.PAYMENTS_V2_ENABLED_MERCHANTS = getString(env.PAYMENTS_V2_ENABLED_MERCHANTS) ?? '';
-  env.PAYMENTS_ALLOW_MOCK = String(parseBoolean(getString(env.PAYMENTS_ALLOW_MOCK), false));
-  env.PAYMENTS_ACME_ENABLED = String(parseBoolean(getString(env.PAYMENTS_ACME_ENABLED), false));
+  env.PAYMENTS_ALLOW_MOCK = String(
+    parseBoolean(getString(env.PAYMENTS_ALLOW_MOCK), false, 'PAYMENTS_ALLOW_MOCK'),
+  );
+  env.PAYMENTS_ACME_ENABLED = String(
+    parseBoolean(getString(env.PAYMENTS_ACME_ENABLED), false, 'PAYMENTS_ACME_ENABLED'),
+  );
   const defaultProviderOrder = nodeEnv === 'production' ? 'stripe' : 'stripe,mock';
   const providerOrder = parsePaymentsProviderOrder(
     getString(env.PAYMENTS_PROVIDER_ORDER) ?? defaultProviderOrder,
@@ -210,7 +218,11 @@ export function validateEnv(input: EnvInput): EnvInput {
     ),
   );
 
-  const merchantRlEnabled = parseBoolean(getString(env.PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED), false);
+  const merchantRlEnabled = parseBoolean(
+    getString(env.PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED),
+    false,
+    'PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED',
+  );
   env.PAYMENTS_V2_MERCHANT_RATE_LIMIT_ENABLED = String(merchantRlEnabled);
   if (merchantRlEnabled) {
     env.PAYMENTS_V2_MERCHANT_CREATE_LIMIT = String(
@@ -389,11 +401,11 @@ function getString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
+function parseBoolean(value: string | undefined, defaultValue: boolean, envName: string): boolean {
   if (value === undefined) return defaultValue;
   if (value === 'true') return true;
   if (value === 'false') return false;
-  throw new Error('ENABLE_SWAGGER must be "true" or "false"');
+  throw new Error(`${envName} must be "true" or "false"`);
 }
 
 type HttpLogMode = 'off' | 'all' | 'errors' | 'sample';

@@ -4,6 +4,23 @@ import { PrismaService } from '../../src/prisma/prisma.service';
 import { SettlementService } from '../../src/settlements/settlement.service';
 import { createIntegrationApp, createMerchantViaHttp, resetIntegrationDb } from './helpers/integration-app';
 
+/** `createPayout({ now })` exige `now >= available_at` del settlement (T+N conserva hora del capture). */
+async function payoutEligibleNow(
+  prisma: PrismaService,
+  merchantId: string,
+  currency: string,
+): Promise<Date> {
+  const settlement = await prisma.paymentSettlement.findFirst({
+    where: { merchantId, currency },
+    orderBy: { id: 'desc' },
+    select: { availableAt: true },
+  });
+  if (!settlement) {
+    throw new Error('Se esperaba un PaymentSettlement tras el capture');
+  }
+  return new Date(settlement.availableAt.getTime() + 60_000);
+}
+
 describe('settlements integration', () => {
   let app: INestApplication;
   let prisma: PrismaService;
@@ -38,15 +55,16 @@ describe('settlements integration', () => {
       .set('X-API-Key', merchant.apiKey)
       .expect(201);
 
+    const now = await payoutEligibleNow(prisma, merchant.id, 'EUR');
     const first = await settlements.createPayout({
       merchantId: merchant.id,
       currency: 'EUR',
-      now: new Date('2026-04-20T00:00:00.000Z'),
+      now,
     });
     const second = await settlements.createPayout({
       merchantId: merchant.id,
       currency: 'EUR',
-      now: new Date('2026-04-20T00:00:00.000Z'),
+      now,
     });
 
     expect(first).not.toBeNull();
@@ -67,7 +85,7 @@ describe('settlements integration', () => {
       .set('X-API-Key', merchant.apiKey)
       .expect(201);
 
-    const now = new Date('2026-04-20T00:00:00.000Z');
+    const now = await payoutEligibleNow(prisma, merchant.id, 'EUR');
     const params = { merchantId: merchant.id, currency: 'EUR', now };
     const [a, b] = await Promise.all([settlements.createPayout(params), settlements.createPayout(params)]);
 

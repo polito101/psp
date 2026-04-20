@@ -144,21 +144,18 @@ export class SettlementService {
 
   async createPayout(params: { merchantId: string; currency: string; now?: Date }) {
     const now = params.now ?? new Date();
-    return this.prisma.$transaction(async (tx) => {
-      for (;;) {
-        const n = await this.releasePendingToAvailableBatch(
-          tx,
-          { merchantId: params.merchantId, currency: params.currency },
-          now,
-        );
-        if (n === 0) {
-          break;
-        }
-        if (n < RELEASE_PENDING_BATCH_SIZE) {
-          break;
-        }
-      }
 
+    // Una sola tanda PENDING→AVAILABLE por invocación, en su propia transacción corta.
+    // El backlog se drena con llamadas sucesivas o con `releasePendingToAvailable()`.
+    await this.prisma.$transaction((tx) =>
+      this.releasePendingToAvailableBatch(
+        tx,
+        { merchantId: params.merchantId, currency: params.currency },
+        now,
+      ),
+    );
+
+    return this.prisma.$transaction(async (tx) => {
       const lockedRaw = await tx.$queryRaw<LockedAvailableSettlementRow[]>(Prisma.sql`
         SELECT
           ps.id,
