@@ -56,10 +56,6 @@ export function enforceInternalRouteAuth(request: NextRequest): NextResponse | n
   try {
     adminSecret = getAdminSecret();
   } catch {
-    if (process.env.NODE_ENV !== "production") {
-      return null;
-    }
-
     return NextResponse.json({ message: "Backoffice auth is misconfigured" }, { status: 500 });
   }
 

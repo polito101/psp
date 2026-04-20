@@ -1,4 +1,10 @@
 import type {
+  MerchantFinancePayoutsFilters,
+  MerchantFinancePayoutsResponse,
+  MerchantFinanceSummaryFilters,
+  MerchantFinanceSummaryResponse,
+  MerchantFinanceTransactionsFilters,
+  MerchantFinanceTransactionsResponse,
   OpsPaymentDetailResponse,
   OpsTransactionCountsFilters,
   OpsTransactionCountsResponse,
@@ -105,4 +111,86 @@ export async function fetchProviderHealth(): Promise<ProviderHealthResponse> {
     cache: "no-store",
   });
   return parseResponse<ProviderHealthResponse>(response);
+}
+
+function merchantFinanceSummaryParams(filters: MerchantFinanceSummaryFilters): URLSearchParams {
+  const params = new URLSearchParams();
+  if (filters.provider) params.set("provider", filters.provider);
+  if (filters.currency) params.set("currency", filters.currency.toUpperCase());
+  if (filters.createdFrom) params.set("createdFrom", filters.createdFrom);
+  if (filters.createdTo) params.set("createdTo", filters.createdTo);
+  return params;
+}
+
+export async function fetchMerchantFinanceSummary(
+  merchantId: string,
+  filters: MerchantFinanceSummaryFilters = {},
+): Promise<MerchantFinanceSummaryResponse> {
+  const qs = merchantFinanceSummaryParams(filters).toString();
+  const encoded = encodeURIComponent(merchantId);
+  const response = await fetch(
+    `/api/internal/merchants/${encoded}/finance/summary${qs ? `?${qs}` : ""}`,
+    { method: "GET", cache: "no-store" },
+  );
+  return parseResponse<MerchantFinanceSummaryResponse>(response);
+}
+
+function merchantFinanceTransactionsParams(filters: MerchantFinanceTransactionsFilters): URLSearchParams {
+  const params = new URLSearchParams();
+  if (filters.page != null) params.set("page", String(filters.page));
+  if (filters.pageSize != null) params.set("pageSize", String(filters.pageSize));
+  if (filters.direction) params.set("direction", filters.direction);
+  if (filters.cursorCreatedAt) params.set("cursorCreatedAt", filters.cursorCreatedAt);
+  if (filters.cursorId) params.set("cursorId", filters.cursorId);
+  if (filters.status) params.set("status", filters.status);
+  if (filters.provider) params.set("provider", filters.provider);
+  if (filters.currency) params.set("currency", filters.currency.toUpperCase());
+  if (filters.paymentId) params.set("paymentId", filters.paymentId);
+  if (filters.createdFrom) params.set("createdFrom", filters.createdFrom);
+  if (filters.createdTo) params.set("createdTo", filters.createdTo);
+  if (filters.includeTotal === false) params.set("includeTotal", "false");
+  if (filters.includeTotal === true) params.set("includeTotal", "true");
+  return params;
+}
+
+export async function fetchMerchantFinanceTransactions(
+  merchantId: string,
+  filters: MerchantFinanceTransactionsFilters = {},
+): Promise<MerchantFinanceTransactionsResponse> {
+  const qs = merchantFinanceTransactionsParams(filters).toString();
+  const encoded = encodeURIComponent(merchantId);
+  const response = await fetch(
+    `/api/internal/merchants/${encoded}/finance/transactions${qs ? `?${qs}` : ""}`,
+    { method: "GET", cache: "no-store" },
+  );
+  return parseResponse<MerchantFinanceTransactionsResponse>(response);
+}
+
+function merchantFinancePayoutsParams(filters: MerchantFinancePayoutsFilters): URLSearchParams {
+  const params = new URLSearchParams();
+  if (filters.page != null) params.set("page", String(filters.page));
+  if (filters.pageSize != null) params.set("pageSize", String(filters.pageSize));
+  if (filters.direction) params.set("direction", filters.direction);
+  if (filters.cursorCreatedAt) params.set("cursorCreatedAt", filters.cursorCreatedAt);
+  if (filters.cursorId) params.set("cursorId", filters.cursorId);
+  if (filters.status) params.set("status", filters.status);
+  if (filters.currency) params.set("currency", filters.currency.toUpperCase());
+  if (filters.createdFrom) params.set("createdFrom", filters.createdFrom);
+  if (filters.createdTo) params.set("createdTo", filters.createdTo);
+  if (filters.includeTotal === false) params.set("includeTotal", "false");
+  if (filters.includeTotal === true) params.set("includeTotal", "true");
+  return params;
+}
+
+export async function fetchMerchantFinancePayouts(
+  merchantId: string,
+  filters: MerchantFinancePayoutsFilters = {},
+): Promise<MerchantFinancePayoutsResponse> {
+  const qs = merchantFinancePayoutsParams(filters).toString();
+  const encoded = encodeURIComponent(merchantId);
+  const response = await fetch(
+    `/api/internal/merchants/${encoded}/finance/payouts${qs ? `?${qs}` : ""}`,
+    { method: "GET", cache: "no-store" },
+  );
+  return parseResponse<MerchantFinancePayoutsResponse>(response);
 }

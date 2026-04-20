@@ -8,6 +8,8 @@ const LABELS: Record<TransactionStatus, string> = {
   requires_action: "Requiere acción",
   authorized: "Autorizado",
   succeeded: "Exitoso",
+  disputed: "Disputado",
+  dispute_lost: "Disputa perdida",
   failed: "Error",
   canceled: "Cancelado",
   refunded: "Reembolsado",
@@ -22,6 +24,8 @@ const STATUS_STYLE: Record<TransactionStatus, StyleKey> = {
   requires_action: "gray",
   authorized: "gray",
   succeeded: "green",
+  disputed: "gray",
+  dispute_lost: "rose",
   failed: "rose",
   canceled: "rose",
 };

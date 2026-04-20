@@ -113,7 +113,7 @@ describe('internal/webhooks integration', () => {
     expect(Array.isArray(response.body.items)).toBe(true);
   });
 
-  it('filters ops transactions by paymentId prefix (index-friendly)', async () => {
+  it('filters ops transactions by paymentId substring on internal id', async () => {
     const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
     const merchant = await createMerchantViaHttp(app);
 
@@ -140,7 +140,7 @@ describe('internal/webhooks integration', () => {
 
     const items = response.body.items as Array<{ id: string }>;
     expect(items.length).toBeGreaterThanOrEqual(1);
-    expect(items.every((row) => row.id.startsWith(prefix))).toBe(true);
+    expect(items.every((row) => row.id.toLowerCase().includes(prefix.toLowerCase()))).toBe(true);
     expect(items.some((row) => row.id === paymentId)).toBe(true);
   });
 

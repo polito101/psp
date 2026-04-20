@@ -23,6 +23,42 @@ type LockedAvailableSettlementRow = {
 
 /** Filas reclamadas por tanda; evita UPDATE sin límite y arrays enormes en memoria. */
 const RELEASE_PENDING_BATCH_SIZE = 500;
+/** Tope defensivo por invocación para evitar monopolizar el proceso bajo backlog continuo. */
+const RELEASE_PENDING_MAX_BATCHES_PER_PAYOUT = 100;
+/**
+ * Tope de settlements por payout (por invocación de `createPayout`).
+ * Protege de OOM y de transacciones enormes bajo backlog grande.
+ */
+const PAYOUT_MAX_SETTLEMENTS_PER_RUN = 1000;
+/** Batch defensivo para `createMany` / `updateMany` cuando hay muchos ids. */
+const PAYOUT_WRITE_BATCH_SIZE = 500;
+
+/** Límites de columnas Prisma/PostgreSQL `Int` (`integer` / int4). */
+const INT32_MIN = -2_147_483_648;
+const INT32_MAX = 2_147_483_647;
+
+function assertTotalFitsInt32(label: string, total: bigint): number {
+  if (total < INT32_MIN || total > INT32_MAX) {
+    throw new Error(
+      `createPayout: total ${label}=${total.toString()} is outside int32 range; expected a bug or schema mismatch after SQL prefix filter`,
+    );
+  }
+  return Number(total);
+}
+
+function chunkArray<T>(items: T[], chunkSize: number): T[][] {
+  if (chunkSize <= 0) {
+    throw new Error('chunkSize must be > 0');
+  }
+  if (items.length === 0) {
+    return [];
+  }
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    out.push(items.slice(i, i + chunkSize));
+  }
+  return out;
+}
 
 function isPrismaUniqueViolation(e: unknown): boolean {
   return (
@@ -145,17 +181,30 @@ export class SettlementService {
   async createPayout(params: { merchantId: string; currency: string; now?: Date }) {
     const now = params.now ?? new Date();
 
-    // Una sola tanda PENDING→AVAILABLE por invocación, en su propia transacción corta.
-    // El backlog se drena con llamadas sucesivas o con `releasePendingToAvailable()`.
-    await this.prisma.$transaction((tx) =>
-      this.releasePendingToAvailableBatch(
-        tx,
-        { merchantId: params.merchantId, currency: params.currency },
-        now,
-      ),
-    );
+    // Drena backlog elegible por tandas, cada una en su transacción corta.
+    let drainedBatches = 0;
+    for (;;) {
+      const n = await this.prisma.$transaction((tx) =>
+        this.releasePendingToAvailableBatch(
+          tx,
+          { merchantId: params.merchantId, currency: params.currency },
+          now,
+        ),
+      );
+      drainedBatches += 1;
+
+      if (n === 0 || n < RELEASE_PENDING_BATCH_SIZE) {
+        break;
+      }
+      if (drainedBatches >= RELEASE_PENDING_MAX_BATCHES_PER_PAYOUT) {
+        break;
+      }
+    }
 
     return this.prisma.$transaction(async (tx) => {
+      // Prefijo (orden `id`) de hasta PAYOUT_MAX_SETTLEMENTS_PER_RUN filas cuyos
+      // acumulados de gross/fee/net caben en int4; solo esas filas se bloquean.
+      // `SUM(...)::bigint` evita desbordes internos en la ventana sobre int4.
       const lockedRaw = await tx.$queryRaw<LockedAvailableSettlementRow[]>(Prisma.sql`
         SELECT
           ps.id,
@@ -165,14 +214,48 @@ export class SettlementService {
           ps.captured_at,
           ps.available_at
         FROM "PaymentSettlement" ps
-        WHERE
-          ps.merchant_id = ${params.merchantId}
-          AND ps.currency = ${params.currency}
-          AND ps.status = 'AVAILABLE'::"SettlementStatus"
-          AND ps.payout_id IS NULL
-          AND NOT EXISTS (
-            SELECT 1 FROM "PayoutItem" pi WHERE pi.payment_settlement_id = ps.id
+        INNER JOIN (
+          WITH pool AS (
+            SELECT
+              p.id,
+              p.gross_minor,
+              p.fee_minor,
+              p.net_minor,
+              p.captured_at,
+              p.available_at
+            FROM "PaymentSettlement" p
+            WHERE
+              p.merchant_id = ${params.merchantId}
+              AND p.currency = ${params.currency}
+              AND p.status = 'AVAILABLE'::"SettlementStatus"
+              AND p.payout_id IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM "PayoutItem" pi WHERE pi.payment_settlement_id = p.id
+              )
+            ORDER BY p.id
+            LIMIT ${PAYOUT_MAX_SETTLEMENTS_PER_RUN}
+          ),
+          ranked AS (
+            SELECT
+              pool.id,
+              pool.gross_minor,
+              pool.fee_minor,
+              pool.net_minor,
+              pool.captured_at,
+              pool.available_at,
+              SUM(pool.gross_minor::bigint) OVER (ORDER BY pool.id) AS cum_gross,
+              SUM(pool.fee_minor::bigint) OVER (ORDER BY pool.id) AS cum_fee,
+              SUM(pool.net_minor::bigint) OVER (ORDER BY pool.id) AS cum_net
+            FROM pool
           )
+          SELECT ranked.id
+          FROM ranked
+          WHERE
+            ranked.cum_gross BETWEEN ${INT32_MIN}::bigint AND ${INT32_MAX}::bigint
+            AND ranked.cum_fee BETWEEN ${INT32_MIN}::bigint AND ${INT32_MAX}::bigint
+            AND ranked.cum_net BETWEEN ${INT32_MIN}::bigint AND ${INT32_MAX}::bigint
+        ) AS pick ON ps.id = pick.id
+        ORDER BY ps.id
         FOR UPDATE OF ps SKIP LOCKED
       `);
 
@@ -180,20 +263,43 @@ export class SettlementService {
         return null;
       }
 
-      const rows = lockedRaw.map((row) => ({
-        id: row.id,
-        grossMinor: row.gross_minor,
-        feeMinor: row.fee_minor,
-        netMinor: row.net_minor,
-        capturedAt: row.captured_at,
-        availableAt: row.available_at,
-      }));
+      const rows: Array<{
+        id: string;
+        grossMinor: number;
+        feeMinor: number;
+        netMinor: number;
+        capturedAt: Date;
+        availableAt: Date;
+      }> = [];
 
-      const grossMinor = rows.reduce((acc, row) => acc + row.grossMinor, 0);
-      const feeMinor = rows.reduce((acc, row) => acc + row.feeMinor, 0);
-      const netMinor = rows.reduce((acc, row) => acc + row.netMinor, 0);
-      const windowStartAt = new Date(Math.min(...rows.map((row) => row.capturedAt.getTime())));
-      const windowEndAt = new Date(Math.max(...rows.map((row) => row.availableAt.getTime())));
+      let grossAcc = 0n;
+      let feeAcc = 0n;
+      let netAcc = 0n;
+      let minCapturedAtMs = Number.POSITIVE_INFINITY;
+      let maxAvailableAtMs = 0;
+
+      for (const row of lockedRaw) {
+        rows.push({
+          id: row.id,
+          grossMinor: row.gross_minor,
+          feeMinor: row.fee_minor,
+          netMinor: row.net_minor,
+          capturedAt: row.captured_at,
+          availableAt: row.available_at,
+        });
+        grossAcc += BigInt(row.gross_minor);
+        feeAcc += BigInt(row.fee_minor);
+        netAcc += BigInt(row.net_minor);
+        minCapturedAtMs = Math.min(minCapturedAtMs, row.captured_at.getTime());
+        maxAvailableAtMs = Math.max(maxAvailableAtMs, row.available_at.getTime());
+      }
+
+      const grossMinor = assertTotalFitsInt32('grossMinor', grossAcc);
+      const feeMinor = assertTotalFitsInt32('feeMinor', feeAcc);
+      const netMinor = assertTotalFitsInt32('netMinor', netAcc);
+
+      const windowStartAt = new Date(minCapturedAtMs);
+      const windowEndAt = new Date(maxAvailableAtMs);
 
       const payout = await tx.payout.create({
         data: {
@@ -210,15 +316,17 @@ export class SettlementService {
       });
 
       try {
-        await tx.payoutItem.createMany({
-          data: rows.map((row) => ({
-            payoutId: payout.id,
-            paymentSettlementId: row.id,
-            grossMinor: row.grossMinor,
-            feeMinor: row.feeMinor,
-            netMinor: row.netMinor,
-          })),
-        });
+        for (const batch of chunkArray(rows, PAYOUT_WRITE_BATCH_SIZE)) {
+          await tx.payoutItem.createMany({
+            data: batch.map((row) => ({
+              payoutId: payout.id,
+              paymentSettlementId: row.id,
+              grossMinor: row.grossMinor,
+              feeMinor: row.feeMinor,
+              netMinor: row.netMinor,
+            })),
+          });
+        }
       } catch (e) {
         if (isPrismaUniqueViolation(e)) {
           await tx.payout.delete({ where: { id: payout.id } });
@@ -227,14 +335,19 @@ export class SettlementService {
         throw e;
       }
 
-      await tx.paymentSettlement.updateMany({
-        where: { id: { in: rows.map((row) => row.id) } },
-        data: {
-          status: SettlementStatus.PAID,
-          payoutId: payout.id,
-          paidAt: now,
-        },
-      });
+      for (const batch of chunkArray(
+        rows.map((row) => row.id),
+        PAYOUT_WRITE_BATCH_SIZE,
+      )) {
+        await tx.paymentSettlement.updateMany({
+          where: { id: { in: batch } },
+          data: {
+            status: SettlementStatus.PAID,
+            payoutId: payout.id,
+            paidAt: now,
+          },
+        });
+      }
 
       await tx.ledgerLine.createMany({
         data: [

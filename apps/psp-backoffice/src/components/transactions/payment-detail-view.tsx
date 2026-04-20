@@ -208,6 +208,14 @@ export function PaymentDetailView({ paymentId }: Props) {
               </Link>
             </div>
             <div>
+              <Link
+                href={`/merchants/${encodeURIComponent(d.merchantId)}/finance`}
+                className="text-sm font-medium text-[var(--primary)] hover:underline"
+              >
+                Finanzas del merchant
+              </Link>
+            </div>
+            <div>
               <dt className="text-xs font-medium text-slate-500">Última actualización</dt>
               <dd className="mt-1 text-slate-800">{formatShortDateTime(d.updatedAt)}</dd>
             </div>

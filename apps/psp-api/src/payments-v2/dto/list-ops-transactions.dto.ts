@@ -57,6 +57,9 @@ export class ListOpsTransactionsDto {
   @MaxLength(64)
   merchantId?: string;
 
+  /**
+   * Coincidencia por subcadena (case-insensitive) sobre el id interno del pago (`Payment.id`), no sobre el id público tipo `pay_*`.
+   */
   @IsOptional()
   @IsString()
   @MaxLength(64)

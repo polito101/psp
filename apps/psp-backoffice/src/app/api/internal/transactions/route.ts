@@ -19,6 +19,8 @@ const querySchema = z.object({
       "requires_action",
       "authorized",
       "succeeded",
+      "disputed",
+      "dispute_lost",
       "failed",
       "canceled",
       "refunded",

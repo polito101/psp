@@ -180,6 +180,7 @@ model MerchantRateTable {
 
 model PaymentFeeQuote {
   id             String         @id @default(cuid())
+  /// FK a `Payment.id` (1:1). En listados ops se filtra por prefijo (`startsWith`) sobre esta columna, no con `contains`/`ilike` sobre `Payment`.
   paymentId      String         @unique @map("payment_id")
   merchantId     String         @map("merchant_id")
   rateTableId    String         @map("rate_table_id")
