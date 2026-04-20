@@ -59,8 +59,8 @@ export default function LoginPage() {
         El servidor emite una cookie HttpOnly con un JWT de sesión. Modo <strong>admin</strong>: usa{" "}
         <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">BACKOFFICE_ADMIN_SECRET</code>. Modo{" "}
         <strong>merchant</strong>: introduce tu <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">merchantId</code>{" "}
-        y el token HMAC (hex) derivado con{" "}
-        <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">BACKOFFICE_MERCHANT_PORTAL_SECRET</code> (ver README).
+        y un token <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">expUnix:hexHmac</code> (HMAC de{" "}
+        <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">merchantId.exp</code>, válido unos minutos; ver README).
       </p>
       <form className="mt-6 space-y-4" onSubmit={onSubmit}>
         <fieldset className="space-y-2">
@@ -124,7 +124,7 @@ export default function LoginPage() {
             </div>
             <div>
               <label htmlFor="merchantToken" className="block text-sm font-medium text-slate-700">
-                Token merchant (HMAC-SHA256 hex)
+                Token merchant (expUnix:hexHmac)
               </label>
               <input
                 id="merchantToken"

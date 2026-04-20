@@ -203,6 +203,7 @@ describe('payments v2 integration: concurrencia + webhooks + métricas + fallbac
       const before = await requestJson<MetricsSnapshot>(baseUrl, 'GET', '/api/v2/payments/ops/metrics', {
         headers: {
           'X-Internal-Secret': internalSecret,
+          'X-Backoffice-Role': 'admin',
         },
       });
 
@@ -230,7 +231,7 @@ describe('payments v2 integration: concurrencia + webhooks + métricas + fallbac
       const after = await waitFor(
         () =>
           requestJson<MetricsSnapshot>(baseUrl, 'GET', '/api/v2/payments/ops/metrics', {
-            headers: { 'X-Internal-Secret': internalSecret },
+            headers: { 'X-Internal-Secret': internalSecret, 'X-Backoffice-Role': 'admin' },
           }),
         (snapshot) => {
           if (!snapshot.webhooks.workerEnabled) {

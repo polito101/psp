@@ -108,7 +108,7 @@ Invoke-RestMethod -Method Get "http://localhost:3000/api/v1/balance" `
 - `POST /api/v2/payments/{id}/capture`
 - `POST /api/v2/payments/{id}/cancel`
 - `POST /api/v2/payments/{id}/refund`
-- `GET /api/v2/payments/ops/metrics` (interno, requiere `X-Internal-Secret`; incluye payments/circuit breakers/webhooks)
+- `GET /api/v2/payments/ops/metrics` (interno, requiere `X-Internal-Secret` y `X-Backoffice-Role: admin|merchant`; incluye payments/circuit breakers/webhooks)
 - `POST /api/v1/stripe/webhook` (inbound Stripe, valida `Stripe-Signature`)
 
 ## Idempotencia (v2)

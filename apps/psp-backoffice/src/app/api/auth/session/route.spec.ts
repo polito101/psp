@@ -33,15 +33,42 @@ describe("POST /api/auth/session", () => {
     expect(raw.toLowerCase()).toContain("httponly");
   });
 
-  it("creates merchant session with merchantId in JWT", async () => {
-    const mid = "mrc_test";
-    const token = createHmac("sha256", process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET!)
-      .update(mid, "utf8")
-      .digest("hex");
+  it("rejects admin token longer than MAX_ADMIN_SESSION_TOKEN_CHARS", async () => {
     const req = new NextRequest("http://localhost:3005/api/auth/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "merchant", merchantId: mid, merchantToken: token }),
+      body: JSON.stringify({ mode: "admin", token: "x".repeat(513) }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects merchant token that does not match exp:hex64 format", async () => {
+    const req = new NextRequest("http://localhost:3005/api/auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "merchant",
+        merchantId: "mrc_test",
+        merchantToken: "a".repeat(10_000),
+      }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+  });
+
+  it("creates merchant session with merchantId in JWT", async () => {
+    const mid = "mrc_test";
+    const exp = Math.floor(Date.now() / 1000);
+    const signingInput = `${mid}.${exp}`;
+    const sig = createHmac("sha256", process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET!)
+      .update(signingInput, "utf8")
+      .digest("hex");
+    const merchantToken = `${exp}:${sig}`;
+    const req = new NextRequest("http://localhost:3005/api/auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "merchant", merchantId: mid, merchantToken }),
     });
     const res = await POST(req);
     expect(res.status).toBe(200);

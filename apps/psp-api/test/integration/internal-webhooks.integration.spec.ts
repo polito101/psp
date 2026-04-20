@@ -25,11 +25,20 @@ describe('internal/webhooks integration', () => {
     await request(app.getHttpServer()).get('/api/v2/payments/ops/metrics').expect(401);
   });
 
+  it('rejects ops metrics with secret but without X-Backoffice-Role', async () => {
+    const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
+    await request(app.getHttpServer())
+      .get('/api/v2/payments/ops/metrics')
+      .set('X-Internal-Secret', internalSecret)
+      .expect(403);
+  });
+
   it('returns ops metrics snapshot with internal secret', async () => {
     const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
     const response = await request(app.getHttpServer())
       .get('/api/v2/payments/ops/metrics')
       .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'admin')
       .expect(200);
 
     expect(response.body.payments).toBeDefined();
@@ -56,6 +65,7 @@ describe('internal/webhooks integration', () => {
     const response = await request(app.getHttpServer())
       .get('/api/v2/payments/ops/transactions')
       .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'admin')
       .query({ merchantId: merchant.id, pageSize: 5, provider: 'mock' })
       .expect(200);
 
@@ -81,6 +91,7 @@ describe('internal/webhooks integration', () => {
     const response = await request(app.getHttpServer())
       .get('/api/v2/payments/ops/transactions/counts')
       .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'admin')
       .query({ merchantId: merchant.id })
       .expect(200);
 
@@ -104,6 +115,7 @@ describe('internal/webhooks integration', () => {
     const response = await request(app.getHttpServer())
       .get('/api/v2/payments/ops/transactions')
       .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'admin')
       .query({ merchantId: merchant.id, pageSize: 5, includeTotal: 'false' })
       .expect(200);
 
@@ -135,6 +147,7 @@ describe('internal/webhooks integration', () => {
     const response = await request(app.getHttpServer())
       .get('/api/v2/payments/ops/transactions')
       .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'admin')
       .query({ merchantId: merchant.id, paymentId: prefix, pageSize: 10, provider: 'mock' })
       .expect(200);
 

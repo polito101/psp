@@ -1614,7 +1614,7 @@ export class PaymentsV2Service {
 
     const scopeId = options?.backofficeMerchantScopeId;
     if (scopeId && row.merchantId !== scopeId) {
-      throw new ForbiddenException('Cross-merchant access denied');
+      throw new NotFoundException({ message: 'Payment not found', paymentId });
     }
 
     const [attemptsTotal, attemptsDesc] = await Promise.all([

@@ -17,6 +17,11 @@ type ProxyRequestOptions = {
   backofficeScope?: SessionClaims;
 };
 
+/** Rutas internas de payments v2 ops: la API exige cabeceras RBAC fail-closed. */
+export function isPaymentsV2OpsPath(path: string): boolean {
+  return path.includes("/payments/ops/");
+}
+
 function validateAndNormalizeApiOrigin(rawBaseUrl: string): string {
   let parsedBaseUrl: URL;
   try {
@@ -159,6 +164,10 @@ export async function proxyInternalGet<T>(options: ProxyRequestOptions): Promise
     options.searchParams.forEach((value, key) => {
       url.searchParams.set(key, value);
     });
+  }
+
+  if (isPaymentsV2OpsPath(options.path) && !options.backofficeScope) {
+    throw new Error("Missing backofficeScope for payments ops proxy");
   }
 
   const controller = new AbortController();

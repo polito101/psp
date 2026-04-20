@@ -1,6 +1,8 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import {
+  isPaymentsV2OpsPath,
   mapProxyError,
+  proxyInternalGet,
   ProxyUpstreamError,
   readResponseTextWithByteLimit,
 } from "./backoffice-api";
@@ -120,5 +122,71 @@ describe("readResponseTextWithByteLimit", () => {
     const out = await readResponseTextWithByteLimit(res, MAX_BYTES);
 
     expect(out).toEqual({ text: "", truncated: false, measuredBodyBytes: 0 });
+  });
+});
+
+describe("proxyInternalGet RBAC", () => {
+  const envSnapshot = { ...process.env };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    process.env = { ...envSnapshot };
+    process.env.PSP_API_BASE_URL = "http://localhost:3003";
+    process.env.PSP_INTERNAL_API_SECRET = "intsecret";
+  });
+
+  afterEach(() => {
+    process.env = { ...envSnapshot };
+    vi.restoreAllMocks();
+  });
+
+  it("rejects ops path without backofficeScope before fetch", async () => {
+    await expect(proxyInternalGet({ path: "/api/v2/payments/ops/metrics" })).rejects.toThrow(/backofficeScope/);
+  });
+
+  it("sends X-Backoffice-Role for admin on ops path", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await proxyInternalGet<{ ok: boolean }>({
+      path: "/api/v2/payments/ops/metrics",
+      backofficeScope: { sub: "a", role: "admin" },
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    const h = new Headers(init.headers as HeadersInit);
+    expect(h.get("X-Backoffice-Role")).toBe("admin");
+    expect(h.get("X-Internal-Secret")).toBe("intsecret");
+  });
+
+  it("sends merchant headers for merchant scope", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ items: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await proxyInternalGet<{ items: unknown[] }>({
+      path: "/api/v2/payments/ops/transactions",
+      searchParams: new URLSearchParams({ merchantId: "m1" }),
+      backofficeScope: { sub: "m", role: "merchant", merchantId: "m1" },
+    });
+
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    const h = new Headers(init.headers as HeadersInit);
+    expect(h.get("X-Backoffice-Role")).toBe("merchant");
+    expect(h.get("X-Backoffice-Merchant-Id")).toBe("m1");
+  });
+});
+
+describe("isPaymentsV2OpsPath", () => {
+  it("returns true for metrics path", () => {
+    expect(isPaymentsV2OpsPath("/api/v2/payments/ops/metrics")).toBe(true);
   });
 });

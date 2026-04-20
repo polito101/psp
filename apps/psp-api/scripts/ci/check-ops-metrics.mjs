@@ -35,6 +35,7 @@ try {
     redirect: 'manual',
     headers: {
       'X-Internal-Secret': internalSecret,
+      'X-Backoffice-Role': 'admin',
     },
     signal: controller.signal,
   });

@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   CanActivate,
   ExecutionContext,
   ForbiddenException,
@@ -49,24 +50,45 @@ export class InternalSecretGuard implements CanActivate {
       throw new UnauthorizedException(UNAUTHORIZED_MESSAGE);
     }
 
-    this.assertMerchantBackofficeScope(req);
+    this.assertBackofficeScopeForRequest(req);
     return true;
   }
 
+  /** Solo `GET .../api/v2/payments/ops/*` (BFF backoffice); otros callers internos no envían rol. */
+  private isPaymentsV2OpsPath(path: string): boolean {
+    return path.includes('/payments/ops/');
+  }
+
+  private assertBackofficeScopeForRequest(req: Request): void {
+    const path = req.path ?? '';
+    if (this.isPaymentsV2OpsPath(path)) {
+      this.assertPaymentsOpsFailClosed(req);
+    } else {
+      this.assertLegacyOptionalMerchantScope(req);
+    }
+  }
+
   /**
-   * Si el BFF envía `X-Backoffice-Role: merchant`, restringe path/query a ese merchant.
-   * Sin cabeceras de rol (legacy) se mantiene el comportamiento anterior (solo secreto interno).
+   * Fail-closed: toda petición a payments v2 ops con secreto válido debe declarar rol admin|merchant.
    */
-  private assertMerchantBackofficeScope(req: Request): void {
+  private assertPaymentsOpsFailClosed(req: Request): void {
     const roleRaw = this.getHeader(req, 'x-backoffice-role');
     const role = roleRaw?.toLowerCase().trim();
-    if (!role || role === 'admin') {
+    if (!role || (role !== 'admin' && role !== 'merchant')) {
+      throw new ForbiddenException(
+        'Missing or invalid X-Backoffice-Role for payments ops endpoints',
+      );
+    }
+    if (role === 'admin') {
       return;
     }
-    if (role !== 'merchant') {
-      throw new ForbiddenException('Invalid X-Backoffice-Role');
-    }
+    this.assertMerchantScopeOnOpsRequest(req);
+  }
 
+  /**
+   * Si el BFF envía `X-Backoffice-Role: merchant` en ops, restringe path/query a ese merchant.
+   */
+  private assertMerchantScopeOnOpsRequest(req: Request): void {
     const scoped = this.getHeader(req, 'x-backoffice-merchant-id')?.trim();
     if (!scoped) {
       throw new ForbiddenException('Missing X-Backoffice-Merchant-Id for merchant scope');
@@ -79,7 +101,12 @@ export class InternalSecretGuard implements CanActivate {
 
     const pathMerchantMatch = path.match(/\/ops\/merchants\/([^/]+)\/finance\//);
     if (pathMerchantMatch) {
-      const pathMerchant = decodeURIComponent(pathMerchantMatch[1]!);
+      let pathMerchant: string;
+      try {
+        pathMerchant = decodeURIComponent(pathMerchantMatch[1]!);
+      } catch {
+        throw new BadRequestException('Invalid merchant segment in path');
+      }
       if (pathMerchant !== scoped) {
         throw new ForbiddenException('Cross-merchant access denied');
       }
@@ -91,6 +118,25 @@ export class InternalSecretGuard implements CanActivate {
         throw new ForbiddenException('merchantId query must match merchant scope');
       }
     }
+  }
+
+  /**
+   * Rutas internas no-ops (merchants bootstrap, webhooks): sin cabeceras RBAC.
+   * Si alguien envía `merchant` sin ser ops, se rechaza (evita confusión).
+   */
+  private assertLegacyOptionalMerchantScope(req: Request): void {
+    const roleRaw = this.getHeader(req, 'x-backoffice-role');
+    const role = roleRaw?.toLowerCase().trim();
+    if (!role) {
+      return;
+    }
+    if (role === 'admin') {
+      return;
+    }
+    if (role === 'merchant') {
+      throw new ForbiddenException('X-Backoffice-Role merchant is only valid for payments ops endpoints');
+    }
+    throw new ForbiddenException('Invalid X-Backoffice-Role');
   }
 
   private isOpsTransactionsAggregatePath(path: string): boolean {
