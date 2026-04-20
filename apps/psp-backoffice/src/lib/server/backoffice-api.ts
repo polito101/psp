@@ -66,21 +66,32 @@ function mergeUint8Arrays(parts: readonly Uint8Array[]): Uint8Array {
 
 /**
  * Lee el cuerpo como texto UTF-8 con un tope de bytes. Si se trunca, no se consume el resto del stream.
+ * Sin `getReader()`, evita `response.text()` si el tamaño declarado supera el tope o es desconocido (anti-OOM).
  */
-async function readResponseTextWithByteLimit(
+export async function readResponseTextWithByteLimit(
   response: Response,
   maxBytes: number,
-): Promise<{ text: string; truncated: boolean }> {
+): Promise<{ text: string; truncated: boolean; measuredBodyBytes: number | null }> {
   const reader = response.body?.getReader();
   if (!reader) {
+    const rawCl = response.headers.get("content-length");
+    const parsedCl = rawCl !== null ? Number.parseInt(rawCl, 10) : NaN;
+    const clKnown = Number.isFinite(parsedCl) && parsedCl >= 0;
+
+    if (!clKnown || parsedCl > maxBytes) {
+      return { text: "", truncated: true, measuredBodyBytes: null };
+    }
+
     const text = await response.text();
     const bytes = new TextEncoder().encode(text);
     if (bytes.length <= maxBytes) {
-      return { text, truncated: false };
+      return { text, truncated: false, measuredBodyBytes: bytes.length };
     }
+    const sliced = bytes.slice(0, maxBytes);
     return {
-      text: new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, maxBytes)),
+      text: new TextDecoder("utf-8", { fatal: false }).decode(sliced),
       truncated: true,
+      measuredBodyBytes: sliced.length,
     };
   }
 
@@ -108,6 +119,7 @@ async function readResponseTextWithByteLimit(
   return {
     text: new TextDecoder("utf-8", { fatal: false }).decode(merged),
     truncated,
+    measuredBodyBytes: merged.length,
   };
 }
 
@@ -119,13 +131,21 @@ function sanitizeSingleLinePreview(text: string, maxChars: number): string {
 
 /** Error cuando la API upstream responde con status no OK. El cuerpo no va en `message` (logs/PII). */
 export class ProxyUpstreamError extends Error {
+  /** Bytes UTF-8 del fragmento expuesto, o `null` si no se pudo medir sin leer el body completo. */
+  readonly measuredBodyBytes: number | null;
+
   constructor(
     readonly upstreamStatus: number,
     readonly bodyText: string,
     readonly bodyTruncated: boolean = false,
+    measuredBodyBytesArg?: number | null,
   ) {
     super(`PSP API ${upstreamStatus} (non-OK)`);
     this.name = "ProxyUpstreamError";
+    this.measuredBodyBytes =
+      measuredBodyBytesArg === undefined
+        ? new TextEncoder().encode(bodyText).length
+        : measuredBodyBytesArg;
   }
 }
 
@@ -164,11 +184,11 @@ export async function proxyInternalGet<T>(options: ProxyRequestOptions): Promise
   }
 
   if (!response.ok) {
-    const { text, truncated } = await readResponseTextWithByteLimit(
+    const { text, truncated, measuredBodyBytes } = await readResponseTextWithByteLimit(
       response,
       PROXY_UPSTREAM_BODY_READ_MAX_BYTES,
     );
-    throw new ProxyUpstreamError(response.status, text, truncated);
+    throw new ProxyUpstreamError(response.status, text, truncated, measuredBodyBytes);
   }
 
   return (await response.json()) as T;
@@ -179,11 +199,10 @@ const PROXY_UPSTREAM_MESSAGE_MAX = 500;
 
 export function mapProxyError(error: unknown): NextResponse {
   if (error instanceof ProxyUpstreamError) {
-    const bodyBytes = new TextEncoder().encode(error.bodyText).length;
     console.error("backoffice_proxy_error", {
       kind: "ProxyUpstreamError",
       upstreamStatus: error.upstreamStatus,
-      bodyByteLength: bodyBytes,
+      bodyByteLength: error.measuredBodyBytes,
       bodyTruncatedByReader: error.bodyTruncated,
       bodyPreview: sanitizeSingleLinePreview(error.bodyText, PROXY_UPSTREAM_LOG_PREVIEW_MAX_CHARS),
     });
