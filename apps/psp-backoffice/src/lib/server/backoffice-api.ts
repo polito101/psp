@@ -90,6 +90,9 @@ export async function proxyInternalGet<T>(options: ProxyRequestOptions): Promise
 }
 
 export function mapProxyError(error: unknown) {
-  const message = error instanceof Error ? error.message : "Unhandled proxy error";
-  return NextResponse.json({ message }, { status: 502 });
+  console.error("backoffice_proxy_error", error);
+  return NextResponse.json(
+    { message: "Upstream service unavailable" },
+    { status: 502 },
+  );
 }

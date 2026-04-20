@@ -23,6 +23,8 @@ type LockedAvailableSettlementRow = {
 
 /** Filas reclamadas por tanda; evita UPDATE sin límite y arrays enormes en memoria. */
 const RELEASE_PENDING_BATCH_SIZE = 500;
+/** Tope defensivo por invocación para evitar monopolizar el proceso bajo backlog continuo. */
+const RELEASE_PENDING_MAX_BATCHES_PER_PAYOUT = 100;
 
 function isPrismaUniqueViolation(e: unknown): boolean {
   return (
@@ -145,15 +147,25 @@ export class SettlementService {
   async createPayout(params: { merchantId: string; currency: string; now?: Date }) {
     const now = params.now ?? new Date();
 
-    // Una sola tanda PENDING→AVAILABLE por invocación, en su propia transacción corta.
-    // El backlog se drena con llamadas sucesivas o con `releasePendingToAvailable()`.
-    await this.prisma.$transaction((tx) =>
-      this.releasePendingToAvailableBatch(
-        tx,
-        { merchantId: params.merchantId, currency: params.currency },
-        now,
-      ),
-    );
+    // Drena backlog elegible por tandas, cada una en su transacción corta.
+    let drainedBatches = 0;
+    for (;;) {
+      const n = await this.prisma.$transaction((tx) =>
+        this.releasePendingToAvailableBatch(
+          tx,
+          { merchantId: params.merchantId, currency: params.currency },
+          now,
+        ),
+      );
+      drainedBatches += 1;
+
+      if (n === 0 || n < RELEASE_PENDING_BATCH_SIZE) {
+        break;
+      }
+      if (drainedBatches >= RELEASE_PENDING_MAX_BATCHES_PER_PAYOUT) {
+        break;
+      }
+    }
 
     return this.prisma.$transaction(async (tx) => {
       const lockedRaw = await tx.$queryRaw<LockedAvailableSettlementRow[]>(Prisma.sql`

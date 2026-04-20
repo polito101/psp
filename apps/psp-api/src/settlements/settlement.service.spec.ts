@@ -127,4 +127,67 @@ describe('SettlementService', () => {
     expect(tx.ledgerLine.createMany.mock.calls[0][0].data).toHaveLength(4);
     expect(tx.ledgerLine.createMany.mock.calls[1][0].data).toHaveLength(1);
   });
+
+  it('createPayout drena múltiples tandas PENDING→AVAILABLE antes de crear payout', async () => {
+    const makeClaimedBatch = (size: number, offset = 0) =>
+      Array.from({ length: size }, (_, idx) => ({
+        id: `ps_${offset + idx + 1}`,
+        merchant_id: 'm_1',
+        payment_id: `pay_${offset + idx + 1}`,
+        currency: 'EUR',
+        net_minor: 100,
+      }));
+
+    const firstBatch = makeClaimedBatch(500);
+    const secondBatch = makeClaimedBatch(20, 500);
+    const lockedRawRows = [
+      {
+        id: 'ps_1',
+        gross_minor: 1000,
+        fee_minor: 50,
+        net_minor: 950,
+        captured_at: new Date('2026-04-18T10:00:00.000Z'),
+        available_at: new Date('2026-04-19T10:00:00.000Z'),
+      },
+    ];
+
+    const tx: any = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce(firstBatch) // release batch 1 (llena)
+        .mockResolvedValueOnce(secondBatch) // release batch 2 (parcial)
+        .mockResolvedValueOnce(lockedRawRows), // SELECT disponibles para payout
+      paymentSettlement: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      payout: {
+        create: jest.fn().mockResolvedValue({ id: 'po_1' }),
+        delete: jest.fn(),
+      },
+      payoutItem: {
+        createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      ledgerLine: {
+        createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const prisma: any = {
+      ...tx,
+      $transaction: jest.fn(async (fn: (trx: unknown) => Promise<unknown>) => fn(tx)),
+    };
+    const service = new SettlementService(prisma as never);
+
+    await service.createPayout({
+      merchantId: 'm_1',
+      currency: 'EUR',
+      now: new Date('2026-04-20T00:00:00.000Z'),
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(3);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(3);
+    expect(tx.ledgerLine.createMany).toHaveBeenCalledTimes(3);
+    expect(tx.ledgerLine.createMany.mock.calls[0][0].data).toHaveLength(1000);
+    expect(tx.ledgerLine.createMany.mock.calls[1][0].data).toHaveLength(40);
+    expect(tx.ledgerLine.createMany.mock.calls[2][0].data).toHaveLength(1);
+  });
 });
