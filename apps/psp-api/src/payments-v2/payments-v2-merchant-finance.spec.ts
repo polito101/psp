@@ -9,20 +9,19 @@ describe('PaymentsV2 merchant finance', () => {
 
   const prisma: Record<string, unknown> & {
     $transaction: jest.Mock;
+    $queryRaw: jest.Mock;
     paymentFeeQuote: Record<string, jest.Mock>;
     payment: Record<string, jest.Mock>;
     payout: Record<string, jest.Mock>;
   } = {
     $transaction: jest.fn(),
+    $queryRaw: jest.fn(),
     paymentFeeQuote: {
-      aggregate: jest.fn(),
       findMany: jest.fn(),
       count: jest.fn(),
       findFirst: jest.fn(),
     },
-    payment: {
-      aggregate: jest.fn(),
-    },
+    payment: {},
     payout: {
       findMany: jest.fn(),
       count: jest.fn(),
@@ -109,10 +108,9 @@ describe('PaymentsV2 merchant finance', () => {
 
   it('returns gross/fee/net totals for merchant and currency', async () => {
     const service = buildService();
-    prisma.paymentFeeQuote.aggregate.mockResolvedValue({
-      _sum: { grossMinor: 12_000, feeMinor: 450, netMinor: 11_550 },
-    });
-    prisma.payment.aggregate.mockResolvedValue({ _sum: { amountMinor: null } });
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ gross: '12000', fee: '450', net: '11550' }])
+      .mockResolvedValueOnce([{ orphan_gross: '0' }]);
 
     const result = await service.getOpsMerchantFinanceSummary('merch_1', {
       currency: 'EUR',
@@ -121,29 +119,7 @@ describe('PaymentsV2 merchant finance', () => {
       createdTo: '2026-04-30T23:59:59.999Z',
     });
 
-    expect(prisma.paymentFeeQuote.aggregate).toHaveBeenCalledWith({
-      where: {
-        merchantId: 'merch_1',
-        currency: 'EUR',
-        provider: 'stripe',
-        createdAt: {
-          gte: new Date('2026-04-01T00:00:00.000Z'),
-          lte: new Date('2026-04-30T23:59:59.999Z'),
-        },
-      },
-      _sum: { grossMinor: true, feeMinor: true, netMinor: true },
-    });
-    expect(prisma.payment.aggregate).toHaveBeenCalledWith({
-      where: {
-        merchantId: 'merch_1',
-        feeQuote: null,
-        status: { in: ['succeeded', 'refunded'] },
-        succeededAt: { not: null, gte: new Date('2026-04-01T00:00:00.000Z'), lte: new Date('2026-04-30T23:59:59.999Z') },
-        currency: 'EUR',
-        selectedProvider: 'stripe',
-      },
-      _sum: { amountMinor: true },
-    });
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
     expect(result.totals).toEqual({
       grossMinor: '12000',
       feeMinor: '450',
@@ -153,10 +129,9 @@ describe('PaymentsV2 merchant finance', () => {
 
   it('suma pagos huérfanos (sin fee quote) al gross y net del resumen', async () => {
     const service = buildService();
-    prisma.paymentFeeQuote.aggregate.mockResolvedValue({
-      _sum: { grossMinor: 1000, feeMinor: 30, netMinor: 970 },
-    });
-    prisma.payment.aggregate.mockResolvedValue({ _sum: { amountMinor: 500 } });
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ gross: '1000', fee: '30', net: '970' }])
+      .mockResolvedValueOnce([{ orphan_gross: '500' }]);
 
     const result = await service.getOpsMerchantFinanceSummary('merch_1', {
       currency: 'EUR',
@@ -167,6 +142,22 @@ describe('PaymentsV2 merchant finance', () => {
       feeMinor: '30',
       netMinor: '1470',
     });
+  });
+
+  it('mantiene precisión cuando los totales superan Number.MAX_SAFE_INTEGER', async () => {
+    const service = buildService();
+    const beyondSafe = '9007199254740993';
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ gross: beyondSafe, fee: '0', net: beyondSafe }])
+      .mockResolvedValueOnce([{ orphan_gross: '1' }]);
+
+    const result = await service.getOpsMerchantFinanceSummary('merch_1', {
+      currency: 'EUR',
+    });
+
+    expect(result.totals.grossMinor).toBe('9007199254740994');
+    expect(result.totals.feeMinor).toBe('0');
+    expect(result.totals.netMinor).toBe('9007199254740994');
   });
 
   it('rechaza createdFrom posterior a createdTo en summary, transacciones y payouts', async () => {
@@ -184,7 +175,7 @@ describe('PaymentsV2 merchant finance', () => {
     await expect(service.listOpsMerchantFinancePayouts('merch_1', { ...q, page: 1, pageSize: 25 })).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    expect(prisma.paymentFeeQuote.aggregate).not.toHaveBeenCalled();
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 
   it('lists merchant finance transactions with gross/fee/net', async () => {

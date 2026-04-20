@@ -705,32 +705,110 @@ export class PaymentsV2Service {
     };
   }
 
+  /**
+   * Totales de `PaymentFeeQuote` con la misma semántica que `buildOpsMerchantFinanceFeeQuoteWhere`.
+   * `SUM` en SQL y resultado `::text` para no perder precisión vía `number` del driver (cf. `getOpsVolumeHourlySeries`).
+   */
+  private async sumOpsMerchantFinanceFeeQuotesSql(
+    merchantId: string,
+    query: Parameters<PaymentsV2Service['buildOpsMerchantFinanceFeeQuoteWhere']>[1],
+  ): Promise<{ gross: bigint; fee: bigint; net: bigint }> {
+    const createdFrom = query.createdFrom ? new Date(query.createdFrom) : null;
+    const createdTo = query.createdTo ? new Date(query.createdTo) : null;
+    const paymentIdPrefix = query.paymentId?.trim();
+    const currency = query.currency?.toUpperCase();
+    const provider = query.provider;
+    const status = query.status;
+
+    const joinSql = status
+      ? Prisma.sql`INNER JOIN "Payment" p ON p.id = fq.payment_id`
+      : Prisma.empty;
+    const providerSql = provider ? Prisma.sql`AND fq.provider = ${provider}` : Prisma.empty;
+    const currencySql = currency ? Prisma.sql`AND fq.currency = ${currency}` : Prisma.empty;
+    const createdFromSql = createdFrom ? Prisma.sql`AND fq.created_at >= ${createdFrom}` : Prisma.empty;
+    const createdToSql = createdTo ? Prisma.sql`AND fq.created_at <= ${createdTo}` : Prisma.empty;
+    const paymentIdSql = paymentIdPrefix
+      ? Prisma.sql`AND fq.payment_id LIKE ${`${paymentIdPrefix}%`}`
+      : Prisma.empty;
+    const statusSql = status ? Prisma.sql`AND p.status = ${status}` : Prisma.empty;
+
+    const rows = await this.prisma.$queryRaw<Array<{ gross: string; fee: string; net: string }>>(
+      Prisma.sql`
+        SELECT
+          COALESCE(SUM(fq.gross_minor), 0)::text AS gross,
+          COALESCE(SUM(fq.fee_minor), 0)::text AS fee,
+          COALESCE(SUM(fq.net_minor), 0)::text AS net
+        FROM "PaymentFeeQuote" fq
+        ${joinSql}
+        WHERE fq.merchant_id = ${merchantId}
+        ${providerSql}
+        ${currencySql}
+        ${createdFromSql}
+        ${createdToSql}
+        ${paymentIdSql}
+        ${statusSql}
+      `,
+    );
+    const row = rows[0];
+    return {
+      gross: BigInt(row?.gross ?? '0'),
+      fee: BigInt(row?.fee ?? '0'),
+      net: BigInt(row?.net ?? '0'),
+    };
+  }
+
+  /**
+   * Suma de pagos liquidados sin fila `PaymentFeeQuote` (misma semántica que `buildMerchantFinanceOrphanPaymentWhere`).
+   */
+  private async sumOpsMerchantFinanceOrphanPaymentsSql(
+    merchantId: string,
+    query: Pick<OpsMerchantFinanceSummaryQueryDto, 'provider' | 'currency' | 'createdFrom' | 'createdTo'>,
+  ): Promise<bigint> {
+    const createdFrom = query.createdFrom ? new Date(query.createdFrom) : null;
+    const createdTo = query.createdTo ? new Date(query.createdTo) : null;
+    const currency = query.currency?.toUpperCase();
+    const selectedProvider = query.provider;
+
+    const currencySql = currency ? Prisma.sql`AND p.currency = ${currency}` : Prisma.empty;
+    const providerSql = selectedProvider
+      ? Prisma.sql`AND p.selected_provider = ${selectedProvider}`
+      : Prisma.empty;
+    const createdFromSql = createdFrom ? Prisma.sql`AND p.succeeded_at >= ${createdFrom}` : Prisma.empty;
+    const createdToSql = createdTo ? Prisma.sql`AND p.succeeded_at <= ${createdTo}` : Prisma.empty;
+
+    const rows = await this.prisma.$queryRaw<Array<{ orphan_gross: string }>>(
+      Prisma.sql`
+        SELECT COALESCE(SUM(p.amount_minor), 0)::text AS orphan_gross
+        FROM "Payment" p
+        WHERE p.merchant_id = ${merchantId}
+          AND NOT EXISTS (
+            SELECT 1 FROM "PaymentFeeQuote" fq WHERE fq.payment_id = p.id
+          )
+          AND p.status IN (${PAYMENT_V2_STATUS.SUCCEEDED}, ${PAYMENT_V2_STATUS.REFUNDED})
+          AND p.succeeded_at IS NOT NULL
+          ${createdFromSql}
+          ${createdToSql}
+          ${currencySql}
+          ${providerSql}
+      `,
+    );
+    return BigInt(rows[0]?.orphan_gross ?? '0');
+  }
+
   async getOpsMerchantFinanceSummary(merchantId: string, query: OpsMerchantFinanceSummaryQueryDto) {
     this.assertMerchantFinanceDateOrder(query.createdFrom, query.createdTo);
-    const where = this.buildOpsMerchantFinanceFeeQuoteWhere(merchantId, query);
-    const [sums, orphanSums] = await Promise.all([
-      this.prisma.paymentFeeQuote.aggregate({
-        where,
-        _sum: { grossMinor: true, feeMinor: true, netMinor: true },
-      }),
-      this.prisma.payment.aggregate({
-        where: this.buildMerchantFinanceOrphanPaymentWhere(merchantId, query),
-        _sum: { amountMinor: true },
-      }),
+    const [quoteSums, orphanGross] = await Promise.all([
+      this.sumOpsMerchantFinanceFeeQuotesSql(merchantId, query),
+      this.sumOpsMerchantFinanceOrphanPaymentsSql(merchantId, query),
     ]);
-
-    const quoteGross = BigInt(sums._sum.grossMinor ?? 0);
-    const quoteFee = BigInt(sums._sum.feeMinor ?? 0);
-    const quoteNet = BigInt(sums._sum.netMinor ?? 0);
-    const orphanGross = BigInt(orphanSums._sum.amountMinor ?? 0);
 
     return {
       merchantId,
       currency: query.currency?.toUpperCase() ?? null,
       totals: {
-        grossMinor: (quoteGross + orphanGross).toString(),
-        feeMinor: quoteFee.toString(),
-        netMinor: (quoteNet + orphanGross).toString(),
+        grossMinor: (quoteSums.gross + orphanGross).toString(),
+        feeMinor: quoteSums.fee.toString(),
+        netMinor: (quoteSums.net + orphanGross).toString(),
       },
     };
   }
