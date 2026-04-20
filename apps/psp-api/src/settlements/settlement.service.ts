@@ -25,6 +25,27 @@ type LockedAvailableSettlementRow = {
 const RELEASE_PENDING_BATCH_SIZE = 500;
 /** Tope defensivo por invocación para evitar monopolizar el proceso bajo backlog continuo. */
 const RELEASE_PENDING_MAX_BATCHES_PER_PAYOUT = 100;
+/**
+ * Tope de settlements por payout (por invocación de `createPayout`).
+ * Protege de OOM y de transacciones enormes bajo backlog grande.
+ */
+const PAYOUT_MAX_SETTLEMENTS_PER_RUN = 1000;
+/** Batch defensivo para `createMany` / `updateMany` cuando hay muchos ids. */
+const PAYOUT_WRITE_BATCH_SIZE = 500;
+
+function chunkArray<T>(items: T[], chunkSize: number): T[][] {
+  if (chunkSize <= 0) {
+    throw new Error('chunkSize must be > 0');
+  }
+  if (items.length === 0) {
+    return [];
+  }
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    out.push(items.slice(i, i + chunkSize));
+  }
+  return out;
+}
 
 function isPrismaUniqueViolation(e: unknown): boolean {
   return (
@@ -185,27 +206,48 @@ export class SettlementService {
           AND NOT EXISTS (
             SELECT 1 FROM "PayoutItem" pi WHERE pi.payment_settlement_id = ps.id
           )
+        ORDER BY ps.id
         FOR UPDATE OF ps SKIP LOCKED
+        LIMIT ${PAYOUT_MAX_SETTLEMENTS_PER_RUN}
       `);
 
       if (lockedRaw.length === 0) {
         return null;
       }
 
-      const rows = lockedRaw.map((row) => ({
-        id: row.id,
-        grossMinor: row.gross_minor,
-        feeMinor: row.fee_minor,
-        netMinor: row.net_minor,
-        capturedAt: row.captured_at,
-        availableAt: row.available_at,
-      }));
+      const rows: Array<{
+        id: string;
+        grossMinor: number;
+        feeMinor: number;
+        netMinor: number;
+        capturedAt: Date;
+        availableAt: Date;
+      }> = [];
 
-      const grossMinor = rows.reduce((acc, row) => acc + row.grossMinor, 0);
-      const feeMinor = rows.reduce((acc, row) => acc + row.feeMinor, 0);
-      const netMinor = rows.reduce((acc, row) => acc + row.netMinor, 0);
-      const windowStartAt = new Date(Math.min(...rows.map((row) => row.capturedAt.getTime())));
-      const windowEndAt = new Date(Math.max(...rows.map((row) => row.availableAt.getTime())));
+      let grossMinor = 0;
+      let feeMinor = 0;
+      let netMinor = 0;
+      let minCapturedAtMs = Number.POSITIVE_INFINITY;
+      let maxAvailableAtMs = 0;
+
+      for (const row of lockedRaw) {
+        rows.push({
+          id: row.id,
+          grossMinor: row.gross_minor,
+          feeMinor: row.fee_minor,
+          netMinor: row.net_minor,
+          capturedAt: row.captured_at,
+          availableAt: row.available_at,
+        });
+        grossMinor += row.gross_minor;
+        feeMinor += row.fee_minor;
+        netMinor += row.net_minor;
+        minCapturedAtMs = Math.min(minCapturedAtMs, row.captured_at.getTime());
+        maxAvailableAtMs = Math.max(maxAvailableAtMs, row.available_at.getTime());
+      }
+
+      const windowStartAt = new Date(minCapturedAtMs);
+      const windowEndAt = new Date(maxAvailableAtMs);
 
       const payout = await tx.payout.create({
         data: {
@@ -222,15 +264,17 @@ export class SettlementService {
       });
 
       try {
-        await tx.payoutItem.createMany({
-          data: rows.map((row) => ({
-            payoutId: payout.id,
-            paymentSettlementId: row.id,
-            grossMinor: row.grossMinor,
-            feeMinor: row.feeMinor,
-            netMinor: row.netMinor,
-          })),
-        });
+        for (const batch of chunkArray(rows, PAYOUT_WRITE_BATCH_SIZE)) {
+          await tx.payoutItem.createMany({
+            data: batch.map((row) => ({
+              payoutId: payout.id,
+              paymentSettlementId: row.id,
+              grossMinor: row.grossMinor,
+              feeMinor: row.feeMinor,
+              netMinor: row.netMinor,
+            })),
+          });
+        }
       } catch (e) {
         if (isPrismaUniqueViolation(e)) {
           await tx.payout.delete({ where: { id: payout.id } });
@@ -239,14 +283,19 @@ export class SettlementService {
         throw e;
       }
 
-      await tx.paymentSettlement.updateMany({
-        where: { id: { in: rows.map((row) => row.id) } },
-        data: {
-          status: SettlementStatus.PAID,
-          payoutId: payout.id,
-          paidAt: now,
-        },
-      });
+      for (const batch of chunkArray(
+        rows.map((row) => row.id),
+        PAYOUT_WRITE_BATCH_SIZE,
+      )) {
+        await tx.paymentSettlement.updateMany({
+          where: { id: { in: batch } },
+          data: {
+            status: SettlementStatus.PAID,
+            payoutId: payout.id,
+            paidAt: now,
+          },
+        });
+      }
 
       await tx.ledgerLine.createMany({
         data: [

@@ -6,17 +6,25 @@ describe('PaymentsV2 merchant finance', () => {
     get: jest.fn((key: string) => process.env[key]),
   };
 
-  const prisma = {
+  const prisma: Record<string, unknown> & {
+    $transaction: jest.Mock;
+    paymentFeeQuote: Record<string, jest.Mock>;
+    payout: Record<string, jest.Mock>;
+  } = {
+    $transaction: jest.fn(),
     paymentFeeQuote: {
       aggregate: jest.fn(),
       findMany: jest.fn(),
       count: jest.fn(),
+      findFirst: jest.fn(),
     },
     payout: {
       findMany: jest.fn(),
       count: jest.fn(),
+      findFirst: jest.fn(),
     },
   };
+  prisma.$transaction.mockImplementation(async (fn: (tx: typeof prisma) => Promise<unknown>) => fn(prisma));
 
   const links = {
     findForMerchant: jest.fn(),
@@ -149,6 +157,7 @@ describe('PaymentsV2 merchant finance', () => {
       },
     ]);
     prisma.paymentFeeQuote.count.mockResolvedValue(1);
+    prisma.paymentFeeQuote.findFirst.mockResolvedValue(null);
 
     const result = await service.listOpsMerchantFinanceTransactions('merch_1', {
       currency: 'EUR',
@@ -157,13 +166,23 @@ describe('PaymentsV2 merchant finance', () => {
       pageSize: 25,
     });
 
-    expect(prisma.paymentFeeQuote.findMany).toHaveBeenCalled();
+    expect(prisma.paymentFeeQuote.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        take: 26,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      }),
+    );
     expect(result.items).toHaveLength(1);
     expect(result.items[0]).toMatchObject({
       paymentId: 'pay_1',
       grossMinor: '2500',
       feeMinor: '75',
       netMinor: '2425',
+    });
+    expect(result.page.total).toBe(1);
+    expect(result.cursors.next).toEqual({
+      createdAt: '2026-04-10T12:00:00.000Z',
+      id: 'fq_1',
     });
   });
 
@@ -184,6 +203,7 @@ describe('PaymentsV2 merchant finance', () => {
       },
     ]);
     prisma.payout.count.mockResolvedValue(1);
+    prisma.payout.findFirst.mockResolvedValue(null);
 
     const result = await service.listOpsMerchantFinancePayouts('merch_1', {
       currency: 'EUR',
@@ -196,6 +216,8 @@ describe('PaymentsV2 merchant finance', () => {
 
     expect(prisma.payout.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
+        take: 26,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         where: {
           merchantId: 'merch_1',
           currency: 'EUR',

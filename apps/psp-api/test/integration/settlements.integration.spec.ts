@@ -128,9 +128,15 @@ describe('settlements integration', () => {
     }));
     await prisma.paymentSettlement.createMany({ data: settlementsData });
 
-    const payout = await settlements.createPayout({ merchantId: merchant.id, currency, now });
-    expect(payout).not.toBeNull();
-    expect(payout?.settlementsCount).toBe(total);
+    let consumed = 0;
+    for (;;) {
+      const payout = await settlements.createPayout({ merchantId: merchant.id, currency, now });
+      if (payout == null) {
+        break;
+      }
+      consumed += payout.settlementsCount;
+    }
+    expect(consumed).toBe(total);
 
     const pendingOrAvailable = await prisma.paymentSettlement.count({
       where: {
@@ -147,7 +153,6 @@ describe('settlements integration', () => {
         merchantId: merchant.id,
         currency,
         status: SettlementStatus.PAID,
-        payoutId: payout!.id,
       },
     });
     expect(paidCount).toBe(total);

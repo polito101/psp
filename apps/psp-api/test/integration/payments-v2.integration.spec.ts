@@ -333,6 +333,31 @@ describe('payments-v2 integration', () => {
     expect(typeof row.netMinor).toBe('string');
     expect(row.paymentId).toBe(created.body.payment.id);
     expect(txs.body.page.total).toBeGreaterThanOrEqual(1);
+    expect(txs.body.page).toMatchObject({
+      pageSize: 10,
+      hasPrevPage: expect.any(Boolean),
+      hasNextPage: expect.any(Boolean),
+    });
+    expect(txs.body.cursors).toEqual(
+      expect.objectContaining({
+        prev: expect.anything(),
+        next: expect.anything(),
+      }),
+    );
+
+    const txsNoCount = await request(app.getHttpServer())
+      .get(
+        `/api/v2/payments/ops/merchants/${merchant.id}/finance/transactions?currency=EUR&pageSize=10&includeTotal=false`,
+      )
+      .set('X-Internal-Secret', internalSecret)
+      .expect(200);
+    expect(txsNoCount.body.page.total).toBeNull();
+    expect(txsNoCount.body.page.totalPages).toBeNull();
+
+    await request(app.getHttpServer())
+      .get(`/api/v2/payments/ops/merchants/${merchant.id}/finance/transactions?currency=EUR&page=2`)
+      .set('X-Internal-Secret', internalSecret)
+      .expect(400);
   });
 
   it('lista payouts por merchant tras createPayout (interno)', async () => {
@@ -367,5 +392,11 @@ describe('payments-v2 integration', () => {
     expect(item.merchantId).toBe(merchant.id);
     expect(item.currency).toBe('EUR');
     expect(res.body.page.total).toBeGreaterThanOrEqual(1);
+    expect(res.body.cursors).toEqual(
+      expect.objectContaining({
+        prev: expect.anything(),
+        next: expect.anything(),
+      }),
+    );
   });
 });

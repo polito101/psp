@@ -652,19 +652,15 @@ export class PaymentsV2Service {
       createdAt.lte = new Date(query.createdTo);
     }
 
+    const paymentId = query.paymentId?.trim();
+
     return {
       merchantId,
       ...(query.provider ? { provider: query.provider } : {}),
       ...(query.currency ? { currency: query.currency.toUpperCase() } : {}),
       ...(Object.keys(createdAt).length > 0 ? { createdAt } : {}),
-      ...(query.paymentId || query.status
-        ? {
-            payment: {
-              ...(query.paymentId ? { id: { contains: query.paymentId, mode: 'insensitive' } } : {}),
-              ...(query.status ? { status: query.status } : {}),
-            },
-          }
-        : {}),
+      ...(paymentId ? { paymentId: { startsWith: paymentId } } : {}),
+      ...(query.status ? { payment: { status: query.status } } : {}),
     };
   }
 
@@ -686,69 +682,230 @@ export class PaymentsV2Service {
     };
   }
 
+  /**
+   * Listado de quotes de comisión por merchant (panel ops). Keyset estable `createdAt desc, id desc`.
+   *
+   * @param query.includeTotal - Por defecto `true`. Con `false` no se ejecuta `count()`; `page.total` y `page.totalPages` serán `null`.
+   */
   async listOpsMerchantFinanceTransactions(merchantId: string, query: OpsMerchantFinanceTransactionsQueryDto) {
+    const includeTotal = query.includeTotal !== false;
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 25;
-    const where = this.buildOpsMerchantFinanceFeeQuoteWhere(merchantId, query);
 
-    const [rows, total] = await Promise.all([
-      this.prisma.paymentFeeQuote.findMany({
-        where,
-        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-        skip: (page - 1) * pageSize,
-        take: pageSize,
+    if (page > 1) {
+      throw new BadRequestException({
+        message: 'Pagination is cursor-based. Use cursorCreatedAt + cursorId (+ direction) instead of page>1.',
+        hint: 'Call first page with page=1 (or omit), then pass the returned cursor to navigate.',
+      });
+    }
+
+    const direction: 'next' | 'prev' = query.direction ?? 'next';
+    const cursorCreatedAt = query.cursorCreatedAt ? new Date(query.cursorCreatedAt) : null;
+    const cursorId = query.cursorId ?? null;
+    if ((cursorCreatedAt && !cursorId) || (!cursorCreatedAt && cursorId)) {
+      throw new BadRequestException('cursorCreatedAt and cursorId must be provided together');
+    }
+    if (cursorCreatedAt && Number.isNaN(cursorCreatedAt.valueOf())) {
+      throw new BadRequestException('Invalid cursorCreatedAt');
+    }
+
+    const where = this.buildOpsMerchantFinanceFeeQuoteWhere(merchantId, query);
+    const orderBy: Prisma.PaymentFeeQuoteOrderByWithRelationInput[] = [{ createdAt: 'desc' }, { id: 'desc' }];
+
+    const feeQuoteSelect = {
+      id: true,
+      paymentId: true,
+      merchantId: true,
+      provider: true,
+      currency: true,
+      grossMinor: true,
+      feeMinor: true,
+      netMinor: true,
+      settlementMode: true,
+      createdAt: true,
+      payment: {
         select: {
           id: true,
-          paymentId: true,
-          merchantId: true,
-          provider: true,
-          currency: true,
-          grossMinor: true,
-          feeMinor: true,
-          netMinor: true,
-          settlementMode: true,
+          status: true,
+          selectedProvider: true,
           createdAt: true,
-          payment: {
-            select: {
-              id: true,
-              status: true,
-              selectedProvider: true,
-              createdAt: true,
-            },
-          },
         },
-      }),
-      this.prisma.paymentFeeQuote.count({ where }),
-    ]);
+      },
+    } as const;
+
+    const [total, rows, hasPrevPage, hasNextPage] = await this.prisma.$transaction(async (tx) => {
+      const totalCountPromise = includeTotal ? tx.paymentFeeQuote.count({ where }) : null;
+
+      let keysetWhere: Prisma.PaymentFeeQuoteWhereInput = where;
+      if (cursorCreatedAt && cursorId) {
+        const boundaryClause: Prisma.PaymentFeeQuoteWhereInput =
+          direction === 'next'
+            ? {
+                OR: [
+                  { createdAt: { lt: cursorCreatedAt } },
+                  { createdAt: cursorCreatedAt, id: { lt: cursorId } },
+                ],
+              }
+            : {
+                OR: [
+                  { createdAt: { gt: cursorCreatedAt } },
+                  { createdAt: cursorCreatedAt, id: { gt: cursorId } },
+                ],
+              };
+
+        keysetWhere = {
+          AND: [where, boundaryClause],
+        };
+      }
+
+      const queryOrderBy: Prisma.PaymentFeeQuoteOrderByWithRelationInput[] =
+        direction === 'next' ? orderBy : [{ createdAt: 'asc' }, { id: 'asc' }];
+
+      const rawRows = await tx.paymentFeeQuote.findMany({
+        where: keysetWhere,
+        orderBy: queryOrderBy,
+        take: pageSize + 1,
+        select: feeQuoteSelect,
+      });
+
+      const hasMoreInDirection = rawRows.length > pageSize;
+      const trimmed = hasMoreInDirection ? rawRows.slice(0, pageSize) : rawRows;
+      const normalized = direction === 'next' ? trimmed : trimmed.slice().reverse();
+
+      let prevExists = false;
+      let nextExists = false;
+      if (!includeTotal) {
+        const hasCursor = Boolean(cursorCreatedAt && cursorId);
+        prevExists = direction === 'prev' ? hasMoreInDirection : hasCursor;
+        nextExists = direction === 'next' ? hasMoreInDirection : hasCursor;
+      }
+      if (normalized.length > 0) {
+        const first = normalized[0];
+        const last = normalized[normalized.length - 1];
+
+        if (includeTotal && direction === 'next') {
+          nextExists = hasMoreInDirection;
+
+          const prevWhere: Prisma.PaymentFeeQuoteWhereInput = {
+            AND: [
+              where,
+              {
+                OR: [
+                  { createdAt: { gt: first.createdAt } },
+                  { createdAt: first.createdAt, id: { gt: first.id } },
+                ],
+              },
+            ],
+          };
+          const prevRow = await tx.paymentFeeQuote.findFirst({ where: prevWhere, select: { id: true } });
+          prevExists = Boolean(prevRow);
+        } else {
+          const prevWhere: Prisma.PaymentFeeQuoteWhereInput = {
+            AND: [
+              where,
+              {
+                OR: [
+                  { createdAt: { gt: first.createdAt } },
+                  { createdAt: first.createdAt, id: { gt: first.id } },
+                ],
+              },
+            ],
+          };
+          const nextWhere: Prisma.PaymentFeeQuoteWhereInput = {
+            AND: [
+              where,
+              {
+                OR: [
+                  { createdAt: { lt: last.createdAt } },
+                  { createdAt: last.createdAt, id: { lt: last.id } },
+                ],
+              },
+            ],
+          };
+
+          const [prevRow, nextRow] = await Promise.all([
+            tx.paymentFeeQuote.findFirst({ where: prevWhere, select: { id: true } }),
+            tx.paymentFeeQuote.findFirst({ where: nextWhere, select: { id: true } }),
+          ]);
+          prevExists = Boolean(prevRow);
+          nextExists = Boolean(nextRow);
+        }
+      }
+
+      if (includeTotal && totalCountPromise) {
+        const totalCount = await totalCountPromise;
+        return [totalCount, normalized, prevExists, nextExists] as const;
+      }
+      return [null, normalized, prevExists, nextExists] as const;
+    });
+
+    const items = rows.map((row) => ({
+      id: row.id,
+      paymentId: row.paymentId,
+      merchantId: row.merchantId,
+      provider: row.provider,
+      selectedProvider: row.payment.selectedProvider,
+      status: row.payment.status,
+      currency: row.currency,
+      settlementMode: row.settlementMode,
+      grossMinor: BigInt(row.grossMinor).toString(),
+      feeMinor: BigInt(row.feeMinor).toString(),
+      netMinor: BigInt(row.netMinor).toString(),
+      createdAt: row.createdAt,
+      paymentCreatedAt: row.payment.createdAt,
+    }));
+
+    const totalPages = total != null ? Math.max(1, Math.ceil(total / pageSize)) : null;
+    const prevCursor =
+      items.length > 0 ? { createdAt: items[0].createdAt.toISOString(), id: items[0].id } : null;
+    const nextCursor =
+      items.length > 0
+        ? { createdAt: items[items.length - 1].createdAt.toISOString(), id: items[items.length - 1].id }
+        : null;
 
     return {
-      items: rows.map((row) => ({
-        id: row.id,
-        paymentId: row.paymentId,
-        merchantId: row.merchantId,
-        provider: row.provider,
-        selectedProvider: row.payment.selectedProvider,
-        status: row.payment.status,
-        currency: row.currency,
-        settlementMode: row.settlementMode,
-        grossMinor: BigInt(row.grossMinor).toString(),
-        feeMinor: BigInt(row.feeMinor).toString(),
-        netMinor: BigInt(row.netMinor).toString(),
-        createdAt: row.createdAt,
-        paymentCreatedAt: row.payment.createdAt,
-      })),
+      items,
       page: {
-        page,
         pageSize,
         total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        totalPages,
+        hasPrevPage,
+        hasNextPage,
+      },
+      cursors: {
+        prev: prevCursor,
+        next: nextCursor,
       },
     };
   }
 
+  /**
+   * Listado de payouts por merchant (panel ops). Keyset estable `createdAt desc, id desc`.
+   *
+   * @param query.includeTotal - Por defecto `true`. Con `false` no se ejecuta `count()`; `page.total` y `page.totalPages` serán `null`.
+   */
   async listOpsMerchantFinancePayouts(merchantId: string, query: OpsMerchantFinancePayoutsQueryDto) {
+    const includeTotal = query.includeTotal !== false;
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 25;
+
+    if (page > 1) {
+      throw new BadRequestException({
+        message: 'Pagination is cursor-based. Use cursorCreatedAt + cursorId (+ direction) instead of page>1.',
+        hint: 'Call first page with page=1 (or omit), then pass the returned cursor to navigate.',
+      });
+    }
+
+    const direction: 'next' | 'prev' = query.direction ?? 'next';
+    const cursorCreatedAt = query.cursorCreatedAt ? new Date(query.cursorCreatedAt) : null;
+    const cursorId = query.cursorId ?? null;
+    if ((cursorCreatedAt && !cursorId) || (!cursorCreatedAt && cursorId)) {
+      throw new BadRequestException('cursorCreatedAt and cursorId must be provided together');
+    }
+    if (cursorCreatedAt && Number.isNaN(cursorCreatedAt.valueOf())) {
+      throw new BadRequestException('Invalid cursorCreatedAt');
+    }
+
     const createdAt: Prisma.DateTimeFilter = {};
     if (query.createdFrom) {
       createdAt.gte = new Date(query.createdFrom);
@@ -763,46 +920,160 @@ export class PaymentsV2Service {
       ...(Object.keys(createdAt).length > 0 ? { createdAt } : {}),
     };
 
-    const [rows, total] = await Promise.all([
-      this.prisma.payout.findMany({
-        where,
-        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-        skip: (page - 1) * pageSize,
-        take: pageSize,
-        select: {
-          id: true,
-          merchantId: true,
-          currency: true,
-          status: true,
-          windowStartAt: true,
-          windowEndAt: true,
-          grossMinor: true,
-          feeMinor: true,
-          netMinor: true,
-          createdAt: true,
-        },
-      }),
-      this.prisma.payout.count({ where }),
-    ]);
+    const orderBy: Prisma.PayoutOrderByWithRelationInput[] = [{ createdAt: 'desc' }, { id: 'desc' }];
+
+    const payoutSelect = {
+      id: true,
+      merchantId: true,
+      currency: true,
+      status: true,
+      windowStartAt: true,
+      windowEndAt: true,
+      grossMinor: true,
+      feeMinor: true,
+      netMinor: true,
+      createdAt: true,
+    } as const;
+
+    const [total, rows, hasPrevPage, hasNextPage] = await this.prisma.$transaction(async (tx) => {
+      const totalCountPromise = includeTotal ? tx.payout.count({ where }) : null;
+
+      let keysetWhere: Prisma.PayoutWhereInput = where;
+      if (cursorCreatedAt && cursorId) {
+        const boundaryClause: Prisma.PayoutWhereInput =
+          direction === 'next'
+            ? {
+                OR: [
+                  { createdAt: { lt: cursorCreatedAt } },
+                  { createdAt: cursorCreatedAt, id: { lt: cursorId } },
+                ],
+              }
+            : {
+                OR: [
+                  { createdAt: { gt: cursorCreatedAt } },
+                  { createdAt: cursorCreatedAt, id: { gt: cursorId } },
+                ],
+              };
+
+        keysetWhere = {
+          AND: [where, boundaryClause],
+        };
+      }
+
+      const queryOrderBy: Prisma.PayoutOrderByWithRelationInput[] =
+        direction === 'next' ? orderBy : [{ createdAt: 'asc' }, { id: 'asc' }];
+
+      const rawRows = await tx.payout.findMany({
+        where: keysetWhere,
+        orderBy: queryOrderBy,
+        take: pageSize + 1,
+        select: payoutSelect,
+      });
+
+      const hasMoreInDirection = rawRows.length > pageSize;
+      const trimmed = hasMoreInDirection ? rawRows.slice(0, pageSize) : rawRows;
+      const normalized = direction === 'next' ? trimmed : trimmed.slice().reverse();
+
+      let prevExists = false;
+      let nextExists = false;
+      if (!includeTotal) {
+        const hasCursor = Boolean(cursorCreatedAt && cursorId);
+        prevExists = direction === 'prev' ? hasMoreInDirection : hasCursor;
+        nextExists = direction === 'next' ? hasMoreInDirection : hasCursor;
+      }
+      if (normalized.length > 0) {
+        const first = normalized[0];
+        const last = normalized[normalized.length - 1];
+
+        if (includeTotal && direction === 'next') {
+          nextExists = hasMoreInDirection;
+
+          const prevWhere: Prisma.PayoutWhereInput = {
+            AND: [
+              where,
+              {
+                OR: [
+                  { createdAt: { gt: first.createdAt } },
+                  { createdAt: first.createdAt, id: { gt: first.id } },
+                ],
+              },
+            ],
+          };
+          const prevRow = await tx.payout.findFirst({ where: prevWhere, select: { id: true } });
+          prevExists = Boolean(prevRow);
+        } else {
+          const prevWhere: Prisma.PayoutWhereInput = {
+            AND: [
+              where,
+              {
+                OR: [
+                  { createdAt: { gt: first.createdAt } },
+                  { createdAt: first.createdAt, id: { gt: first.id } },
+                ],
+              },
+            ],
+          };
+          const nextWhere: Prisma.PayoutWhereInput = {
+            AND: [
+              where,
+              {
+                OR: [
+                  { createdAt: { lt: last.createdAt } },
+                  { createdAt: last.createdAt, id: { lt: last.id } },
+                ],
+              },
+            ],
+          };
+
+          const [prevRow, nextRow] = await Promise.all([
+            tx.payout.findFirst({ where: prevWhere, select: { id: true } }),
+            tx.payout.findFirst({ where: nextWhere, select: { id: true } }),
+          ]);
+          prevExists = Boolean(prevRow);
+          nextExists = Boolean(nextRow);
+        }
+      }
+
+      if (includeTotal && totalCountPromise) {
+        const totalCount = await totalCountPromise;
+        return [totalCount, normalized, prevExists, nextExists] as const;
+      }
+      return [null, normalized, prevExists, nextExists] as const;
+    });
+
+    const items = rows.map((row) => ({
+      id: row.id,
+      merchantId: row.merchantId,
+      currency: row.currency,
+      status: row.status,
+      windowStartAt: row.windowStartAt,
+      windowEndAt: row.windowEndAt,
+      grossMinor: BigInt(row.grossMinor).toString(),
+      feeMinor: BigInt(row.feeMinor).toString(),
+      netMinor: BigInt(row.netMinor).toString(),
+      createdAt: row.createdAt,
+    }));
+
+    const totalPages = total != null ? Math.max(1, Math.ceil(total / pageSize)) : null;
+    const prevCursor =
+      items.length > 0 ? { createdAt: items[0].createdAt.toISOString(), id: items[0].id } : null;
+    const nextCursor =
+      items.length > 0
+        ? { createdAt: items[items.length - 1].createdAt.toISOString(), id: items[items.length - 1].id }
+        : null;
 
     return {
-      items: rows.map((row) => ({
-        id: row.id,
-        merchantId: row.merchantId,
-        currency: row.currency,
-        status: row.status,
-        windowStartAt: row.windowStartAt,
-        windowEndAt: row.windowEndAt,
-        grossMinor: BigInt(row.grossMinor).toString(),
-        feeMinor: BigInt(row.feeMinor).toString(),
-        netMinor: BigInt(row.netMinor).toString(),
-        createdAt: row.createdAt,
-      })),
+      items,
       page: {
-        page,
         pageSize,
         total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        totalPages,
+        hasPrevPage,
+        hasNextPage,
+      },
+      cursors: {
+        prev: prevCursor,
+        next: nextCursor,
       },
     };
   }
