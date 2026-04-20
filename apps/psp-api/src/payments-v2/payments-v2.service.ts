@@ -20,6 +20,9 @@ import { WebhooksService } from '../webhooks/webhooks.service';
 import { hashCreatePaymentIntentPayload } from './create-payment-intent-payload-hash';
 import { CreatePaymentIntentDto } from './dto/create-payment-intent.dto';
 import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
+import { OpsMerchantFinancePayoutsQueryDto } from './dto/ops-merchant-finance-payouts-query.dto';
+import { OpsMerchantFinanceSummaryQueryDto } from './dto/ops-merchant-finance-summary-query.dto';
+import { OpsMerchantFinanceTransactionsQueryDto } from './dto/ops-merchant-finance-transactions-query.dto';
 import { OpsTransactionCountsQueryDto } from './dto/ops-transaction-counts-query.dto';
 import { OpsVolumeHourlyQueryDto } from './dto/ops-volume-hourly-query.dto';
 import {
@@ -626,6 +629,180 @@ export class PaymentsV2Service {
       ...(params.status ? { status: params.status } : {}),
       ...(params.provider ? { selectedProvider: params.provider } : {}),
       ...(Object.keys(createdAt).length > 0 ? { createdAt } : {}),
+    };
+  }
+
+  private buildOpsMerchantFinanceFeeQuoteWhere(
+    merchantId: string,
+    query: {
+      provider?: string;
+      currency?: string;
+      paymentId?: string;
+      status?: string;
+      createdFrom?: string;
+      createdTo?: string;
+    },
+  ): Prisma.PaymentFeeQuoteWhereInput {
+    const createdAt: Prisma.DateTimeFilter = {};
+    if (query.createdFrom) {
+      createdAt.gte = new Date(query.createdFrom);
+    }
+    if (query.createdTo) {
+      createdAt.lte = new Date(query.createdTo);
+    }
+
+    return {
+      merchantId,
+      ...(query.provider ? { provider: query.provider } : {}),
+      ...(query.currency ? { currency: query.currency.toUpperCase() } : {}),
+      ...(Object.keys(createdAt).length > 0 ? { createdAt } : {}),
+      ...(query.paymentId || query.status
+        ? {
+            payment: {
+              ...(query.paymentId ? { id: { contains: query.paymentId, mode: 'insensitive' } } : {}),
+              ...(query.status ? { status: query.status } : {}),
+            },
+          }
+        : {}),
+    };
+  }
+
+  async getOpsMerchantFinanceSummary(merchantId: string, query: OpsMerchantFinanceSummaryQueryDto) {
+    const where = this.buildOpsMerchantFinanceFeeQuoteWhere(merchantId, query);
+    const sums = await this.prisma.paymentFeeQuote.aggregate({
+      where,
+      _sum: { grossMinor: true, feeMinor: true, netMinor: true },
+    });
+
+    return {
+      merchantId,
+      currency: query.currency?.toUpperCase() ?? null,
+      totals: {
+        grossMinor: BigInt(sums._sum.grossMinor ?? 0).toString(),
+        feeMinor: BigInt(sums._sum.feeMinor ?? 0).toString(),
+        netMinor: BigInt(sums._sum.netMinor ?? 0).toString(),
+      },
+    };
+  }
+
+  async listOpsMerchantFinanceTransactions(merchantId: string, query: OpsMerchantFinanceTransactionsQueryDto) {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 25;
+    const where = this.buildOpsMerchantFinanceFeeQuoteWhere(merchantId, query);
+
+    const [rows, total] = await Promise.all([
+      this.prisma.paymentFeeQuote.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        select: {
+          id: true,
+          paymentId: true,
+          merchantId: true,
+          provider: true,
+          currency: true,
+          grossMinor: true,
+          feeMinor: true,
+          netMinor: true,
+          settlementMode: true,
+          createdAt: true,
+          payment: {
+            select: {
+              id: true,
+              status: true,
+              selectedProvider: true,
+              createdAt: true,
+            },
+          },
+        },
+      }),
+      this.prisma.paymentFeeQuote.count({ where }),
+    ]);
+
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        paymentId: row.paymentId,
+        merchantId: row.merchantId,
+        provider: row.provider,
+        selectedProvider: row.payment.selectedProvider,
+        status: row.payment.status,
+        currency: row.currency,
+        settlementMode: row.settlementMode,
+        grossMinor: BigInt(row.grossMinor).toString(),
+        feeMinor: BigInt(row.feeMinor).toString(),
+        netMinor: BigInt(row.netMinor).toString(),
+        createdAt: row.createdAt,
+        paymentCreatedAt: row.payment.createdAt,
+      })),
+      page: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      },
+    };
+  }
+
+  async listOpsMerchantFinancePayouts(merchantId: string, query: OpsMerchantFinancePayoutsQueryDto) {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 25;
+    const createdAt: Prisma.DateTimeFilter = {};
+    if (query.createdFrom) {
+      createdAt.gte = new Date(query.createdFrom);
+    }
+    if (query.createdTo) {
+      createdAt.lte = new Date(query.createdTo);
+    }
+    const where: Prisma.PayoutWhereInput = {
+      merchantId,
+      ...(query.currency ? { currency: query.currency.toUpperCase() } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(Object.keys(createdAt).length > 0 ? { createdAt } : {}),
+    };
+
+    const [rows, total] = await Promise.all([
+      this.prisma.payout.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        select: {
+          id: true,
+          merchantId: true,
+          currency: true,
+          status: true,
+          windowStartAt: true,
+          windowEndAt: true,
+          grossMinor: true,
+          feeMinor: true,
+          netMinor: true,
+          createdAt: true,
+        },
+      }),
+      this.prisma.payout.count({ where }),
+    ]);
+
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        merchantId: row.merchantId,
+        currency: row.currency,
+        status: row.status,
+        windowStartAt: row.windowStartAt,
+        windowEndAt: row.windowEndAt,
+        grossMinor: BigInt(row.grossMinor).toString(),
+        feeMinor: BigInt(row.feeMinor).toString(),
+        netMinor: BigInt(row.netMinor).toString(),
+        createdAt: row.createdAt,
+      })),
+      page: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      },
     };
   }
 

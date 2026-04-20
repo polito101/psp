@@ -2,6 +2,9 @@ import { BadRequestException, Controller, Get, Param, Query, UseGuards } from '@
 import { ApiOperation, ApiParam, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { InternalSecretGuard } from '../common/guards/internal-secret.guard';
 import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
+import { OpsMerchantFinancePayoutsQueryDto } from './dto/ops-merchant-finance-payouts-query.dto';
+import { OpsMerchantFinanceSummaryQueryDto } from './dto/ops-merchant-finance-summary-query.dto';
+import { OpsMerchantFinanceTransactionsQueryDto } from './dto/ops-merchant-finance-transactions-query.dto';
 import { OpsPaymentDetailQueryDto } from './dto/ops-payment-detail-query.dto';
 import { OpsTransactionCountsQueryDto } from './dto/ops-transaction-counts-query.dto';
 import { OpsVolumeHourlyQueryDto } from './dto/ops-volume-hourly-query.dto';
@@ -71,6 +74,39 @@ export class PaymentsV2InternalController {
   })
   async listTransactions(@Query() query: ListOpsTransactionsDto) {
     return this.payments.listOpsTransactions(query);
+  }
+
+  @Get('ops/merchants/:merchantId/finance/summary')
+  @ApiOperation({
+    summary: 'Resumen financiero por merchant: totales gross/fee/net (minor units)',
+  })
+  async merchantFinanceSummary(
+    @Param('merchantId') merchantId: string,
+    @Query() query: OpsMerchantFinanceSummaryQueryDto,
+  ) {
+    return this.payments.getOpsMerchantFinanceSummary(merchantId, query);
+  }
+
+  @Get('ops/merchants/:merchantId/finance/transactions')
+  @ApiOperation({
+    summary: 'Listado financiero por merchant con gross/fee/net por transacción',
+  })
+  async merchantFinanceTransactions(
+    @Param('merchantId') merchantId: string,
+    @Query() query: OpsMerchantFinanceTransactionsQueryDto,
+  ) {
+    return this.payments.listOpsMerchantFinanceTransactions(merchantId, query);
+  }
+
+  @Get('ops/merchants/:merchantId/finance/payouts')
+  @ApiOperation({
+    summary: 'Listado de payouts por merchant (filtros por estado/divisa/rango)',
+  })
+  async merchantFinancePayouts(
+    @Param('merchantId') merchantId: string,
+    @Query() query: OpsMerchantFinancePayoutsQueryDto,
+  ) {
+    return this.payments.listOpsMerchantFinancePayouts(merchantId, query);
   }
 
   @Get('ops/payments/:paymentId')
