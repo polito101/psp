@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { MerchantFinancePayoutsResponse } from "@/lib/api/contracts";
 import { mapProxyError, proxyInternalGet } from "@/lib/server/backoffice-api";
 import { enforceInternalRouteAuth } from "@/lib/server/internal-route-auth";
+import { enforceMerchantScope } from "@/lib/server/internal-route-scope";
 
 const paramSchema = z.object({
   merchantId: z.string().trim().min(1).max(64),
@@ -57,15 +58,20 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ merchantId: string }> },
 ) {
-  const unauthorizedResponse = enforceInternalRouteAuth(request);
-  if (unauthorizedResponse) {
-    return unauthorizedResponse;
+  const auth = await enforceInternalRouteAuth(request);
+  if (!auth.ok) {
+    return auth.response;
   }
 
   const { merchantId } = await params;
   const parsedParams = paramSchema.safeParse({ merchantId });
   if (!parsedParams.success) {
     return NextResponse.json({ message: "Invalid merchantId" }, { status: 400 });
+  }
+
+  const scopeResp = enforceMerchantScope(auth.claims, parsedParams.data.merchantId);
+  if (scopeResp) {
+    return scopeResp;
   }
 
   const parse = querySchema.safeParse(Object.fromEntries(request.nextUrl.searchParams.entries()));
@@ -88,6 +94,7 @@ export async function GET(
     const data = await proxyInternalGet<MerchantFinancePayoutsResponse>({
       path: `/api/v2/payments/ops/merchants/${encoded}/finance/payouts`,
       searchParams: searchParams.size > 0 ? searchParams : undefined,
+      backofficeScope: auth.claims,
     });
     return NextResponse.json(data);
   } catch (error) {

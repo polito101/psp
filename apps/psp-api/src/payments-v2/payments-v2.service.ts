@@ -1579,7 +1579,10 @@ export class PaymentsV2Service {
    * @returns Agregado listo para JSON (Nest serializa `Date` en ISO).
    * @throws NotFoundException si no existe el pago.
    */
-  async getOpsPaymentDetail(paymentId: string, options?: { includePayload?: boolean }) {
+  async getOpsPaymentDetail(
+    paymentId: string,
+    options?: { includePayload?: boolean; backofficeMerchantScopeId?: string },
+  ) {
     const includePayload = options?.includePayload === true;
     const row = await this.prisma.payment.findUnique({
       where: { id: paymentId },
@@ -1607,6 +1610,11 @@ export class PaymentsV2Service {
 
     if (!row) {
       throw new NotFoundException({ message: 'Payment not found', paymentId });
+    }
+
+    const scopeId = options?.backofficeMerchantScopeId;
+    if (scopeId && row.merchantId !== scopeId) {
+      throw new ForbiddenException('Cross-merchant access denied');
     }
 
     const [attemptsTotal, attemptsDesc] = await Promise.all([

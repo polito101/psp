@@ -1,4 +1,4 @@
-import { ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import { ExecutionContext, ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { InternalSecretGuard } from './internal-secret.guard';
 
 // Wrapping timingSafeEqual en jest.fn() delegando a la implementación real.
@@ -17,10 +17,12 @@ import { timingSafeEqual } from 'crypto';
 
 const makeContext = (
   headers: Record<string, string | string[] | undefined>,
+  path = '/api/v2/payments/ops/transactions',
+  query: Record<string, unknown> = {},
 ): ExecutionContext =>
   ({
     switchToHttp: () => ({
-      getRequest: () => ({ headers }),
+      getRequest: () => ({ headers, path, query }),
     }),
   }) as unknown as ExecutionContext;
 
@@ -99,5 +101,73 @@ describe('InternalSecretGuard', () => {
     ).toThrow(UnauthorizedException);
 
     expect(timingSafeEqual).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws Forbidden when merchant scope path merchant mismatches finance route', () => {
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+    expect(() =>
+      guard.canActivate(
+        makeContext(
+          {
+            'x-internal-secret': VALID_SECRET,
+            'x-backoffice-role': 'merchant',
+            'x-backoffice-merchant-id': 'mrc_1',
+          },
+          '/api/v2/payments/ops/merchants/mrc_2/finance/summary',
+          {},
+        ),
+      ),
+    ).toThrow(ForbiddenException);
+  });
+
+  it('throws Forbidden when merchant scope hits global metrics', () => {
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+    expect(() =>
+      guard.canActivate(
+        makeContext(
+          {
+            'x-internal-secret': VALID_SECRET,
+            'x-backoffice-role': 'merchant',
+            'x-backoffice-merchant-id': 'mrc_1',
+          },
+          '/api/v2/payments/ops/metrics',
+          {},
+        ),
+      ),
+    ).toThrow(ForbiddenException);
+  });
+
+  it('throws Forbidden when merchant scope lists transactions without matching merchantId query', () => {
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+    expect(() =>
+      guard.canActivate(
+        makeContext(
+          {
+            'x-internal-secret': VALID_SECRET,
+            'x-backoffice-role': 'merchant',
+            'x-backoffice-merchant-id': 'mrc_1',
+          },
+          '/api/v2/payments/ops/transactions',
+          {},
+        ),
+      ),
+    ).toThrow(ForbiddenException);
+  });
+
+  it('allows merchant scope when merchantId query matches', () => {
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+    expect(
+      guard.canActivate(
+        makeContext(
+          {
+            'x-internal-secret': VALID_SECRET,
+            'x-backoffice-role': 'merchant',
+            'x-backoffice-merchant-id': 'mrc_1',
+          },
+          '/api/v2/payments/ops/transactions',
+          { merchantId: 'mrc_1' },
+        ),
+      ),
+    ).toBe(true);
   });
 });

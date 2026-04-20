@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { OpsPaymentDetailResponse } from "@/lib/api/contracts";
 import { mapProxyError, proxyInternalGet } from "@/lib/server/backoffice-api";
 import { enforceInternalRouteAuth } from "@/lib/server/internal-route-auth";
+import { enforceMerchantScope } from "@/lib/server/internal-route-scope";
 
 const paramSchema = z.object({
   paymentId: z.string().trim().min(1).max(64),
@@ -12,9 +13,9 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ paymentId: string }> },
 ) {
-  const unauthorizedResponse = enforceInternalRouteAuth(request);
-  if (unauthorizedResponse) {
-    return unauthorizedResponse;
+  const auth = await enforceInternalRouteAuth(request);
+  if (!auth.ok) {
+    return auth.response;
   }
 
   const { paymentId } = await params;
@@ -32,7 +33,12 @@ export async function GET(
     const data = await proxyInternalGet<OpsPaymentDetailResponse>({
       path: `/api/v2/payments/ops/payments/${encoded}`,
       searchParams: searchParams.size > 0 ? searchParams : undefined,
+      backofficeScope: auth.claims,
     });
+    const scopeResp = enforceMerchantScope(auth.claims, data.merchantId);
+    if (scopeResp) {
+      return scopeResp;
+    }
     return NextResponse.json(data);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unhandled proxy error";

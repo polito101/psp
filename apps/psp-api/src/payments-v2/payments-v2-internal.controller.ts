@@ -1,6 +1,18 @@
-import { BadRequestException, Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Controller,
+  Get,
+  Param,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiOperation, ApiParam, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
-import { InternalSecretGuard } from '../common/guards/internal-secret.guard';
+import {
+  InternalSecretGuard,
+  readBackofficeMerchantScopeId,
+} from '../common/guards/internal-secret.guard';
+import type { Request } from 'express';
 import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
 import { OpsMerchantFinancePayoutsQueryDto } from './dto/ops-merchant-finance-payouts-query.dto';
 import { OpsMerchantFinanceSummaryQueryDto } from './dto/ops-merchant-finance-summary-query.dto';
@@ -126,11 +138,19 @@ export class PaymentsV2InternalController {
       'Si es true, cada intento incluye `responsePayload` (respuesta cruda de proveedor; solo depuración). Por defecto omitido.',
     schema: { type: 'boolean', default: false },
   })
-  async getOpsPayment(@Param('paymentId') paymentId: string, @Query() query: OpsPaymentDetailQueryDto) {
+  async getOpsPayment(
+    @Param('paymentId') paymentId: string,
+    @Query() query: OpsPaymentDetailQueryDto,
+    @Req() req: Request,
+  ) {
     const id = paymentId?.trim();
     if (!id || id.length > 64) {
       throw new BadRequestException('Invalid paymentId');
     }
-    return this.payments.getOpsPaymentDetail(id, { includePayload: query.includePayload === true });
+    const backofficeMerchantScopeId = readBackofficeMerchantScopeId(req);
+    return this.payments.getOpsPaymentDetail(id, {
+      includePayload: query.includePayload === true,
+      backofficeMerchantScopeId,
+    });
   }
 }

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import type { SessionClaims } from "@/lib/server/auth/session-claims";
 
 const DEFAULT_API_BASE_URL = "http://localhost:3000";
 const DEFAULT_PROXY_TIMEOUT_MS = 5000;
@@ -12,6 +13,8 @@ const PROXY_UPSTREAM_LOG_PREVIEW_MAX_CHARS = 200;
 type ProxyRequestOptions = {
   path: string;
   searchParams?: URLSearchParams;
+  /** Alcance del caller BFF; se reenvía a psp-api para defensa en profundidad. */
+  backofficeScope?: SessionClaims;
 };
 
 function validateAndNormalizeApiOrigin(rawBaseUrl: string): string {
@@ -161,14 +164,23 @@ export async function proxyInternalGet<T>(options: ProxyRequestOptions): Promise
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), DEFAULT_PROXY_TIMEOUT_MS);
 
+  const headers: Record<string, string> = {
+    "X-Internal-Secret": internalSecret,
+  };
+  const scope = options.backofficeScope;
+  if (scope?.role === "admin") {
+    headers["X-Backoffice-Role"] = "admin";
+  } else if (scope?.role === "merchant") {
+    headers["X-Backoffice-Role"] = "merchant";
+    headers["X-Backoffice-Merchant-Id"] = scope.merchantId;
+  }
+
   let response: Response;
   try {
     response = await fetch(url.toString(), {
       method: "GET",
       redirect: "manual",
-      headers: {
-        "X-Internal-Secret": internalSecret,
-      },
+      headers,
       cache: "no-store",
       signal: controller.signal,
     });

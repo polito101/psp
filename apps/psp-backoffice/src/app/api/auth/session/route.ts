@@ -1,11 +1,28 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { z } from "zod";
+import { signSession } from "@/lib/server/auth/session-claims";
 import {
   BACKOFFICE_ADMIN_COOKIE_NAME,
+  BACKOFFICE_SESSION_COOKIE_NAME,
+  getSessionJwtSecret,
   validateAdminTokenForSession,
+  validateMerchantPortalLogin,
 } from "@/lib/server/internal-route-auth";
 
 const COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 7;
+
+const loginBodySchema = z.discriminatedUnion("mode", [
+  z.object({
+    mode: z.literal("admin"),
+    token: z.string().min(1),
+  }),
+  z.object({
+    mode: z.literal("merchant"),
+    merchantId: z.string().trim().min(1).max(64),
+    merchantToken: z.string().min(1),
+  }),
+]);
 
 function sessionCookieOptions() {
   return {
@@ -18,6 +35,13 @@ function sessionCookieOptions() {
 }
 
 export async function POST(request: NextRequest) {
+  let jwtSecret: string;
+  try {
+    jwtSecret = getSessionJwtSecret();
+  } catch {
+    return NextResponse.json({ message: "Backoffice auth is misconfigured" }, { status: 500 });
+  }
+
   let body: unknown;
   try {
     body = await request.json();
@@ -25,27 +49,44 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message: "Invalid JSON" }, { status: 400 });
   }
 
-  const token =
-    typeof body === "object" && body !== null && "token" in body && typeof (body as { token: unknown }).token === "string"
-      ? (body as { token: string }).token.trim()
-      : "";
-
-  if (!token) {
-    return NextResponse.json({ message: "Missing token" }, { status: 400 });
+  const parsed = loginBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { message: "Invalid body", issues: parsed.error.issues },
+      { status: 400 },
+    );
   }
 
-  const validation = validateAdminTokenForSession(token);
-  if (!validation.ok) {
-    return validation.response;
+  const data = parsed.data;
+  let jwt: string;
+
+  if (data.mode === "admin") {
+    const validation = validateAdminTokenForSession(data.token.trim());
+    if (!validation.ok) {
+      return validation.response;
+    }
+    jwt = await signSession({ sub: "admin:session", role: "admin" }, jwtSecret);
+  } else {
+    const validation = validateMerchantPortalLogin(data.merchantId, data.merchantToken);
+    if (!validation.ok) {
+      return validation.response;
+    }
+    const merchantId = data.merchantId.trim();
+    jwt = await signSession(
+      { sub: `merchant:${merchantId}`, role: "merchant", merchantId },
+      jwtSecret,
+    );
   }
 
   const res = NextResponse.json({ ok: true });
-  res.cookies.set(BACKOFFICE_ADMIN_COOKIE_NAME, token, sessionCookieOptions());
+  res.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt, sessionCookieOptions());
+  res.cookies.delete(BACKOFFICE_ADMIN_COOKIE_NAME);
   return res;
 }
 
 export async function DELETE() {
   const res = NextResponse.json({ ok: true });
+  res.cookies.delete(BACKOFFICE_SESSION_COOKIE_NAME);
   res.cookies.delete(BACKOFFICE_ADMIN_COOKIE_NAME);
   return res;
 }

@@ -4,6 +4,7 @@ import type { OpsTransactionsResponse } from "@/lib/api/contracts";
 import { OPS_PAYMENT_PROVIDERS } from "@/lib/api/payment-providers";
 import { mapProxyError, proxyInternalGet } from "@/lib/server/backoffice-api";
 import { enforceInternalRouteAuth } from "@/lib/server/internal-route-auth";
+import { forbiddenScopeResponse } from "@/lib/server/internal-route-scope";
 
 const querySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(25),
@@ -46,9 +47,9 @@ const querySchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  const unauthorizedResponse = enforceInternalRouteAuth(request);
-  if (unauthorizedResponse) {
-    return unauthorizedResponse;
+  const auth = await enforceInternalRouteAuth(request);
+  if (!auth.ok) {
+    return auth.response;
   }
 
   const parse = querySchema.safeParse(Object.fromEntries(request.nextUrl.searchParams.entries()));
@@ -62,9 +63,18 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  const { claims } = auth;
+  let queryData = parse.data;
+  if (claims.role === "merchant") {
+    if (queryData.merchantId !== undefined && queryData.merchantId !== claims.merchantId) {
+      return forbiddenScopeResponse();
+    }
+    queryData = { ...queryData, merchantId: claims.merchantId };
+  }
+
   try {
     const params = new URLSearchParams();
-    Object.entries(parse.data).forEach(([key, value]) => {
+    Object.entries(queryData).forEach(([key, value]) => {
       if (value !== undefined && value !== null && value !== "") {
         params.set(key, String(value));
       }
@@ -73,6 +83,7 @@ export async function GET(request: NextRequest) {
     const data = await proxyInternalGet<OpsTransactionsResponse>({
       path: "/api/v2/payments/ops/transactions",
       searchParams: params,
+      backofficeScope: claims,
     });
 
     return NextResponse.json(data);

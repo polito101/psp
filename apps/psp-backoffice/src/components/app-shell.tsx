@@ -53,6 +53,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <button
                 type="button"
                 onClick={logout}
+                title="Elimina la cookie de sesión JWT (backoffice_session)"
                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
               >
                 <LogOut size={14} aria-hidden />
