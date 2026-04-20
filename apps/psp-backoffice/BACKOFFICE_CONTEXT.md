@@ -1,6 +1,6 @@
 # BACKOFFICE_CONTEXT — PSP Backoffice
 
-Ultima actualizacion: 2026-04-19
+Ultima actualizacion: 2026-04-20
 
 Documento **local** del app `apps/psp-backoffice` (nombre distinto de `PROJECT_CONTEXT.md` en la raíz para evitar confusion). El monorepo mantiene visión global y API en **`PROJECT_CONTEXT.md`** (raíz); aquí se detalla solo el panel administrativo.
 
@@ -54,7 +54,9 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 |----------|-----|
 | `PSP_API_BASE_URL` | Base URL de `psp-api` (solo servidor) |
 | `PSP_INTERNAL_API_SECRET` | Secreto interno API; **nunca** al cliente |
-| `BACKOFFICE_ADMIN_SECRET` | Obligatorio para autorizar llamadas a `/api/internal/*` (Bearer o cookie HttpOnly); debe ser **distinto** de `PSP_INTERNAL_API_SECRET` |
+| `BACKOFFICE_ADMIN_SECRET` | Credencial de login **admin** (solo `POST /api/auth/session` modo admin); distinto de `PSP_INTERNAL_API_SECRET` |
+| `BACKOFFICE_SESSION_JWT_SECRET` | Firma del JWT en cookie `backoffice_session` (sesión admin/merchant); distinto de `PSP_INTERNAL_API_SECRET` y de `BACKOFFICE_ADMIN_SECRET` |
+| `BACKOFFICE_MERCHANT_PORTAL_SECRET` | Clave HMAC para login **merchant** (token = SHA256 hex de `merchantId`); distinto de `PSP_INTERNAL_API_SECRET` |
 | `NEXT_PUBLIC_TRANSACTIONS_REFRESH_MS` | Intervalo de auto-refresh del monitor (publico) |
 
 ## 5) Rutas de producto
@@ -70,7 +72,10 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 - El merchant **no** envía proveedor en `POST /api/v2/payments` (ruteo del PSP en API); los filtros por `provider` en este panel son solo operativos sobre datos ya persistidos. Los valores permitidos en BFF/UI siguen `OPS_PAYMENT_PROVIDERS` en `src/lib/api/payment-providers.ts` (debe mantenerse alineado con `PAYMENT_PROVIDER_NAMES` en `psp-api`).
 - Las rutas `app/api/internal/*` reenvian a endpoints internos de Nest (`/api/v2/payments/ops/...`, health, etc.) con `X-Internal-Secret` solo en servidor. El listado ops va a `.../ops/transactions`; los conteos agregados por estado del dashboard a `.../ops/transactions/counts` (`GET /api/internal/transactions/counts`); la serie de volumen horario a `.../ops/transactions/volume-hourly` (`GET /api/internal/transactions/volume-hourly`). Finanzas por merchant (resumen gross/fee/net, filas por `PaymentFeeQuote`, payouts): `GET /api/internal/merchants/:merchantId/finance/summary|transactions|payouts` → `.../ops/merchants/:merchantId/finance/...`. La respuesta de `volume-hourly` expone acumulados y totales en **unidades menores como string** (mismo contrato que la API Nest); el panel las convierte a `bigint` para el gráfico y el formateo.
 - Detalle de pago: `GET /api/internal/payments/:paymentId` hace proxy a `.../ops/payments/:id`. Por defecto **no** se incluye `responsePayload` por intento (menos payload y menos metadata de proveedor en el navegador). Solo si la peticion al BFF lleva `?includePayload=true` se reenvia ese flag a la API (uso depuracion).
-- Cada request al BFF debe llevar auth explícita: header `Authorization: Bearer <BACKOFFICE_ADMIN_SECRET>` o cookie HttpOnly `backoffice_admin_token` (valor igual al secreto configurado). Sin eso: `401`/`403`. Si faltan secretos o `BACKOFFICE_ADMIN_SECRET` no puede usarse de forma segura (p. ej. igual que `PSP_INTERNAL_API_SECRET`), el BFF responde `500` (fail-closed) en cualquier entorno.
+- Sesión: cookie HttpOnly `backoffice_session` con JWT (claims `role: admin` o `merchant` y `merchantId` si aplica). El BFF acepta también `Authorization: Bearer <JWT>` (p. ej. tests). Sin sesión válida: `401`/`403`. Faltan `BACKOFFICE_SESSION_JWT_SECRET` o conflictos con otros secretos → `500` (fail-closed).
+- Login: `POST /api/auth/session` con `{ "mode": "admin", "token": "<BACKOFFICE_ADMIN_SECRET>" }` o `{ "mode": "merchant", "merchantId": "...", "merchantToken": "<hmac_hex>" }`. Ver `README.md` para generar el HMAC.
+- Alcance **merchant** en BFF: rutas con `merchantId` en path o query fuerzan/validan contra el claim; métricas globales (`provider-health` → `ops/metrics`) solo **admin**. El proxy añade cabeceras `X-Backoffice-Role` y `X-Backoffice-Merchant-Id` para que `psp-api` vuelva a validar (defensa en profundidad).
+- Middleware (`src/middleware.ts`): páginas sin cookie de sesión redirigen a `/login`; rutas `/api/*` no se redirigen (el BFF sigue respondiendo 401/403).
 - Errores del proxy hacia `psp-api`: el cliente recibe un mensaje genérico; el detalle del fallo se registra en el servidor, no en el JSON de respuesta.
 - No leer secretos desde `NEXT_PUBLIC_*` salvo decision documentada; el patron actual mantiene secretos server-only.
 

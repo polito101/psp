@@ -1,8 +1,15 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import {
+  verifySession,
+  type SessionClaims,
+} from "@/lib/server/auth/session-claims";
 
 export const BACKOFFICE_ADMIN_COOKIE_NAME = "backoffice_admin_token";
+/** Cookie HttpOnly con JWT de sesión (admin o merchant). */
+export const BACKOFFICE_SESSION_COOKIE_NAME = "backoffice_session";
+
 const AUTH_SCHEME = "Bearer";
 
 function secureCompare(left: string, right: string): boolean {
@@ -28,6 +35,25 @@ function getAdminSecret(): string {
   return adminSecret;
 }
 
+export function getSessionJwtSecret(): string {
+  const sessionSecret = process.env.BACKOFFICE_SESSION_JWT_SECRET;
+  if (!sessionSecret) {
+    throw new Error("Missing BACKOFFICE_SESSION_JWT_SECRET in backoffice environment");
+  }
+
+  const pspInternalSecret = process.env.PSP_INTERNAL_API_SECRET;
+  if (pspInternalSecret && secureCompare(sessionSecret, pspInternalSecret)) {
+    throw new Error("BACKOFFICE_SESSION_JWT_SECRET must be different from PSP_INTERNAL_API_SECRET");
+  }
+
+  const adminSecret = process.env.BACKOFFICE_ADMIN_SECRET;
+  if (adminSecret && secureCompare(sessionSecret, adminSecret)) {
+    throw new Error("BACKOFFICE_SESSION_JWT_SECRET must be different from BACKOFFICE_ADMIN_SECRET");
+  }
+
+  return sessionSecret;
+}
+
 function getBearerToken(request: NextRequest): string | null {
   const authorizationHeader = request.headers.get("authorization");
   if (!authorizationHeader) {
@@ -42,16 +68,16 @@ function getBearerToken(request: NextRequest): string | null {
   return token.trim() || null;
 }
 
-function getRequestToken(request: NextRequest): string | null {
+function getRequestSessionToken(request: NextRequest): string | null {
   const bearerToken = getBearerToken(request);
   if (bearerToken) {
     return bearerToken;
   }
 
-  return request.cookies.get(BACKOFFICE_ADMIN_COOKIE_NAME)?.value ?? null;
+  return request.cookies.get(BACKOFFICE_SESSION_COOKIE_NAME)?.value ?? null;
 }
 
-/** Para `POST /api/auth/session`: valida el token contra el secreto configurado. */
+/** Para `POST /api/auth/session` modo admin: valida el token contra BACKOFFICE_ADMIN_SECRET. */
 export function validateAdminTokenForSession(
   token: string,
 ):
@@ -77,28 +103,93 @@ export function validateAdminTokenForSession(
   return { ok: true };
 }
 
-export function enforceInternalRouteAuth(request: NextRequest): NextResponse | null {
-  let adminSecret: string;
+/**
+ * Valida login merchant: `merchantToken` debe ser HMAC-SHA256(hex) de `merchantId` con BACKOFFICE_MERCHANT_PORTAL_SECRET.
+ */
+export function validateMerchantPortalLogin(
+  merchantId: string,
+  merchantToken: string,
+):
+  | { ok: true }
+  | { ok: false; response: NextResponse } {
+  const id = merchantId.trim();
+  const token = merchantToken.trim();
+  if (!id || !token) {
+    return {
+      ok: false,
+      response: NextResponse.json({ message: "Invalid credentials" }, { status: 401 }),
+    };
+  }
+
+  let portalSecret: string;
   try {
-    adminSecret = getAdminSecret();
+    portalSecret = getMerchantPortalSecret();
   } catch {
-    return NextResponse.json({ message: "Backoffice auth is misconfigured" }, { status: 500 });
+    return {
+      ok: false,
+      response: NextResponse.json({ message: "Backoffice auth is misconfigured" }, { status: 500 }),
+    };
   }
 
-  const requestToken = getRequestToken(request);
+  const expected = createHmac("sha256", portalSecret).update(id, "utf8").digest("hex");
+  if (!secureCompare(token, expected)) {
+    return {
+      ok: false,
+      response: NextResponse.json({ message: "Invalid credentials" }, { status: 401 }),
+    };
+  }
+
+  return { ok: true };
+}
+
+function getMerchantPortalSecret(): string {
+  const s = process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET;
+  if (!s) {
+    throw new Error("Missing BACKOFFICE_MERCHANT_PORTAL_SECRET in backoffice environment");
+  }
+  const pspInternal = process.env.PSP_INTERNAL_API_SECRET;
+  if (pspInternal && secureCompare(s, pspInternal)) {
+    throw new Error("BACKOFFICE_MERCHANT_PORTAL_SECRET must be different from PSP_INTERNAL_API_SECRET");
+  }
+  return s;
+}
+
+export type InternalRouteAuthResult =
+  | { ok: true; claims: SessionClaims }
+  | { ok: false; response: NextResponse };
+
+export async function enforceInternalRouteAuth(request: NextRequest): Promise<InternalRouteAuthResult> {
+  let sessionSecret: string;
+  try {
+    sessionSecret = getSessionJwtSecret();
+  } catch {
+    return {
+      ok: false,
+      response: NextResponse.json({ message: "Backoffice auth is misconfigured" }, { status: 500 }),
+    };
+  }
+
+  const requestToken = getRequestSessionToken(request);
   if (!requestToken) {
-    return NextResponse.json(
-      { message: "Missing backoffice credentials" },
-      {
-        status: 401,
-        headers: { "WWW-Authenticate": `${AUTH_SCHEME} realm="backoffice-internal"` },
-      },
-    );
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { message: "Missing backoffice credentials" },
+        {
+          status: 401,
+          headers: { "WWW-Authenticate": `${AUTH_SCHEME} realm="backoffice-internal"` },
+        },
+      ),
+    };
   }
 
-  if (!secureCompare(requestToken, adminSecret)) {
-    return NextResponse.json({ message: "Forbidden" }, { status: 403 });
+  try {
+    const claims = await verifySession(requestToken, sessionSecret);
+    return { ok: true, claims };
+  } catch {
+    return {
+      ok: false,
+      response: NextResponse.json({ message: "Forbidden" }, { status: 403 }),
+    };
   }
-
-  return null;
 }

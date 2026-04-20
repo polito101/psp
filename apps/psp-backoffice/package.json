@@ -16,6 +16,7 @@
     "@tanstack/react-table": "^8.21.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "jose": "^6.2.2",
     "lucide-react": "^1.8.0",
     "next": "16.2.3",
     "react": "19.2.4",
@@ -24,7 +25,6 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "vitest": "^3.2.4",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
@@ -33,6 +33,7 @@
     "eslint-config-next": "16.2.3",
     "openapi-typescript": "^7.10.1",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.4"
   }
 }
