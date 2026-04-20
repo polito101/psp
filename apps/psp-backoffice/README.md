@@ -26,6 +26,7 @@ Variables:
 
 ## Rutas principales
 
+- `/login` — Establece sesión en el navegador (cookie HttpOnly) con el mismo valor que `BACKOFFICE_ADMIN_SECRET`. Sin esto, las llamadas a `/api/internal/*` responden **401**.
 - `/` — Inicio con estadísticas del día (UTC) y gráfico de volumen hoy vs ayer.
 - `/transactions` — Panel de transacciones (lista ops contra la API vía BFF, export y filtros).
 - `/monitor` — Monitor operativo compacto (misma fuente + health de proveedores).
@@ -57,4 +58,5 @@ Salida esperada: `src/lib/api/generated/openapi.d.ts`.
 - Todos los llamados administrativos pasan por `src/app/api/internal/*`.
 - El secreto vive solo en variables server-side de Next.
 - Los endpoints `src/app/api/internal/*` exigen autenticación explícita: `Authorization: Bearer <BACKOFFICE_ADMIN_SECRET>` o cookie HttpOnly `backoffice_admin_token=<BACKOFFICE_ADMIN_SECRET>`.
+- En local, usa **`/login`** (o `POST /api/auth/session` con JSON `{ "token": "..." }`) para fijar la cookie; el cliente en `src/lib/api/client.ts` envía `credentials: "include"` en las peticiones al BFF.
 - En producción, no exponer el backoffice sin un gateway/SSO delante que inyecte la credencial (header o cookie) para usuarios autenticados/autorizados.

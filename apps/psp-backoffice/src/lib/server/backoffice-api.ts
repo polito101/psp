@@ -3,6 +3,12 @@ import { NextResponse } from "next/server";
 const DEFAULT_API_BASE_URL = "http://localhost:3000";
 const DEFAULT_PROXY_TIMEOUT_MS = 5000;
 
+/** Máximo de bytes leídos del cuerpo upstream en errores (evita OOM y payloads enormes). */
+const PROXY_UPSTREAM_BODY_READ_MAX_BYTES = 64 * 1024;
+
+/** Longitud máxima del preview en logs (caracteres, una sola línea saneada). */
+const PROXY_UPSTREAM_LOG_PREVIEW_MAX_CHARS = 200;
+
 type ProxyRequestOptions = {
   path: string;
   searchParams?: URLSearchParams;
@@ -47,13 +53,78 @@ function getServerConfig() {
   return { apiBaseOrigin, internalSecret };
 }
 
-/** Error lanzado cuando la API upstream responde con status no OK (incluye cuerpo textual). */
+function mergeUint8Arrays(parts: readonly Uint8Array[]): Uint8Array {
+  const total = parts.reduce((sum, p) => sum + p.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.length;
+  }
+  return out;
+}
+
+/**
+ * Lee el cuerpo como texto UTF-8 con un tope de bytes. Si se trunca, no se consume el resto del stream.
+ */
+async function readResponseTextWithByteLimit(
+  response: Response,
+  maxBytes: number,
+): Promise<{ text: string; truncated: boolean }> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const text = await response.text();
+    const bytes = new TextEncoder().encode(text);
+    if (bytes.length <= maxBytes) {
+      return { text, truncated: false };
+    }
+    return {
+      text: new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, maxBytes)),
+      truncated: true,
+    };
+  }
+
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value?.length) continue;
+
+    if (total + value.length <= maxBytes) {
+      parts.push(value);
+      total += value.length;
+    } else {
+      parts.push(value.slice(0, maxBytes - total));
+      truncated = true;
+      await reader.cancel().catch(() => {});
+      break;
+    }
+  }
+
+  const merged = mergeUint8Arrays(parts);
+  return {
+    text: new TextDecoder("utf-8", { fatal: false }).decode(merged),
+    truncated,
+  };
+}
+
+function sanitizeSingleLinePreview(text: string, maxChars: number): string {
+  const withoutControls = text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
+  const collapsed = withoutControls.replace(/\s+/g, " ").trim();
+  return collapsed.slice(0, maxChars);
+}
+
+/** Error cuando la API upstream responde con status no OK. El cuerpo no va en `message` (logs/PII). */
 export class ProxyUpstreamError extends Error {
   constructor(
     readonly upstreamStatus: number,
     readonly bodyText: string,
+    readonly bodyTruncated: boolean = false,
   ) {
-    super(`PSP API ${upstreamStatus}: ${bodyText || "empty response"}`);
+    super(`PSP API ${upstreamStatus} (non-OK)`);
     this.name = "ProxyUpstreamError";
   }
 }
@@ -93,8 +164,11 @@ export async function proxyInternalGet<T>(options: ProxyRequestOptions): Promise
   }
 
   if (!response.ok) {
-    const raw = await response.text();
-    throw new ProxyUpstreamError(response.status, raw);
+    const { text, truncated } = await readResponseTextWithByteLimit(
+      response,
+      PROXY_UPSTREAM_BODY_READ_MAX_BYTES,
+    );
+    throw new ProxyUpstreamError(response.status, text, truncated);
   }
 
   return (await response.json()) as T;
@@ -104,9 +178,16 @@ export async function proxyInternalGet<T>(options: ProxyRequestOptions): Promise
 const PROXY_UPSTREAM_MESSAGE_MAX = 500;
 
 export function mapProxyError(error: unknown): NextResponse {
-  console.error("backoffice_proxy_error", error);
-
   if (error instanceof ProxyUpstreamError) {
+    const bodyBytes = new TextEncoder().encode(error.bodyText).length;
+    console.error("backoffice_proxy_error", {
+      kind: "ProxyUpstreamError",
+      upstreamStatus: error.upstreamStatus,
+      bodyByteLength: bodyBytes,
+      bodyTruncatedByReader: error.bodyTruncated,
+      bodyPreview: sanitizeSingleLinePreview(error.bodyText, PROXY_UPSTREAM_LOG_PREVIEW_MAX_CHARS),
+    });
+
     const { upstreamStatus, bodyText } = error;
 
     if (upstreamStatus >= 400 && upstreamStatus < 500) {
@@ -121,6 +202,8 @@ export function mapProxyError(error: unknown): NextResponse {
 
     return NextResponse.json({ message: "Upstream service unavailable" }, { status: 502 });
   }
+
+  console.error("backoffice_proxy_error", error);
 
   const err = error instanceof Error ? error : new Error(String(error));
   if (err.name === "AbortError") {

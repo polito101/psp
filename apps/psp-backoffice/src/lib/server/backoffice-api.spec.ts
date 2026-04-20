@@ -15,7 +15,17 @@ describe("mapProxyError", () => {
     const body = (await res.json()) as { message: string };
     expect(body.message).toBe("Upstream service unavailable");
     expect(JSON.stringify(body)).not.toContain("password");
-    expect(spy).toHaveBeenCalled();
+    expect(spy).toHaveBeenCalledWith(
+      "backoffice_proxy_error",
+      expect.objectContaining({
+        kind: "ProxyUpstreamError",
+        upstreamStatus: 500,
+        bodyByteLength: expect.any(Number),
+        bodyTruncatedByReader: false,
+      }),
+    );
+    const payload = spy.mock.calls[0]?.[1] as { bodyPreview?: string };
+    expect(payload.bodyPreview?.length).toBeLessThanOrEqual(200);
   });
 
   it("for upstream 400 with JSON body forwards status and payload", async () => {

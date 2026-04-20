@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
-import { enforceInternalRouteAuth } from "./internal-route-auth";
+import { enforceInternalRouteAuth, validateAdminTokenForSession } from "./internal-route-auth";
 
 describe("enforceInternalRouteAuth", () => {
   const snapshot = { ...process.env };
@@ -70,5 +70,35 @@ describe("enforceInternalRouteAuth", () => {
     const res = enforceInternalRouteAuth(req);
 
     expect(res).toBeNull();
+  });
+});
+
+describe("validateAdminTokenForSession", () => {
+  const snapshot = { ...process.env };
+
+  beforeEach(() => {
+    process.env = { ...snapshot };
+  });
+
+  afterEach(() => {
+    process.env = { ...snapshot };
+  });
+
+  it("returns ok when token matches BACKOFFICE_ADMIN_SECRET", () => {
+    process.env.BACKOFFICE_ADMIN_SECRET = "admin-secret";
+    process.env.PSP_INTERNAL_API_SECRET = "internal-only";
+
+    expect(validateAdminTokenForSession("admin-secret")).toEqual({ ok: true });
+  });
+
+  it("returns 401 response when token does not match", () => {
+    process.env.BACKOFFICE_ADMIN_SECRET = "admin-secret";
+    process.env.PSP_INTERNAL_API_SECRET = "internal-only";
+
+    const result = validateAdminTokenForSession("wrong");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.response.status).toBe(401);
+    }
   });
 });
