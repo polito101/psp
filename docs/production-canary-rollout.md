@@ -6,9 +6,9 @@ Activar `payments-v2` en producción de forma gradual y reversible, con observab
 
 ## Precondiciones
 
-- `PAYMENTS_PROVIDER_ORDER=stripe` en producción (sin `mock`).
+- `PAYMENTS_PROVIDER_ORDER=acme` en producción (sin `mock`).
 - `PAYMENTS_V2_ENABLED_MERCHANTS` inicializado con una lista mínima de merchants canary.
-- Secrets de Stripe productivos validados (`STRIPE_SECRET_KEY`) y `STRIPE_API_BASE_URL` en valor seguro por defecto.
+- Secrets del proveedor productivo validados.
 - Runbook de incidentes actualizado y ownership on-call definido.
 
 ## Plantilla operativa previa al canary (rellenar antes de activar)
@@ -49,7 +49,7 @@ Activar `payments-v2` en producción de forma gradual y reversible, con observab
 
 ## Fallback y contención
 
-Si Stripe degrada o se abre circuit breaker de forma sostenida:
+Si el proveedor principal degrada o se abre circuit breaker de forma sostenida:
 
 1. **Contención inmediata**
    - Congelar avance de rollout.

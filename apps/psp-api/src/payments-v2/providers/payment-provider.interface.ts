@@ -1,12 +1,8 @@
 import { PAYMENT_V2_STATUS, PaymentOperation, PaymentProviderName, PaymentV2Status } from '../domain/payment-status';
 
 type ProviderNextAction = {
-  type: 'redirect' | '3ds' | 'none' | 'confirm_with_stripe_js';
+  type: 'redirect' | '3ds' | 'none';
   url?: string;
-  /** Stripe PaymentIntent `client_secret` (Stripe.js: confirmCardPayment / handleNextAction). */
-  clientSecret?: string;
-  /** Valor de `payment_intent.next_action.type` cuando aplica. */
-  stripeNextActionType?: string;
 };
 
 type ProviderResultCommon = {
@@ -36,7 +32,7 @@ export type ProviderContext = {
   currency: string;
   providerPaymentId?: string | null;
   /**
-   * Key estable por operación para deduplicación del proveedor (p. ej. Stripe Idempotency-Key).
+   * Key estable por operación para deduplicación del proveedor.
    * Debe mantenerse constante entre retries internos de `runWithRetry()`.
    */
   idempotencyKey?: string;
@@ -45,10 +41,6 @@ export type ProviderContext = {
    * No sustituye la idempotencyKey del proveedor ni la idempotencia de negocio del comercio.
    */
   correlationId?: string;
-  /** Solo operación `create` + adapter Stripe: confirmación server-side. */
-  stripePaymentMethodId?: string;
-  /** URL de retorno si el método de pago requiere redirect tras `confirm`. */
-  stripeReturnUrl?: string;
 };
 
 export interface PaymentProvider {

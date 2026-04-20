@@ -121,9 +121,9 @@ export function validateAdminTokenForSession(
   return { ok: true };
 }
 
-/** Ventana máxima de validez del `exp` en el token merchant (`expUnix:signatureHex`). */
+/** Antigüedad máxima permitida de `exp` respecto a `now` (ventana anti-replay hacia el pasado). */
 const MERCHANT_LOGIN_MAX_AGE_SEC = 300;
-/** Tolera reloj adelantado del cliente (segundos). */
+/** Tolera `exp` ligeramente en el futuro por desfase de reloj del cliente (segundos). */
 const MERCHANT_LOGIN_CLOCK_SKEW_SEC = 60;
 
 /**
@@ -180,7 +180,7 @@ export function validateMerchantPortalLogin(
   }
 
   const nowSec = Math.floor(Date.now() / 1000);
-  if (expSec < nowSec - MERCHANT_LOGIN_CLOCK_SKEW_SEC || expSec > nowSec + MERCHANT_LOGIN_MAX_AGE_SEC) {
+  if (expSec < nowSec - MERCHANT_LOGIN_MAX_AGE_SEC || expSec > nowSec + MERCHANT_LOGIN_CLOCK_SKEW_SEC) {
     return {
       ok: false,
       response: NextResponse.json({ message: "Invalid credentials" }, { status: 401 }),

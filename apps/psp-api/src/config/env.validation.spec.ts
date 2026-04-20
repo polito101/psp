@@ -101,7 +101,7 @@ describe('validateEnv payments provider retry backoff', () => {
     expect(() =>
       validateEnv({
         ...minimalEnv(),
-        PAYMENTS_PROVIDER_ORDER: 'stripe,unknownpsp',
+        PAYMENTS_PROVIDER_ORDER: 'mock,unknownpsp',
       }),
     ).toThrow(/invalid provider/);
   });
@@ -110,9 +110,9 @@ describe('validateEnv payments provider retry backoff', () => {
     const out = validateEnv({
       ...minimalEnv(),
       NODE_ENV: 'development',
-      PAYMENTS_PROVIDER_ORDER: 'stripe,mock,acme',
+      PAYMENTS_PROVIDER_ORDER: 'mock,acme',
     });
-    expect(out.PAYMENTS_PROVIDER_ORDER).toBe('stripe,mock,acme');
+    expect(out.PAYMENTS_PROVIDER_ORDER).toBe('mock,acme');
   });
 
   it('no rechaza ventana >300s si la sonda half-open Redis no aplica (half-open desactivado por defecto)', () => {

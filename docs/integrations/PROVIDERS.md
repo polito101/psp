@@ -6,14 +6,13 @@ Selección para **desarrollo y staging**. Sustituir credenciales por contratos p
 
 | Criterio | Elección recomendada (MVP) | Alternativas |
 |----------|----------------------------|--------------|
-| API estable, tokenización, pruebas | **Stripe** (PaymentIntents + test keys) o **Adyen** (test) | Checkout.com, Worldpay según región |
-| Sandbox sin coste marginal | Stripe Test Mode | — |
-| 3DS / SCA | Stripe Test 3DS | Adyen authentication test |
+| API estable, tokenización, pruebas | **Adyen** (test) o adquirente equivalente | Checkout.com, Worldpay según región |
+| Sandbox sin coste marginal | Entorno de pruebas del adquirente elegido | — |
+| 3DS / SCA | Entorno de autenticación de pruebas del adquirente | — |
 
-**Decisión MVP:** **Stripe** como integración de referencia en el conector `FiatConnector` (modo test): redirect/hosted Checkout Session o Payment Element según implementación del servicio de checkout alojado.
+**Decisión MVP:** usar proveedor **mock** en esta etapa y dejar `Acme` como placeholder para la integración fiat real.
 
-- Documentación: [Stripe Testing](https://stripe.com/docs/testing)
-- Variables: `STRIPE_SECRET_KEY` (test), `STRIPE_WEBHOOK_SECRET` para validar webhooks del adquirente hacia el PSP.
+- Variables: configurar secretos del adquirente seleccionado cuando se implemente integración real.
 
 > Si la jurisdicción o el modelo de negocio exige otro adquirente, el contrato `AcquirerPort` en código permite sustituir implementación sin cambiar el orquestador.
 

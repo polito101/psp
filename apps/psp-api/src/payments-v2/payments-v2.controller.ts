@@ -30,7 +30,7 @@ export class PaymentsV2Controller {
   @ApiOperation({
     summary: 'Crear payment intent (v2 orquestador multi-proveedor)',
     description:
-      'El comercio no elige proveedor: el PSP enruta según configuración del servidor (`PAYMENTS_PROVIDER_ORDER`, circuitos, disponibilidad). Stripe en el stack actual es adapter de pruebas y se retirará cuando exista PSP real.',
+      'El comercio no elige proveedor: el PSP enruta según configuración del servidor (`PAYMENTS_PROVIDER_ORDER`, circuitos, disponibilidad).',
   })
   @ApiHeader({
     name: 'Idempotency-Key',

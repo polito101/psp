@@ -59,7 +59,7 @@ export class ProviderRegistryService {
   }
 
   private resolveConfiguredProviderOrder(): PaymentProviderName[] {
-    const raw = this.config.get<string>('PAYMENTS_PROVIDER_ORDER') ?? 'stripe';
+    const raw = this.config.get<string>('PAYMENTS_PROVIDER_ORDER') ?? 'mock';
     const entries = raw
       .split(',')
       .map((entry) => entry.trim())

@@ -137,8 +137,6 @@ jobs:
           SANDBOX_INTERNAL_API_SECRET: ${{ secrets.SANDBOX_INTERNAL_API_SECRET }}
           SANDBOX_APP_ENCRYPTION_KEY: ${{ secrets.SANDBOX_APP_ENCRYPTION_KEY }}
           SANDBOX_BASE_URL: ${{ vars.SANDBOX_BASE_URL }}
-          SANDBOX_SMOKE_API_KEY_STRIPE: ${{ secrets.SANDBOX_SMOKE_API_KEY_STRIPE }}
-          SANDBOX_STRIPE_PAYMENT_METHOD_ID: ${{ secrets.SANDBOX_STRIPE_PAYMENT_METHOD_ID }}
         run: |
           missing=0
           for v in SANDBOX_DEPLOY_HOOK_URL SANDBOX_DATABASE_URL SANDBOX_REDIS_URL SANDBOX_INTERNAL_API_SECRET SANDBOX_APP_ENCRYPTION_KEY SANDBOX_BASE_URL; do
@@ -149,7 +147,6 @@ jobs:
           done
           if [ "$missing" -eq 1 ]; then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "stripe_smoke_enabled=false" >> "$GITHUB_OUTPUT"
             if [ "$IS_FORK" = "true" ]; then
               echo "Fork detected; skipping sandbox deploy without failing."
               exit 0
@@ -158,11 +155,6 @@ jobs:
             exit 1
           fi
           echo "enabled=true" >> "$GITHUB_OUTPUT"
-          if [ -n "$SANDBOX_SMOKE_API_KEY_STRIPE" ] && [ -n "$SANDBOX_STRIPE_PAYMENT_METHOD_ID" ]; then
-            echo "stripe_smoke_enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "stripe_smoke_enabled=false" >> "$GITHUB_OUTPUT"
-          fi
       - uses: actions/checkout@v4
         if: steps.gate.outputs.enabled == 'true'
       - uses: actions/setup-node@v4
@@ -221,10 +213,3 @@ jobs:
       - name: Run smoke tests against sandbox
         if: steps.gate.outputs.enabled == 'true'
         run: npm run test:smoke:sandbox
-      - name: Run Stripe smoke tests against sandbox (optional)
-        if: steps.gate.outputs.enabled == 'true' && steps.gate.outputs.stripe_smoke_enabled == 'true'
-        env:
-          SMOKE_STRIPE_ENABLED: "true"
-          SMOKE_API_KEY: ${{ secrets.SANDBOX_SMOKE_API_KEY_STRIPE }}
-          SMOKE_STRIPE_PAYMENT_METHOD_ID: ${{ secrets.SANDBOX_STRIPE_PAYMENT_METHOD_ID }}
-        run: npm run test:smoke:stripe

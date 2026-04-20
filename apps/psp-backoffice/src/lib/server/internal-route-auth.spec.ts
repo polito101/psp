@@ -165,6 +165,16 @@ describe("validateMerchantPortalLogin", () => {
     expect(validateMerchantPortalLogin("mrc_test", longGarbage).ok).toBe(false);
   });
 
+  it("returns ok when exp is within max age in the past (e.g. now - 120s)", () => {
+    const mid = "mrc_test";
+    const exp = Math.floor(Date.now() / 1000) - 120;
+    const payload = `${mid}.${exp}`;
+    const sig = createHmac("sha256", process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET!)
+      .update(payload, "utf8")
+      .digest("hex");
+    expect(validateMerchantPortalLogin(mid, `${exp}:${sig}`)).toEqual({ ok: true });
+  });
+
   it("returns 401 when exp is too old", () => {
     const mid = "mrc_test";
     const exp = Math.floor(Date.now() / 1000) - 400;
@@ -175,7 +185,17 @@ describe("validateMerchantPortalLogin", () => {
     expect(validateMerchantPortalLogin(mid, `${exp}:${sig}`).ok).toBe(false);
   });
 
-  it("returns 401 when exp is too far in the future (replay outside window)", () => {
+  it("returns 401 when exp is beyond allowed clock skew into the future", () => {
+    const mid = "mrc_test";
+    const exp = Math.floor(Date.now() / 1000) + 120;
+    const payload = `${mid}.${exp}`;
+    const sig = createHmac("sha256", process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET!)
+      .update(payload, "utf8")
+      .digest("hex");
+    expect(validateMerchantPortalLogin(mid, `${exp}:${sig}`).ok).toBe(false);
+  });
+
+  it("returns 401 when exp is far in the future", () => {
     const mid = "mrc_test";
     const exp = Math.floor(Date.now() / 1000) + 3600;
     const payload = `${mid}.${exp}`;

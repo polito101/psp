@@ -140,7 +140,7 @@ describe('payments v2 integration: concurrencia + webhooks + métricas + fallbac
   );
 
   it(
-    'hace fallback stripe -> mock cuando stripe no está disponible',
+    'crea intento con proveedor mock y registra attempts coherentes',
     async () => {
       const { apiKey } = await createSmokeMerchant(baseUrl);
 
@@ -150,10 +150,7 @@ describe('payments v2 integration: concurrencia + webhooks + métricas + fallbac
         '/api/v2/payments',
         {
           headers: { 'X-API-Key': apiKey, 'Idempotency-Key': randomUUID() },
-          body: {
-            amountMinor: 1999,
-            currency: 'EUR',
-          },
+          body: { amountMinor: 1999, currency: 'EUR' },
         },
       );
 
@@ -163,25 +160,7 @@ describe('payments v2 integration: concurrencia + webhooks + métricas + fallbac
 
       const createAttempts = payment.attempts.filter((attempt) => attempt.operation === 'create');
       expect(createAttempts.length).toBeGreaterThanOrEqual(1);
-
-      const stripeUnavailable = createAttempts.find(
-        (attempt) =>
-          attempt.provider === 'stripe' &&
-          attempt.status === 'failed' &&
-          attempt.errorCode === 'provider_unavailable',
-      );
-      const mockSuccess = createAttempts.find(
-        (attempt) => attempt.provider === 'mock' && attempt.status === 'authorized',
-      );
-
-      if (stripeUnavailable && mockSuccess) {
-        expect(payment.status).toBe('authorized');
-        expect(payment.selectedProvider).toBe('mock');
-        return;
-      }
-
-      // Entornos con Stripe disponible o con orden de proveedores sin fallback explícito
-      // no siempre ejercitan stripe -> mock en este flujo.
+      expect(createAttempts.some((attempt) => attempt.provider === 'mock')).toBe(true);
       expect(['authorized', 'pending', 'requires_action', 'processing']).toContain(payment.status);
     },
     45_000,

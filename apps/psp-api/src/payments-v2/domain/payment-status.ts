@@ -4,9 +4,9 @@ export const PAYMENT_V2_STATUS = {
   REQUIRES_ACTION: 'requires_action',
   AUTHORIZED: 'authorized',
   SUCCEEDED: 'succeeded',
-  /** Contracargo abierto vía webhooks `charge.dispute.*` de Stripe. */
+  /** Contracargo abierto vía eventos externos del proveedor. */
   DISPUTED: 'disputed',
-  /** Disputa cerrada en contra (p. ej. evidencia `losing_evidence` en Stripe). */
+  /** Disputa cerrada en contra del comercio. */
   DISPUTE_LOST: 'dispute_lost',
   FAILED: 'failed',
   CANCELED: 'canceled',

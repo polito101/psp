@@ -8,11 +8,11 @@ Este documento fija el **MVP** alineado con el plan de producto PSP/Gateway híb
 |------|---------|
 | **API única** | REST `/api/v1`: comercios (bootstrap interno), payment links, pagos, captura sandbox, balance/ledger. OpenAPI en `/api/docs`. |
 | **Pay-by-link** | Creación por API; checkout HTML alojado en `GET/POST /api/v1/pay/:slug`. |
-| **Fiat** | Flujo **simulado** (captura sin integración real a Stripe/Adyen en código base); variables y contrato preparados para conector. |
+| **Fiat** | Flujo **simulado** (captura sin integración real a adquirente en código base); variables y contrato preparados para conector. |
 | **Ledger** | Líneas `available` + `fee`; comisión por `fee_bps` (por defecto 290 = 2,9%). |
 | **Webhooks** | `payment.succeeded` firmado (HMAC-SHA256); secreto cifrado en reposo (`APP_ENCRYPTION_KEY`). |
 | **Infra F0** | Terraform: VPC, RDS PostgreSQL, Redis ElastiCache, SQS; `docker-compose` local; CI GitHub Actions. |
-| **Cumplimiento** | Documento PCI-SCOPE y proveedores (Stripe/Sumsub como referencia); **sin** certificación PCI completada en el MVP. |
+| **Cumplimiento** | Documento PCI-SCOPE y proveedores (Sumsub como referencia KYC/KYB); **sin** certificación PCI completada en el MVP. |
 
 ## Fuera del MVP (explícito)
 

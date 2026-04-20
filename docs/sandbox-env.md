@@ -14,8 +14,6 @@ Fuente de verdad operativa de variables para el entorno `sandbox` de `apps/psp-a
 | `SANDBOX_APP_ENCRYPTION_KEY` | Sí | GitHub Secret (`environment: sandbox`) | cifrado/descifrado secretos webhook | >= 32 chars; rotación requiere plan de re-cifrado o validación exhaustiva |
 | `SANDBOX_DEPLOY_HOOK_URL` | Sí | GitHub Secret (`environment: sandbox`) | disparar deploy remoto | Debe responder HTTP 2xx |
 | `SANDBOX_BASE_URL` | Sí | GitHub Variable (`environment: sandbox`) | readiness y smoke (`SMOKE_BASE_URL`) | URL base pública del servicio sandbox |
-| `SANDBOX_SMOKE_API_KEY_STRIPE` | Opcional | GitHub Secret (`environment: sandbox`) | smoke Stripe end-to-end sin bootstrap por ejecución | Merchant dedicado para pruebas Stripe |
-| `SANDBOX_STRIPE_PAYMENT_METHOD_ID` | Opcional | GitHub Secret (`environment: sandbox`) | método de pago Stripe para create+confirm/capture (`pm_card_visa` recomendado) | usar valor de test mode |
 
 ## Variables runtime de `apps/psp-api`
 
@@ -30,7 +28,7 @@ Fuente de verdad operativa de variables para el entorno `sandbox` de `apps/psp-a
 | `ENABLE_SWAGGER` | Recomendado | `.env`/runtime | habilitar solo cuando proceda operativamente |
 | `WEBHOOK_WORKER_ENABLED` | Opcional | `.env`/runtime | `false` desactiva worker en la réplica |
 | `PAYMENTS_V2_ENABLED_MERCHANTS` | Sí | `.env`/runtime | `*` para sandbox general |
-| `PAYMENTS_PROVIDER_ORDER` | Sí | `.env`/runtime | Orden de ruteo del PSP en `POST /api/v2/payments` (el merchant no envía proveedor). Para smoke `test:smoke:sandbox` y rutas mock (`requires_action`, captura rápida), el runtime debe listar **`mock` antes que `stripe`** (p. ej. `mock,stripe`). El job opcional `test:smoke:stripe` exige que el **primero** sea `stripe` (p. ej. `stripe,mock`) en el host que atiende `SMOKE_BASE_URL`. |
+| `PAYMENTS_PROVIDER_ORDER` | Sí | `.env`/runtime | Orden de ruteo del PSP en `POST /api/v2/payments` (el merchant no envía proveedor). Para smoke `test:smoke:sandbox`, usar `mock` primero (p. ej. `mock,acme` o solo `mock`). |
 
 ## Variables smoke test
 
@@ -41,14 +39,6 @@ Fuente de verdad operativa de variables para el entorno `sandbox` de `apps/psp-a
 | `SMOKE_API_KEY` | Opcional | si existe, evita crear merchant por ejecución |
 | `SMOKE_PAYMENT_AMOUNT_MINOR` | Opcional | default `1999` para flujo mock |
 | `SMOKE_REQUIRES_ACTION_AMOUNT_MINOR` | Opcional | default `2002` para ruta `requires_action` en provider `mock` (requiere `PAYMENTS_PROVIDER_ORDER` con `mock` primero en el servidor) |
-| `SMOKE_STRIPE_ENABLED` | Opcional | habilita suite `stripe.smoke.spec.ts` |
-| `SMOKE_STRIPE_PAYMENT_METHOD_ID` | Opcional | default `pm_card_visa` para create+confirm Stripe |
-| `SMOKE_STRIPE_CREATE_AMOUNT_MINOR` | Opcional | default `1999` para create Stripe sin confirm |
-| `SMOKE_STRIPE_CONFIRM_AMOUNT_MINOR` | Opcional | default `2101` para create+confirm Stripe |
-| `SMOKE_STRIPE_DISPUTE_PM_MATRIX` | Opcional | `true` habilita `stripe-dispute-payment-methods.smoke.spec.ts` (además de `SMOKE_STRIPE_ENABLED` o `SMOKE_PROVIDER=stripe`) |
-| `SMOKE_STRIPE_DISPUTE_AMOUNT_MINOR` | Opcional | importe por escenario de disputa (default `5000`) |
-| `SMOKE_STRIPE_SECRET_KEY` | Opcional | `sk_test_...` en el **runner** para comprobar vía API de Stripe que existió `du_...` tras el capture (si no, se usa `STRIPE_SECRET_KEY` del entorno local) |
-| `SMOKE_STRIPE_AWAIT_PSP_DISPUTED` | Opcional | `true` hace polling a `GET /api/v2/payments/:id` hasta `disputed` (requiere `stripe listen` o webhooks hacia el `SMOKE_BASE_URL`) |
 
 ## Variables de readiness operativa (`ops/metrics`)
 

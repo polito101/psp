@@ -10,7 +10,7 @@ export class CreateRateTableDto {
   @ApiProperty({
     description: 'Proveedor PSP al que aplica la tarifa',
     enum: PAYMENT_PROVIDER_NAMES,
-    example: 'stripe',
+    example: 'mock',
   })
   @IsString()
   @IsIn(PAYMENT_PROVIDER_NAMES)
@@ -71,7 +71,7 @@ export class CreateRateTableDto {
 
   @ApiPropertyOptional({
     description: 'Referencia opcional al contrato comercial firmado',
-    example: 'contract-2026-merchant-a-stripe',
+    example: 'contract-2026-merchant-a-mock',
   })
   @IsOptional()
   @IsString()

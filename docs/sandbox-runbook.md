@@ -18,7 +18,6 @@
      - `READINESS_MIN_SAMPLES_FOR_FAIL_RATE=20`
      - `READINESS_MAX_PROVIDER_FAIL_RATE=0.35`
    - `test:smoke:sandbox`.
-   - `test:smoke:stripe` (opcional, cuando existan secretos Stripe de smoke).
 
 ### 1.1 Política de señal en CI
 

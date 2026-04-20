@@ -12,7 +12,7 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 - `unit` (API): specs co-localizados en `apps/psp-api/src/**/*.spec.ts` (`npm run test` desde `apps/psp-api`).
 - `unit` (backoffice): libs solo servidor en `apps/psp-backoffice/src/**/*.spec.ts` (`npm run test` desde `apps/psp-backoffice`, Vitest).
 - `integration-local`: tests de integracion con app Nest local + Supertest en `apps/psp-api/test/integration/**/*.spec.ts` (`npm run test:integration` desde `apps/psp-api`).
-- `smoke`: tests HTTP contra entorno desplegado/base URL en `apps/psp-api/test/smoke/**/*.spec.ts` (`npm run test:smoke:sandbox`, `npm run test:smoke:stripe`, opcional `npm run test:smoke:stripe-disputes`).
+- `smoke`: tests HTTP contra entorno desplegado/base URL en `apps/psp-api/test/smoke/**/*.spec.ts` (`npm run test:smoke:sandbox`).
 
 La CI del monorepo incluye `api-ci` (lint/test/build API) y `backoffice-ci` (lint, typecheck, `npm run test` Vitest, build del panel).
 
@@ -20,14 +20,14 @@ La CI del monorepo incluye `api-ci` (lint/test/build API) y `backoffice-ci` (lin
 
 | Dominio | Unit | Integration local | Smoke | Estado | Notas |
 | --- | --- | --- | --- | --- | --- |
-| `payments-v2` | Si | Si | Si | Cubierto | Create v2 sin `provider` en body: ruteo vía `PAYMENTS_PROVIDER_ORDER` + registry inyectable (`PAYMENT_PROVIDERS`); integration setup `mock,stripe`; smoke sandbox/stripe según orden en host. Flujos create/get/capture/cancel/refund + idempotencia + `paymentLink` + ops + webhooks Stripe (incl. disputas, `SMOKE_STRIPE_DISPUTE_PM_MATRIX`) + outbound E2E. Unit: `ProviderRegistryService`, adapter Acme stub, Stripe en `providers/stripe/`, CB v2 (Redis/fallback, half-open NX con validación env solo si `PAYMENTS_PROVIDER_CB_HALF_OPEN` + `REDIS_URL`, snapshot `circuitState`/`halfOpen`, backoff), cuota merchant (`payments-v2-merchant-rate-limit*.spec.ts`, `PaymentsV2MerchantRateLimitService`; incluye deduplicación heap/indice por bucket), correlación HTTP (`src/common/correlation/correlation-id.spec.ts`, cabeceras `X-Request-Id`/`X-Correlation-Id` + metadata Stripe). Integration `jest.integration.setup` fuerza `PAYMENTS_PROVIDER_RETRY_BASE_MS=0`. Integration `volume-hourly`: totales/serie como string. Integration dedicada `payments-v2-merchant-rate-limit.integration.spec.ts` (429 + idempotencia sin consumo extra; incluida en `test:integration:critical`). Integration `payments-v2.integration.spec.ts`: aserciones de cabecera `X-Request-Id` en create. |
+| `payments-v2` | Si | Si | Si | Cubierto | Create v2 sin `provider` en body: ruteo vía `PAYMENTS_PROVIDER_ORDER` + registry inyectable (`PAYMENT_PROVIDERS`); integration setup con `mock`. Flujos create/get/capture/cancel/refund + idempotencia + `paymentLink` + ops. Unit: `ProviderRegistryService`, adapter Acme stub, CB v2 (Redis/fallback, half-open NX con validación env solo si `PAYMENTS_PROVIDER_CB_HALF_OPEN` + `REDIS_URL`, snapshot `circuitState`/`halfOpen`, backoff), cuota merchant (`payments-v2-merchant-rate-limit*.spec.ts`, `PaymentsV2MerchantRateLimitService`; incluye deduplicación heap/indice por bucket), correlación HTTP (`src/common/correlation/correlation-id.spec.ts`, cabeceras `X-Request-Id`/`X-Correlation-Id`). Integration `jest.integration.setup` fuerza `PAYMENTS_PROVIDER_RETRY_BASE_MS=0`. Integration `volume-hourly`: totales/serie como string. Integration dedicada `payments-v2-merchant-rate-limit.integration.spec.ts` (429 + idempotencia sin consumo extra; incluida en `test:integration:critical`). Integration `payments-v2.integration.spec.ts`: aserciones de cabecera `X-Request-Id` en create. |
 | `merchants` | No | Si | Parcial | Parcial | Integration cubre create+guard y ciclo revoke/rotate via servicio. Falta spec unitario del controller/service. |
 | `payment-links` | No | Si | No | Parcial | Sin endpoint HTTP activo; cobertura via `PaymentLinksService.findForMerchant`. |
 | `ledger` | Si | Si | Si | Cubierto | Unit de servicio + integration/smoke de `/api/v1/balance`, incluyendo transición `pending/available` y compatibilidad con asientos legacy `available`. |
 | `fees` | Si | Si | No | Cubierto | Unit `FeeService` (fixed/percentage/minimum + resolve active rate table) e integración de endpoints internos para rate tables por merchant/currency/provider. |
 | `settlements` | Si | Si | No | Parcial | Unit `SettlementService` (ventanas T+N/WEEKLY, agrupación e idempotencia de payout) e integración `settlements.integration.spec.ts`. Falta cobertura de chargeback/refund post-payout y estados `SENT/FAILED` del payout. |
 | `health` | Si | Si | Si | Cubierto | Unit + integration `/health` + smoke readiness. |
-| `webhooks` | Si | Si | Si | Cubierto | Unit worker/outbox + integration retry interno + inbound Stripe firmado (firma/tolerancia/json/payload) + outbound a receptor real con worker + smoke backlog/métricas. |
+| `webhooks` | Si | Si | Si | Cubierto | Unit worker/outbox + integration retry interno + smoke backlog/métricas. |
 | `internal endpoints` | Si (guards) | Si | Si | Cubierto | Ops `GET /api/v2/payments/ops/*`: con `X-Internal-Secret` válido exige también `X-Backoffice-Role` (`admin` o `merchant`); rol `merchant` exige `X-Backoffice-Merchant-Id` alineado con path/query. Script CI `scripts/ci/check-ops-metrics.mjs` envía `X-Backoffice-Role: admin`. Detalle pago scoped: `404` cross-merchant. Backoffice: proxy fail-closed (`backoffice-api.spec.ts`), middleware por rol, token merchant con `exp`. |
 
 ## Inventario actual de archivos
@@ -40,8 +40,6 @@ La CI del monorepo incluye `api-ci` (lint/test/build API) y `backoffice-ci` (lin
 - `test/integration/payments-v2-merchant-rate-limit.integration.spec.ts`
 - `test/integration/ledger.integration.spec.ts`
 - `test/integration/internal-webhooks.integration.spec.ts`
-- `test/integration/stripe-webhooks.integration.spec.ts`
-- `test/integration/stripe-webhooks-outbound.integration.spec.ts`
 - `test/integration/payment-links.integration.spec.ts`
 - `test/integration/rate-tables.integration.spec.ts`
 - `test/integration/settlements.integration.spec.ts`
@@ -56,11 +54,8 @@ La CI del monorepo incluye `api-ci` (lint/test/build API) y `backoffice-ci` (lin
 
 ### Unit relevantes API (`apps/psp-api/src`)
 
-- `src/payments-v2/payments-v2.service.spec.ts`
 - `src/payments-v2/providers/provider-registry.service.spec.ts`
-- `src/payments-v2/providers/stripe/stripe-provider.adapter.spec.ts`
 - `src/payments-v2/providers/acme/acme-provider.adapter.spec.ts`
-- `src/payments-v2/stripe-webhook.controller.spec.ts`
 - `src/payments-v2/payments-v2-merchant-rate-limit.spec.ts`
 - `src/payments-v2/payments-v2-merchant-rate-limit.service.spec.ts`
 - `src/config/env.validation.spec.ts`
@@ -72,8 +67,6 @@ La CI del monorepo incluye `api-ci` (lint/test/build API) y `backoffice-ci` (lin
 ### Smoke (`test/smoke`)
 
 - `test/smoke/sandbox.smoke.spec.ts`
-- `test/smoke/stripe.smoke.spec.ts`
-- `test/smoke/stripe-dispute-payment-methods.smoke.spec.ts` (matriz `pm_card_createDispute*`, gated por `SMOKE_STRIPE_DISPUTE_PM_MATRIX=true`)
 - `test/smoke/orchestrator.integration.spec.ts`
 - `test/smoke/check-ops-metrics-ci.spec.ts`
 
@@ -87,8 +80,6 @@ Desde `apps/psp-api`:
 - `npm run test:integration:critical`
 - `npm run test:ci:ops-metrics`
 - `npm run test:smoke:sandbox`
-- `npm run test:smoke:stripe`
-- `npm run test:smoke:stripe-disputes` (matriz opcional de disputas; ver inventario smoke)
 
 Desde `apps/psp-backoffice`:
 

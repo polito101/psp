@@ -74,7 +74,7 @@ model Payment {
   merchantId     String   @map("merchant_id")
   paymentLinkId  String?  @map("payment_link_id")
   idempotencyKey String?  @map("idempotency_key")
-  /// SHA-256 hex de `hashCreatePaymentIntentPayload` al crear (idempotencia incl. Stripe provisional).
+  /// SHA-256 hex de `hashCreatePaymentIntentPayload` al crear (idempotencia del payload de create).
   createPayloadHash String? @map("create_payload_hash")
   amountMinor    Int      @map("amount_minor")
   currency       String
@@ -159,7 +159,7 @@ model MerchantRateTable {
   id                  String            @id @default(cuid())
   merchantId          String            @map("merchant_id")
   currency            String
-  /// Debe coincidir con un valor de PaymentProviderName (stripe, mock, acme).
+  /// Debe coincidir con un valor de PaymentProviderName (mock, acme).
   provider            String
   percentageBps       Int               @map("percentage_bps")
   fixedMinor          Int               @default(0) @map("fixed_minor")

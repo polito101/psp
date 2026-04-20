@@ -2,7 +2,7 @@
  * SSOT de códigos de proveedor Payments V2 (alineado con `selectedProvider` en DB como string).
  * Al añadir un PSP: extender esta lista, registrar el adapter en `PaymentsV2Module` y reflejar el nombre en `PAYMENTS_PROVIDER_ORDER`.
  */
-export const PAYMENT_PROVIDER_NAMES = ['stripe', 'mock', 'acme'] as const;
+export const PAYMENT_PROVIDER_NAMES = ['mock', 'acme'] as const;
 
 export type PaymentProviderName = (typeof PAYMENT_PROVIDER_NAMES)[number];
 

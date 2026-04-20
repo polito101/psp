@@ -80,7 +80,7 @@ Invoke-RestMethod -Method Post "http://localhost:3000/api/v2/payments" `
   } | ConvertTo-Json -Compress)
 ```
 
-El proveedor lo elige el PSP vía `PAYMENTS_PROVIDER_ORDER` en runtime (p. ej. `mock,stripe` en local/sandbox para ejercitar el adapter mock primero).
+El proveedor lo elige el PSP vía `PAYMENTS_PROVIDER_ORDER` en runtime (p. ej. `mock` en local/sandbox).
 
 En `mock`, el intent tipicamente queda `authorized` para importes comunes.
 
@@ -109,7 +109,6 @@ Invoke-RestMethod -Method Get "http://localhost:3000/api/v1/balance" `
 - `POST /api/v2/payments/{id}/cancel`
 - `POST /api/v2/payments/{id}/refund`
 - `GET /api/v2/payments/ops/metrics` (interno, requiere `X-Internal-Secret` y `X-Backoffice-Role: admin|merchant`; incluye payments/circuit breakers/webhooks)
-- `POST /api/v1/stripe/webhook` (inbound Stripe, valida `Stripe-Signature`)
 
 ## Idempotencia (v2)
 
@@ -134,13 +133,6 @@ Invoke-RestMethod -Method Get "http://localhost:3000/api/v1/balance" `
 - Worker controlable por `WEBHOOK_WORKER_ENABLED` (`false` desactiva procesamiento en esa réplica).
 - Retry operativo:
   - `POST /api/v1/webhooks/deliveries/{id}/retry` (requiere `X-Internal-Secret`)
-- Inbound Stripe:
-  - `POST /api/v1/stripe/webhook` valida `Stripe-Signature` con `STRIPE_WEBHOOK_SECRET`.
-  - Eventos soportados: `payment_intent.succeeded`, `payment_intent.payment_failed`, `payment_intent.canceled`, `charge.refunded`.
-  - Prueba local con Stripe CLI:
-    - `stripe listen --forward-to http://localhost:3000/api/v1/stripe/webhook`
-    - usar el `whsec_...` mostrado por CLI en `STRIPE_WEBHOOK_SECRET`.
-
 ## Troubleshooting rapido
 
 - `401` en `/merchants`: revisa `INTERNAL_API_SECRET` y reinicia API tras cambiar `.env`.
@@ -178,7 +170,6 @@ Workflow: `.github/workflows/ci.yml`
 
 - `api-ci`: `npm ci` -> `prisma generate` -> `prisma migrate deploy` -> `lint` -> `test` -> `build`.
 - `sandbox-deploy` (branch `sandbox`): build Docker de validación, `prisma migrate deploy`, deploy hook, readiness (`/health` con `status=ok`, `db=ok`, `redis=ok`), gate operativo (`/api/v2/payments/ops/metrics`) y smoke tests.
-- Smoke Stripe opcional en sandbox (`test:smoke:stripe`) si existen secretos `SANDBOX_SMOKE_API_KEY_STRIPE` y `SANDBOX_STRIPE_PAYMENT_METHOD_ID`.
 - Política de rollout sandbox: mantener migraciones backward-compatible para la ventana entre migración y despliegue efectivo de la nueva revisión.
 - Rollout productivo recomendado: ver `docs/production-canary-rollout.md`.
 
@@ -196,8 +187,6 @@ Ver `.env.example`. Claves relevantes:
 - `PAYMENTS_PROVIDER_MAX_RETRIES`
 - `PAYMENTS_PROVIDER_CB_FAILURES`
 - `PAYMENTS_PROVIDER_CB_COOLDOWN_MS`
-- `STRIPE_WEBHOOK_SECRET`
-- `STRIPE_WEBHOOK_TOLERANCE_SEC`
 - `WEBHOOK_WORKER_ENABLED`
 
 Matriz operativa sandbox: `docs/sandbox-env.md`.
@@ -209,8 +198,4 @@ npm run test
 npm run test:integration
 npm run test:integration:critical
 npm run test:smoke:sandbox
-npm run test:smoke:stripe
-npm run test:smoke:stripe-disputes
 ```
-
-Matriz de PaymentMethods de disputa (Stripe test mode): `SMOKE_STRIPE_ENABLED=true`, `SMOKE_STRIPE_DISPUTE_PM_MATRIX=true`, `SMOKE_BASE_URL`, y opcionalmente `STRIPE_SECRET_KEY` o `SMOKE_STRIPE_SECRET_KEY` en el runner para validar que aparece `du_...` en Stripe. Ver `docs/sandbox-env.md`.

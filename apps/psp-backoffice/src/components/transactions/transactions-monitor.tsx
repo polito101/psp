@@ -319,7 +319,6 @@ export function TransactionsMonitor() {
               }
             >
               <option value="">Todos los proveedores</option>
-              <option value="stripe">stripe</option>
               <option value="mock">mock</option>
               <option value="acme">acme</option>
             </Select>
