@@ -15,6 +15,12 @@ import type {
 } from "@/lib/api/contracts";
 import type { OpsPaymentProvider } from "@/lib/api/payment-providers";
 
+/** Incluye cookies (p. ej. `backoffice_admin_token` tras `/login`) en peticiones al BFF. */
+const internalBffInit: RequestInit = {
+  credentials: "include",
+  cache: "no-store",
+};
+
 function toSearchParams(filters: TransactionsFilters): URLSearchParams {
   const params = new URLSearchParams();
   params.set("pageSize", String(filters.pageSize));
@@ -50,8 +56,8 @@ async function parseResponse<T>(response: Response): Promise<T> {
 export async function fetchOpsTransactions(filters: TransactionsFilters): Promise<OpsTransactionsResponse> {
   const params = toSearchParams(filters).toString();
   const response = await fetch(`/api/internal/transactions?${params}`, {
+    ...internalBffInit,
     method: "GET",
-    cache: "no-store",
   });
   return parseResponse<OpsTransactionsResponse>(response);
 }
@@ -66,8 +72,8 @@ export async function fetchOpsTransactionCounts(
   if (filters.createdFrom) params.set("createdFrom", filters.createdFrom);
   if (filters.createdTo) params.set("createdTo", filters.createdTo);
   const response = await fetch(`/api/internal/transactions/counts?${params.toString()}`, {
+    ...internalBffInit,
     method: "GET",
-    cache: "no-store",
   });
   return parseResponse<OpsTransactionCountsResponse>(response);
 }
@@ -86,29 +92,26 @@ export async function fetchOpsVolumeHourly(
   if (filters.provider) params.set("provider", filters.provider);
   if (filters.currency) params.set("currency", filters.currency);
   const qs = params.toString();
-  const response = await fetch(
-    `/api/internal/transactions/volume-hourly${qs ? `?${qs}` : ""}`,
-    {
-      method: "GET",
-      cache: "no-store",
-    },
-  );
+  const response = await fetch(`/api/internal/transactions/volume-hourly${qs ? `?${qs}` : ""}`, {
+    ...internalBffInit,
+    method: "GET",
+  });
   return parseResponse<OpsVolumeHourlyResponse>(response);
 }
 
 export async function fetchOpsPaymentDetail(paymentId: string): Promise<OpsPaymentDetailResponse> {
   const encoded = encodeURIComponent(paymentId);
   const response = await fetch(`/api/internal/payments/${encoded}`, {
+    ...internalBffInit,
     method: "GET",
-    cache: "no-store",
   });
   return parseResponse<OpsPaymentDetailResponse>(response);
 }
 
 export async function fetchProviderHealth(): Promise<ProviderHealthResponse> {
   const response = await fetch("/api/internal/provider-health", {
+    ...internalBffInit,
     method: "GET",
-    cache: "no-store",
   });
   return parseResponse<ProviderHealthResponse>(response);
 }
@@ -130,7 +133,7 @@ export async function fetchMerchantFinanceSummary(
   const encoded = encodeURIComponent(merchantId);
   const response = await fetch(
     `/api/internal/merchants/${encoded}/finance/summary${qs ? `?${qs}` : ""}`,
-    { method: "GET", cache: "no-store" },
+    { ...internalBffInit, method: "GET" },
   );
   return parseResponse<MerchantFinanceSummaryResponse>(response);
 }
@@ -161,7 +164,7 @@ export async function fetchMerchantFinanceTransactions(
   const encoded = encodeURIComponent(merchantId);
   const response = await fetch(
     `/api/internal/merchants/${encoded}/finance/transactions${qs ? `?${qs}` : ""}`,
-    { method: "GET", cache: "no-store" },
+    { ...internalBffInit, method: "GET" },
   );
   return parseResponse<MerchantFinanceTransactionsResponse>(response);
 }
@@ -190,7 +193,7 @@ export async function fetchMerchantFinancePayouts(
   const encoded = encodeURIComponent(merchantId);
   const response = await fetch(
     `/api/internal/merchants/${encoded}/finance/payouts${qs ? `?${qs}` : ""}`,
-    { method: "GET", cache: "no-store" },
+    { ...internalBffInit, method: "GET" },
   );
   return parseResponse<MerchantFinancePayoutsResponse>(response);
 }

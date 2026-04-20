@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
-const ADMIN_COOKIE_NAME = "backoffice_admin_token";
+export const BACKOFFICE_ADMIN_COOKIE_NAME = "backoffice_admin_token";
 const AUTH_SCHEME = "Bearer";
 
 function secureCompare(left: string, right: string): boolean {
@@ -48,7 +48,33 @@ function getRequestToken(request: NextRequest): string | null {
     return bearerToken;
   }
 
-  return request.cookies.get(ADMIN_COOKIE_NAME)?.value ?? null;
+  return request.cookies.get(BACKOFFICE_ADMIN_COOKIE_NAME)?.value ?? null;
+}
+
+/** Para `POST /api/auth/session`: valida el token contra el secreto configurado. */
+export function validateAdminTokenForSession(
+  token: string,
+):
+  | { ok: true }
+  | { ok: false; response: NextResponse } {
+  let adminSecret: string;
+  try {
+    adminSecret = getAdminSecret();
+  } catch {
+    return {
+      ok: false,
+      response: NextResponse.json({ message: "Backoffice auth is misconfigured" }, { status: 500 }),
+    };
+  }
+
+  if (!secureCompare(token.trim(), adminSecret)) {
+    return {
+      ok: false,
+      response: NextResponse.json({ message: "Invalid credentials" }, { status: 401 }),
+    };
+  }
+
+  return { ok: true };
 }
 
 export function enforceInternalRouteAuth(request: NextRequest): NextResponse | null {

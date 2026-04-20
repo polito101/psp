@@ -2,13 +2,22 @@
 
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Activity, Building2, CreditCard, LayoutDashboard } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { Activity, Building2, CreditCard, Landmark, LayoutDashboard, LogIn, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { href: "/", id: "home", label: "Inicio", icon: LayoutDashboard },
+  { href: "/login", id: "login", label: "Iniciar sesión", icon: LogIn },
   { href: "/transactions", id: "transactions", label: "Transacciones", icon: CreditCard },
+  {
+    href: "/merchants/lookup",
+    id: "merchant-finance-lookup",
+    label: "Finanzas merchant",
+    icon: Landmark,
+    activeMatch: (pathname: string) =>
+      pathname === "/merchants/lookup" || /^\/merchants\/[^/]+\/finance/.test(pathname),
+  },
   { href: "/monitor", id: "monitor", label: "Monitor operativo (API)", icon: Activity },
   {
     href: null as string | null,
@@ -20,6 +29,13 @@ const navItems = [
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
+
+  async function logout() {
+    await fetch("/api/auth/session", { method: "DELETE", credentials: "include" });
+    router.push("/login");
+    router.refresh();
+  }
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -29,18 +45,35 @@ export function AppShell({ children }: { children: ReactNode }) {
             <p className="text-xs font-medium uppercase tracking-[0.16em] text-slate-500">PSP</p>
             <h1 className="text-lg font-semibold text-slate-900">Backoffice Administrativo</h1>
           </div>
-          <div className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-500">
-            Entorno operativo
+          <div className="flex items-center gap-2">
+            <div className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-500">
+              Entorno operativo
+            </div>
+            {pathname === "/login" ? null : (
+              <button
+                type="button"
+                onClick={logout}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              >
+                <LogOut size={14} aria-hidden />
+                Cerrar sesión
+              </button>
+            )}
           </div>
         </div>
       </header>
       <div className="mx-auto grid w-full max-w-[1400px] gap-6 px-6 py-6 lg:grid-cols-[240px_minmax(0,1fr)]">
         <aside className="rounded-xl border border-slate-200 bg-white p-3">
           <nav className="space-y-1">
-            {navItems.map(({ id, label, icon: Icon, href }) => {
+            {navItems.map((item) => {
+              const { id, label, icon: Icon, href } = item;
               const active =
                 href != null &&
-                (href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`));
+                ("activeMatch" in item && item.activeMatch
+                  ? item.activeMatch(pathname)
+                  : href === "/"
+                    ? pathname === "/"
+                    : pathname === href || pathname.startsWith(`${href}/`));
               if (!href) {
                 return (
                   <button
