@@ -47,6 +47,17 @@ function getServerConfig() {
   return { apiBaseOrigin, internalSecret };
 }
 
+/** Error lanzado cuando la API upstream responde con status no OK (incluye cuerpo textual). */
+export class ProxyUpstreamError extends Error {
+  constructor(
+    readonly upstreamStatus: number,
+    readonly bodyText: string,
+  ) {
+    super(`PSP API ${upstreamStatus}: ${bodyText || "empty response"}`);
+    this.name = "ProxyUpstreamError";
+  }
+}
+
 export async function proxyInternalGet<T>(options: ProxyRequestOptions): Promise<T> {
   const { apiBaseOrigin, internalSecret } = getServerConfig();
   const url = new URL(options.path, apiBaseOrigin);
@@ -83,16 +94,38 @@ export async function proxyInternalGet<T>(options: ProxyRequestOptions): Promise
 
   if (!response.ok) {
     const raw = await response.text();
-    throw new Error(`PSP API ${response.status}: ${raw || "empty response"}`);
+    throw new ProxyUpstreamError(response.status, raw);
   }
 
   return (await response.json()) as T;
 }
 
-export function mapProxyError(error: unknown) {
+/** Tamaño máximo de texto plano cuando el upstream no devuelve JSON válido (evita respuestas enormes). */
+const PROXY_UPSTREAM_MESSAGE_MAX = 500;
+
+export function mapProxyError(error: unknown): NextResponse {
   console.error("backoffice_proxy_error", error);
-  return NextResponse.json(
-    { message: "Upstream service unavailable" },
-    { status: 502 },
-  );
+
+  if (error instanceof ProxyUpstreamError) {
+    const { upstreamStatus, bodyText } = error;
+
+    if (upstreamStatus >= 400 && upstreamStatus < 500) {
+      try {
+        const parsed = JSON.parse(bodyText) as unknown;
+        return NextResponse.json(parsed, { status: upstreamStatus });
+      } catch {
+        const message = bodyText.trim().slice(0, PROXY_UPSTREAM_MESSAGE_MAX);
+        return NextResponse.json({ message }, { status: upstreamStatus });
+      }
+    }
+
+    return NextResponse.json({ message: "Upstream service unavailable" }, { status: 502 });
+  }
+
+  const err = error instanceof Error ? error : new Error(String(error));
+  if (err.name === "AbortError") {
+    return NextResponse.json({ message: "Upstream request timed out" }, { status: 504 });
+  }
+
+  return NextResponse.json({ message: "Upstream service unavailable" }, { status: 502 });
 }

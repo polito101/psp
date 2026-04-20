@@ -605,6 +605,8 @@ export class PaymentsV2Service {
   /**
    * Construye el `where` de Prisma para listados y agregados ops sobre `Payment`.
    *
+   * `paymentId`: subcadena case-insensitive sobre `Payment.id` (id persistido). Restaurado para alinearlo con el uso histórico del panel ops; las búsquedas por subcadena pueden ser más costosas en tablas muy grandes.
+   *
    * @param params.status - Si se omite, el conjunto no se restringe por estado (p. ej. conteos agrupados).
    */
   private buildOpsPaymentListWhere(params: {
@@ -626,7 +628,7 @@ export class PaymentsV2Service {
     const paymentId = params.paymentId?.trim();
     return {
       ...(params.merchantId ? { merchantId: params.merchantId } : {}),
-      ...(paymentId ? { id: { startsWith: paymentId } } : {}),
+      ...(paymentId ? { id: { contains: paymentId, mode: 'insensitive' } } : {}),
       ...(params.status ? { status: params.status } : {}),
       ...(params.provider ? { selectedProvider: params.provider } : {}),
       ...(Object.keys(createdAt).length > 0 ? { createdAt } : {}),
