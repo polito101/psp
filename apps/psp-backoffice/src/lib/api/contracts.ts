@@ -186,15 +186,26 @@ export type MerchantFinanceTransactionItem = {
   paymentCreatedAt: string;
 };
 
+/** Paginación keyset/cursor de listados finance por merchant (misma forma que `PaymentsV2Service`). */
+export type MerchantFinanceListPage = {
+  pageSize: number;
+  /** `null` cuando la petición va con `includeTotal=false` (sin COUNT en servidor). */
+  total: number | null;
+  totalPages: number | null;
+  hasPrevPage: boolean;
+  hasNextPage: boolean;
+};
+
+export type MerchantFinanceListCursors = {
+  prev: { createdAt: string; id: string } | null;
+  next: { createdAt: string; id: string } | null;
+};
+
 /** Respuesta de `GET .../ops/merchants/:merchantId/finance/transactions`. */
 export type MerchantFinanceTransactionsResponse = {
   items: MerchantFinanceTransactionItem[];
-  page: {
-    page: number;
-    pageSize: number;
-    total: number;
-    totalPages: number;
-  };
+  page: MerchantFinanceListPage;
+  cursors: MerchantFinanceListCursors;
 };
 
 export type MerchantFinancePayoutItem = {
@@ -213,12 +224,8 @@ export type MerchantFinancePayoutItem = {
 /** Respuesta de `GET .../ops/merchants/:merchantId/finance/payouts`. */
 export type MerchantFinancePayoutsResponse = {
   items: MerchantFinancePayoutItem[];
-  page: {
-    page: number;
-    pageSize: number;
-    total: number;
-    totalPages: number;
-  };
+  page: MerchantFinanceListPage;
+  cursors: MerchantFinanceListCursors;
 };
 
 export type MerchantFinanceSummaryFilters = {
@@ -231,19 +238,29 @@ export type MerchantFinanceSummaryFilters = {
 export type MerchantFinanceTransactionsFilters = {
   page?: number;
   pageSize?: number;
+  cursorCreatedAt?: string;
+  cursorId?: string;
+  direction?: "next" | "prev";
   status?: TransactionStatus;
   provider?: TransactionProvider;
   currency?: string;
   paymentId?: string;
   createdFrom?: string;
   createdTo?: string;
+  /** Si es `false`, el API omite COUNT; `page.total` y `page.totalPages` serán `null`. */
+  includeTotal?: boolean;
 };
 
 export type MerchantFinancePayoutsFilters = {
   page?: number;
   pageSize?: number;
+  cursorCreatedAt?: string;
+  cursorId?: string;
+  direction?: "next" | "prev";
   status?: "CREATED" | "SENT" | "FAILED";
   currency?: string;
   createdFrom?: string;
   createdTo?: string;
+  /** Si es `false`, el API omite COUNT; `page.total` y `page.totalPages` serán `null`. */
+  includeTotal?: boolean;
 };

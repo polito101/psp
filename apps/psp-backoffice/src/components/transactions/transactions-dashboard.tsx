@@ -591,7 +591,8 @@ export function TransactionsDashboard() {
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => {
-                router.push(`/merchants/${row.original.raw.merchantId}/finance`);
+                const mid = encodeURIComponent(row.original.raw.merchantId);
+                router.push(`/merchants/${mid}/finance`);
               }}
             >
               Finanzas merchant

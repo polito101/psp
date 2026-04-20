@@ -9,16 +9,30 @@ const paramSchema = z.object({
   merchantId: z.string().trim().min(1).max(64),
 });
 
-const querySchema = z.object({
-  provider: z.enum(OPS_PAYMENT_PROVIDERS).optional(),
-  currency: z
-    .string()
-    .length(3)
-    .regex(/^[A-Z]{3}$/)
-    .optional(),
-  createdFrom: z.string().datetime().optional(),
-  createdTo: z.string().datetime().optional(),
-});
+const querySchema = z
+  .object({
+    provider: z.enum(OPS_PAYMENT_PROVIDERS).optional(),
+    currency: z
+      .string()
+      .length(3)
+      .regex(/^[A-Z]{3}$/)
+      .optional(),
+    createdFrom: z.string().datetime().optional(),
+    createdTo: z.string().datetime().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.createdFrom || !value.createdTo) return;
+    const from = new Date(value.createdFrom);
+    const to = new Date(value.createdTo);
+    if (Number.isNaN(from.valueOf()) || Number.isNaN(to.valueOf())) return;
+    if (from.getTime() > to.getTime()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "createdFrom must be before or equal to createdTo",
+        path: ["createdTo"],
+      });
+    }
+  });
 
 export async function GET(
   request: NextRequest,

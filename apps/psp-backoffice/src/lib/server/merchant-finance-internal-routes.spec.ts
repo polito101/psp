@@ -55,4 +55,17 @@ describe("merchant finance internal BFF routes", () => {
     const res = await getSummary(req, { params: Promise.resolve({ merchantId: "m1" }) });
     expect(res.status).toBe(400);
   });
+
+  it("returns 400 for summary when createdFrom is after createdTo", async () => {
+    process.env.BACKOFFICE_ADMIN_SECRET = "admin-secret";
+    process.env.PSP_INTERNAL_API_SECRET = "internal-only";
+
+    const qs =
+      "currency=EUR&createdFrom=2026-04-30T00:00:00.000Z&createdTo=2026-04-01T00:00:00.000Z";
+    const req = new NextRequest(`http://localhost:3005/api/internal/merchants/m1/finance/summary?${qs}`, {
+      headers: { Authorization: "Bearer admin-secret" },
+    });
+    const res = await getSummary(req, { params: Promise.resolve({ merchantId: "m1" }) });
+    expect(res.status).toBe(400);
+  });
 });

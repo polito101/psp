@@ -8,9 +8,13 @@ const paramSchema = z.object({
   merchantId: z.string().trim().min(1).max(64),
 });
 
-const querySchema = z.object({
+const querySchema = z
+  .object({
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(1).max(100).optional(),
+  direction: z.enum(["next", "prev"]).optional(),
+  cursorCreatedAt: z.string().datetime().optional(),
+  cursorId: z.string().trim().min(1).max(64).optional(),
   status: z.enum(["CREATED", "SENT", "FAILED"]).optional(),
   currency: z
     .string()
@@ -19,7 +23,35 @@ const querySchema = z.object({
     .optional(),
   createdFrom: z.string().datetime().optional(),
   createdTo: z.string().datetime().optional(),
-});
+  includeTotal: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => (v === "false" ? false : v === "true" ? true : undefined)),
+})
+  .superRefine((value, ctx) => {
+    const hasCreatedAt = Boolean(value.cursorCreatedAt);
+    const hasId = Boolean(value.cursorId);
+    if (hasCreatedAt !== hasId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "cursorCreatedAt and cursorId must be provided together",
+        path: ["cursorCreatedAt"],
+      });
+    }
+  })
+  .superRefine((value, ctx) => {
+    if (!value.createdFrom || !value.createdTo) return;
+    const from = new Date(value.createdFrom);
+    const to = new Date(value.createdTo);
+    if (Number.isNaN(from.valueOf()) || Number.isNaN(to.valueOf())) return;
+    if (from.getTime() > to.getTime()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "createdFrom must be before or equal to createdTo",
+        path: ["createdTo"],
+      });
+    }
+  });
 
 export async function GET(
   request: NextRequest,

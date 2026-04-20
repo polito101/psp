@@ -139,12 +139,17 @@ function merchantFinanceTransactionsParams(filters: MerchantFinanceTransactionsF
   const params = new URLSearchParams();
   if (filters.page != null) params.set("page", String(filters.page));
   if (filters.pageSize != null) params.set("pageSize", String(filters.pageSize));
+  if (filters.direction) params.set("direction", filters.direction);
+  if (filters.cursorCreatedAt) params.set("cursorCreatedAt", filters.cursorCreatedAt);
+  if (filters.cursorId) params.set("cursorId", filters.cursorId);
   if (filters.status) params.set("status", filters.status);
   if (filters.provider) params.set("provider", filters.provider);
   if (filters.currency) params.set("currency", filters.currency.toUpperCase());
   if (filters.paymentId) params.set("paymentId", filters.paymentId);
   if (filters.createdFrom) params.set("createdFrom", filters.createdFrom);
   if (filters.createdTo) params.set("createdTo", filters.createdTo);
+  if (filters.includeTotal === false) params.set("includeTotal", "false");
+  if (filters.includeTotal === true) params.set("includeTotal", "true");
   return params;
 }
 
@@ -165,10 +170,15 @@ function merchantFinancePayoutsParams(filters: MerchantFinancePayoutsFilters): U
   const params = new URLSearchParams();
   if (filters.page != null) params.set("page", String(filters.page));
   if (filters.pageSize != null) params.set("pageSize", String(filters.pageSize));
+  if (filters.direction) params.set("direction", filters.direction);
+  if (filters.cursorCreatedAt) params.set("cursorCreatedAt", filters.cursorCreatedAt);
+  if (filters.cursorId) params.set("cursorId", filters.cursorId);
   if (filters.status) params.set("status", filters.status);
   if (filters.currency) params.set("currency", filters.currency.toUpperCase());
   if (filters.createdFrom) params.set("createdFrom", filters.createdFrom);
   if (filters.createdTo) params.set("createdTo", filters.createdTo);
+  if (filters.includeTotal === false) params.set("includeTotal", "false");
+  if (filters.includeTotal === true) params.set("includeTotal", "true");
   return params;
 }
 

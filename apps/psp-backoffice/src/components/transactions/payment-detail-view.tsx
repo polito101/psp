@@ -209,7 +209,7 @@ export function PaymentDetailView({ paymentId }: Props) {
             </div>
             <div>
               <Link
-                href={`/merchants/${d.merchantId}/finance`}
+                href={`/merchants/${encodeURIComponent(d.merchantId)}/finance`}
                 className="text-sm font-medium text-[var(--primary)] hover:underline"
               >
                 Finanzas del merchant

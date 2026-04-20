@@ -3,12 +3,15 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Landmark, Receipt } from "lucide-react";
 import Link from "next/link";
+import { useCallback, useState } from "react";
 import {
   fetchMerchantFinancePayouts,
   fetchMerchantFinanceSummary,
   fetchMerchantFinanceTransactions,
 } from "@/lib/api/client";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
   Table,
   TableContainer,
@@ -21,6 +24,13 @@ import { formatAmountMinor, formatShortDateTime } from "@/lib/ops-transaction-di
 
 type Props = { merchantId: string };
 
+function toIsoDateTime(value: string): string | undefined {
+  if (!value.trim()) return undefined;
+  const asDate = new Date(value);
+  if (Number.isNaN(asDate.valueOf())) return undefined;
+  return asDate.toISOString();
+}
+
 /**
  * Vista financiera por merchant: totales gross/fee/net y listados de fee quotes y payouts.
  * Divisa fija EUR en MVP (alineado con tarifas por defecto del API).
@@ -28,23 +38,62 @@ type Props = { merchantId: string };
 export function MerchantFinanceDashboard({ merchantId }: Props) {
   const currency = "EUR";
 
+  const [dateFromDraft, setDateFromDraft] = useState("");
+  const [dateToDraft, setDateToDraft] = useState("");
+  const [createdFrom, setCreatedFrom] = useState<string | undefined>();
+  const [createdTo, setCreatedTo] = useState<string | undefined>();
+  const [rangeError, setRangeError] = useState<string | null>(null);
+
+  const dateRangeParams = { createdFrom, createdTo };
+
+  const applyDateRange = useCallback(() => {
+    const fromIso = toIsoDateTime(dateFromDraft);
+    const toIso = toIsoDateTime(dateToDraft);
+    if (fromIso && toIso && new Date(fromIso).getTime() > new Date(toIso).getTime()) {
+      setRangeError("La fecha «desde» no puede ser posterior a «hasta».");
+      return;
+    }
+    setRangeError(null);
+    setCreatedFrom(fromIso);
+    setCreatedTo(toIso);
+  }, [dateFromDraft, dateToDraft]);
+
+  const clearDateRange = useCallback(() => {
+    setDateFromDraft("");
+    setDateToDraft("");
+    setRangeError(null);
+    setCreatedFrom(undefined);
+    setCreatedTo(undefined);
+  }, []);
+
   const summaryQuery = useQuery({
-    queryKey: ["merchant-finance-summary", merchantId, currency],
-    queryFn: () => fetchMerchantFinanceSummary(merchantId, { currency }),
+    queryKey: ["merchant-finance-summary", merchantId, currency, createdFrom ?? "", createdTo ?? ""],
+    queryFn: () => fetchMerchantFinanceSummary(merchantId, { currency, ...dateRangeParams }),
     staleTime: 30_000,
     refetchInterval: 60_000,
   });
 
   const transactionsQuery = useQuery({
-    queryKey: ["merchant-finance-transactions", merchantId, currency],
+    queryKey: ["merchant-finance-transactions", merchantId, currency, createdFrom ?? "", createdTo ?? ""],
     queryFn: () =>
-      fetchMerchantFinanceTransactions(merchantId, { currency, page: 1, pageSize: 25 }),
+      fetchMerchantFinanceTransactions(merchantId, {
+        currency,
+        page: 1,
+        pageSize: 25,
+        ...dateRangeParams,
+      }),
     staleTime: 30_000,
   });
 
   const payoutsQuery = useQuery({
-    queryKey: ["merchant-finance-payouts", merchantId, currency],
-    queryFn: () => fetchMerchantFinancePayouts(merchantId, { currency, page: 1, pageSize: 25 }),
+    queryKey: ["merchant-finance-payouts", merchantId, currency, createdFrom ?? "", createdTo ?? ""],
+    queryFn: () =>
+      fetchMerchantFinancePayouts(merchantId, {
+        currency,
+        page: 1,
+        pageSize: 25,
+        ...dateRangeParams,
+      }),
     staleTime: 30_000,
   });
 
@@ -69,6 +118,52 @@ export function MerchantFinanceDashboard({ merchantId }: Props) {
           </p>
         </div>
       </div>
+
+      <Card className="border-dashed border-slate-200 bg-slate-50/50">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Rango (UTC vía ISO)</CardTitle>
+          <CardDescription>
+            Filtra totales, fee quotes y payouts por <span className="font-mono">createdFrom</span> /{" "}
+            <span className="font-mono">createdTo</span> (misma semántica que la API interna).
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+          <div className="flex min-w-[200px] flex-1 flex-col gap-1">
+            <label htmlFor="merchant-finance-from" className="text-xs font-medium text-slate-600">
+              Desde
+            </label>
+            <Input
+              id="merchant-finance-from"
+              type="datetime-local"
+              value={dateFromDraft}
+              onChange={(e) => setDateFromDraft(e.target.value)}
+              className="bg-white"
+            />
+          </div>
+          <div className="flex min-w-[200px] flex-1 flex-col gap-1">
+            <label htmlFor="merchant-finance-to" className="text-xs font-medium text-slate-600">
+              Hasta
+            </label>
+            <Input
+              id="merchant-finance-to"
+              type="datetime-local"
+              value={dateToDraft}
+              onChange={(e) => setDateToDraft(e.target.value)}
+              className="bg-white"
+            />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" onClick={applyDateRange}>
+              Aplicar
+            </Button>
+            <Button type="button" variant="outline" onClick={clearDateRange}>
+              Limpiar
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {rangeError ? <p className="text-sm text-rose-700">{rangeError}</p> : null}
 
       {summaryQuery.isError ? (
         <p className="text-sm text-rose-700">{(summaryQuery.error as Error).message}</p>
