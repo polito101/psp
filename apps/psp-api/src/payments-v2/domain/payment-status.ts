@@ -18,7 +18,13 @@ export type PaymentV2Status = (typeof PAYMENT_V2_STATUS)[keyof typeof PAYMENT_V2
 export type PaymentOperation = 'create' | 'capture' | 'cancel' | 'refund';
 
 export type { PaymentProviderName } from './payment-provider-names';
-export { isPaymentProviderName, PAYMENT_PROVIDER_NAMES, paymentProviderNamesLabel } from './payment-provider-names';
+export {
+  isPaymentProviderName,
+  LEGACY_STRIPE_DB_PROVIDER,
+  PAYMENT_PROVIDER_NAMES,
+  paymentProviderNamesLabel,
+  unsupportedPersistedProviderLifecycleMessage,
+} from './payment-provider-names';
 
 export type PaymentReasonCode =
   | 'provider_unavailable'

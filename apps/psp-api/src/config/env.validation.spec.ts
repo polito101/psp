@@ -217,3 +217,25 @@ describe('validateEnv payments v2 merchant rate limit', () => {
     ).toThrow(/PAYMENTS_ALLOW_MOCK must be "true" or "false"/);
   });
 });
+
+describe('validateEnv PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS', () => {
+  const minimalEnv = (): Record<string, string> => ({
+    DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
+    INTERNAL_API_SECRET: 'internal-secret',
+    APP_ENCRYPTION_KEY: '01234567890123456789012345678901',
+    NODE_ENV: 'development',
+  });
+
+  it('normaliza a false por defecto', () => {
+    const out = validateEnv({ ...minimalEnv() });
+    expect(out.PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS).toBe('false');
+  });
+
+  it('acepta true', () => {
+    const out = validateEnv({
+      ...minimalEnv(),
+      PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS: 'true',
+    });
+    expect(out.PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS).toBe('true');
+  });
+});

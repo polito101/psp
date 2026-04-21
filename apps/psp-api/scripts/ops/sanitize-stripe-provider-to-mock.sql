@@ -49,6 +49,10 @@ WHERE s."provider" = 'stripe'
   );
 
 -- 2) Resto de tablas con columna provider / selected_provider (sin orden crítico entre sí)
+--
+-- En runtime, `PaymentsV2Service` rechaza capture/cancel/refund con 409 si `Payment.selectedProvider`
+-- no es un `PaymentProviderName` actual (p. ej. sigue en `stripe`): no enruta por `PAYMENTS_PROVIDER_ORDER`
+-- para evitar adapter equivocado. Este script elimina ese estado bloqueado.
 UPDATE "Payment"
 SET "selected_provider" = 'mock'
 WHERE "selected_provider" = 'stripe';

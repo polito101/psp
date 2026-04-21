@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  OnApplicationBootstrap,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomBytes } from 'crypto';
@@ -26,11 +27,13 @@ import { OpsMerchantFinanceTransactionsQueryDto } from './dto/ops-merchant-finan
 import { OpsTransactionCountsQueryDto } from './dto/ops-transaction-counts-query.dto';
 import { OpsVolumeHourlyQueryDto } from './dto/ops-volume-hourly-query.dto';
 import {
+  LEGACY_STRIPE_DB_PROVIDER,
   PAYMENT_V2_STATUS,
   PaymentOperation,
   PaymentProviderName,
   PaymentReasonCode,
   isPaymentProviderName,
+  unsupportedPersistedProviderLifecycleMessage,
 } from './domain/payment-status';
 import { PaymentsV2MerchantRateLimitService } from './payments-v2-merchant-rate-limit.service';
 import { PaymentsV2ObservabilityService } from './payments-v2-observability.service';
@@ -128,7 +131,7 @@ type CircuitBreakerState = {
 let paymentsV2CircuitBreakerRedisFallbackWarned = false;
 
 @Injectable()
-export class PaymentsV2Service {
+export class PaymentsV2Service implements OnApplicationBootstrap {
   /** Longitud máxima del valor persistido en `Payment.idempotencyKey` y validado en cabecera. */
   private static readonly IDEMPOTENCY_KEY_MAX_LEN = 256;
   private static readonly IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
@@ -210,6 +213,34 @@ export class PaymentsV2Service {
       );
     } else {
       this.operationLockStaleMs = parsed;
+    }
+  }
+
+  /**
+   * Opcional: con `PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS=true`, falla el arranque si quedan filas con proveedor `stripe`
+   * en tablas que afectan operaciones y reporting (misma cobertura que el SQL de saneamiento).
+   */
+  async onApplicationBootstrap(): Promise<void> {
+    const enabled =
+      (this.config.get<string>('PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS') ?? 'false').toLowerCase() === 'true';
+    if (!enabled) return;
+
+    const legacy = LEGACY_STRIPE_DB_PROVIDER;
+    const rows = await this.prisma.$queryRaw<Array<{ n: bigint }>>`
+      SELECT (
+        (SELECT COUNT(*)::bigint FROM "Payment" WHERE "selected_provider" = ${legacy}) +
+        (SELECT COUNT(*)::bigint FROM "PaymentAttempt" WHERE "provider" = ${legacy}) +
+        (SELECT COUNT(*)::bigint FROM "MerchantRateTable" WHERE "provider" = ${legacy}) +
+        (SELECT COUNT(*)::bigint FROM "PaymentFeeQuote" WHERE "provider" = ${legacy}) +
+        (SELECT COUNT(*)::bigint FROM "PaymentSettlement" WHERE "provider" = ${legacy})
+      ) AS n
+    `;
+    const total = rows[0] ? Number(rows[0].n) : 0;
+    if (total > 0) {
+      throw new Error(
+        `PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS is enabled but ${total} database row(s) still reference provider "${legacy}". ` +
+          `Run apps/psp-api/scripts/ops/sanitize-stripe-provider-to-mock.sql (see script header).`,
+      );
     }
   }
 
@@ -399,6 +430,8 @@ export class PaymentsV2Service {
       );
     }
 
+    this.assertRecognizedSelectedProviderForExclusiveRouting(payment, 'capture');
+
     const claim = await this.claimPaymentOperation({
       merchantId,
       paymentId,
@@ -471,6 +504,8 @@ export class PaymentsV2Service {
       throw new ConflictException('Payment is in dispute; cancel is not applicable until the dispute is resolved.');
     }
 
+    this.assertRecognizedSelectedProviderForExclusiveRouting(payment, 'cancel');
+
     const claim = await this.claimPaymentOperation({
       merchantId,
       paymentId,
@@ -524,6 +559,8 @@ export class PaymentsV2Service {
     if (refundAmount <= 0 || refundAmount > payment.amountMinor) {
       throw new BadRequestException('Invalid refund amount');
     }
+
+    this.assertRecognizedSelectedProviderForExclusiveRouting(payment, 'refund');
 
     const refundPayloadHash = `amount=${refundAmount}`;
     if (idempotencyKey) {
@@ -2732,6 +2769,20 @@ export class PaymentsV2Service {
   private toProviderName(value: string | null): PaymentProviderName | undefined {
     if (value === null || value === '') return undefined;
     return isPaymentProviderName(value) ? value : undefined;
+  }
+
+  /**
+   * Tras `create`, `selectedProvider` debe ser un `PaymentProviderName` conocido. Si la BD conserva un código retirado
+   * (p. ej. `stripe`), no se debe enrutar por `PAYMENTS_PROVIDER_ORDER`: evita ejecutar el adapter equivocado.
+   */
+  private assertRecognizedSelectedProviderForExclusiveRouting(
+    payment: OperationResult['payment'],
+    operation: 'capture' | 'cancel' | 'refund',
+  ): void {
+    const raw = payment.selectedProvider;
+    if (raw === null || raw === '') return;
+    if (isPaymentProviderName(raw)) return;
+    throw new ConflictException(unsupportedPersistedProviderLifecycleMessage(operation, raw));
   }
 
   private toReasonCode(value: string | undefined): PaymentReasonCode {

@@ -241,6 +241,14 @@ export function validateEnv(input: EnvInput): EnvInput {
     env.PAYMENTS_V2_MERCHANT_REFUND_WINDOW_SEC = getString(env.PAYMENTS_V2_MERCHANT_REFUND_WINDOW_SEC) ?? '';
   }
 
+  env.PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS = String(
+    parseBoolean(
+      getString(env.PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS),
+      false,
+      'PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS',
+    ),
+  );
+
   if (nodeEnv === 'sandbox') {
     const redisUrl = getString(env.REDIS_URL);
     if (!redisUrl) {
