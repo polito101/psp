@@ -226,6 +226,18 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     if (!enabled) return;
 
     const legacy = LEGACY_STRIPE_DB_PROVIDER;
+    // `EXISTS` evita contar toda la tabla en el camino sano; el `COUNT` detallado solo en la ruta de error.
+    const anyLegacy = await this.prisma.$queryRaw<Array<{ has_legacy: boolean }>>`
+      SELECT (
+        EXISTS(SELECT 1 FROM "Payment" WHERE "selected_provider" = ${legacy}) OR
+        EXISTS(SELECT 1 FROM "PaymentAttempt" WHERE "provider" = ${legacy}) OR
+        EXISTS(SELECT 1 FROM "MerchantRateTable" WHERE "provider" = ${legacy}) OR
+        EXISTS(SELECT 1 FROM "PaymentFeeQuote" WHERE "provider" = ${legacy}) OR
+        EXISTS(SELECT 1 FROM "PaymentSettlement" WHERE "provider" = ${legacy})
+      ) AS has_legacy
+    `;
+    if (!anyLegacy[0]?.has_legacy) return;
+
     const rows = await this.prisma.$queryRaw<Array<{ n: bigint }>>`
       SELECT (
         (SELECT COUNT(*)::bigint FROM "Payment" WHERE "selected_provider" = ${legacy}) +
@@ -236,12 +248,11 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       ) AS n
     `;
     const total = rows[0] ? Number(rows[0].n) : 0;
-    if (total > 0) {
-      throw new Error(
-        `PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS is enabled but ${total} database row(s) still reference provider "${legacy}". ` +
-          `Run apps/psp-api/scripts/ops/sanitize-stripe-provider-to-mock.sql (see script header).`,
-      );
-    }
+    const totalForMessage = total > 0 ? total : 1;
+    throw new Error(
+      `PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS is enabled but ${totalForMessage} database row(s) still reference provider "${legacy}". ` +
+        `Run apps/psp-api/scripts/ops/sanitize-stripe-provider-to-mock.sql (see script header).`,
+    );
   }
 
   private getNumber(key: string, defaultValue: number): number {

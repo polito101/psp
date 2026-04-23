@@ -17,3 +17,10 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS "Payment_status_currency_succeeded_at_id
 
 DROP INDEX CONCURRENTLY IF EXISTS "Payment_status_currency_created_at_idx";
 
+-- `PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS` y filtros por `provider` (misma convención de nombres que Prisma Migrate).
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "PaymentSettlement_provider_idx"
+  ON "PaymentSettlement" ("provider");
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "MerchantRateTable_provider_merchant_id_currency_idx"
+  ON "MerchantRateTable" ("provider", "merchant_id", "currency");
+

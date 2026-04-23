@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 import { signSession } from "@/lib/server/auth/session-claims";
-import { middleware } from "./middleware";
+import { proxy } from "./proxy";
 import { BACKOFFICE_SESSION_COOKIE_NAME } from "@/lib/server/internal-route-auth";
 
-describe("middleware", () => {
+describe("proxy", () => {
   const snapshot = { ...process.env };
 
   beforeEach(() => {
@@ -18,14 +18,14 @@ describe("middleware", () => {
 
   it("redirects unauthenticated users away from protected routes", async () => {
     const req = new NextRequest(new URL("http://localhost:3005/"));
-    const res = await middleware(req);
+    const res = await proxy(req);
     expect(res?.status).toBe(307);
     expect(res?.headers.get("location")).toContain("/login");
   });
 
   it("allows /login without session", async () => {
     const req = new NextRequest(new URL("http://localhost:3005/login"));
-    const res = await middleware(req);
+    const res = await proxy(req);
     expect(res?.status).toBe(200);
   });
 
@@ -33,7 +33,7 @@ describe("middleware", () => {
     const jwt = await signSession({ sub: "a", role: "admin" }, process.env.BACKOFFICE_SESSION_JWT_SECRET!);
     const req = new NextRequest(new URL("http://localhost:3005/login"));
     req.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt);
-    const res = await middleware(req);
+    const res = await proxy(req);
     expect(res?.status).toBe(307);
     expect(res?.headers.get("location")).toMatch(/\/$/);
   });
@@ -45,7 +45,7 @@ describe("middleware", () => {
     );
     const req = new NextRequest(new URL("http://localhost:3005/monitor"));
     req.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt);
-    const res = await middleware(req);
+    const res = await proxy(req);
     expect(res?.status).toBe(307);
     expect(res?.headers.get("location")).toContain("/");
   });
@@ -57,7 +57,7 @@ describe("middleware", () => {
     );
     const req = new NextRequest(new URL("http://localhost:3005/merchants/lookup"));
     req.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt);
-    const res = await middleware(req);
+    const res = await proxy(req);
     expect(res?.status).toBe(307);
     expect(res?.headers.get("location")).toContain("/merchants/mrc_1/finance");
   });
@@ -69,7 +69,7 @@ describe("middleware", () => {
     );
     const req = new NextRequest(new URL("http://localhost:3005/merchants/mrc_other/finance"));
     req.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt);
-    const res = await middleware(req);
+    const res = await proxy(req);
     expect(res?.status).toBe(307);
     expect(res?.headers.get("location")).toContain("/merchants/mrc_1/finance");
   });
@@ -81,7 +81,7 @@ describe("middleware", () => {
     );
     const req = new NextRequest(new URL("http://localhost:3005/monitor/anything"));
     req.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt);
-    const res = await middleware(req);
+    const res = await proxy(req);
     expect(res?.status).toBe(307);
     expect(res?.headers.get("location")).toMatch(/\/$/);
   });
@@ -91,7 +91,7 @@ describe("middleware", () => {
     const jwt = await signSession({ sub: "a", role: "admin" }, process.env.BACKOFFICE_SESSION_JWT_SECRET!);
     const req = new NextRequest(new URL("http://localhost:3005/"));
     req.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt);
-    const res = await middleware(req);
+    const res = await proxy(req);
     expect(res?.status).toBe(307);
     expect(res?.headers.get("location")).toContain("/login");
   });

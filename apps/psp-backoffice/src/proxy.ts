@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { BACKOFFICE_SESSION_COOKIE_NAME } from "@/lib/session-cookie";
 
-type MiddlewareSession =
+type ProxySession =
   | { role: "admin" }
   | { role: "merchant"; merchantId: string };
 
@@ -19,7 +19,7 @@ function isDistinctSessionSecret(secret: string): boolean {
   return true;
 }
 
-async function readSessionFromRequest(req: NextRequest): Promise<MiddlewareSession | null> {
+async function readSessionFromRequest(req: NextRequest): Promise<ProxySession | null> {
   const token = req.cookies.get(BACKOFFICE_SESSION_COOKIE_NAME)?.value;
   if (!token) {
     return null;
@@ -47,7 +47,7 @@ async function readSessionFromRequest(req: NextRequest): Promise<MiddlewareSessi
   }
 }
 
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   if (

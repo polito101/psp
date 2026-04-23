@@ -77,7 +77,7 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 - Navegación: rol **merchant** no puede `/monitor` ni `/merchants/lookup` (redirige a su `/merchants/{id}/finance`). El layout oculta enlaces admin-only en la barra lateral.
 - Detalle de pago: un merchant que pida un `paymentId` de otro comercio recibe **404** (anti-enumeración), en BFF y en API.
 - Alcance **merchant** en BFF: rutas con `merchantId` en path o query fuerzan/validan contra el claim; métricas globales (`provider-health` → `ops/metrics`) solo **admin**. El proxy añade cabeceras `X-Backoffice-Role` y `X-Backoffice-Merchant-Id` para que `psp-api` vuelva a validar (defensa en profundidad).
-- Middleware (`src/middleware.ts`): páginas sin cookie de sesión redirigen a `/login`; rutas `/api/*` no se redirigen (el BFF sigue respondiendo 401/403).
+- Proxy (`src/proxy.ts`, Next.js 16+): páginas sin cookie de sesión redirigen a `/login`; rutas `/api/*` no se redirigen (el BFF sigue respondiendo 401/403).
 - Errores del proxy hacia `psp-api`: el cliente recibe un mensaje genérico; el detalle del fallo se registra en el servidor, no en el JSON de respuesta.
 - No leer secretos desde `NEXT_PUBLIC_*` salvo decision documentada; el patron actual mantiene secretos server-only.
 

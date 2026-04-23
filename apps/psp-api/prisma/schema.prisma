@@ -175,6 +175,8 @@ model MerchantRateTable {
   merchant  Merchant          @relation(fields: [merchantId], references: [id], onDelete: Cascade)
   feeQuotes PaymentFeeQuote[]
 
+  // Arranque / comprobación de proveedor: equality por `provider` (no encaja el índice [merchantId,…]).
+  @@index([provider, merchantId, currency])
   @@index([merchantId, currency, provider, activeFrom])
 }
 
@@ -227,6 +229,8 @@ model PaymentSettlement {
   payout     Payout?    @relation(fields: [payoutId], references: [id], onDelete: SetNull)
   payoutItem PayoutItem?
 
+  // Guardrails y consultas filtrando por proveedor.
+  @@index([provider])
   @@index([merchantId, currency, status, availableAt])
   @@index([payoutId])
 }
