@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import {
   ApiBody,
   ApiOperation,
@@ -9,6 +9,8 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { PatchMerchantActiveDto } from './dto/patch-merchant-active.dto';
+import { PatchMerchantPaymentMethodDto } from './dto/patch-merchant-payment-method.dto';
 import { InternalSecretGuard } from '../common/guards/internal-secret.guard';
 import { CreateMerchantDto } from './dto/create-merchant.dto';
 import { CreateRateTableDto } from './dto/create-rate-table.dto';
@@ -36,6 +38,57 @@ class MerchantIdParam {
 @Controller({ path: 'merchants', version: '1' })
 export class MerchantsController {
   constructor(private readonly merchants: MerchantsService) {}
+
+  @Get('ops/directory')
+  @ApiOperation({ summary: 'Directorio de merchants (interno, admin)' })
+  @ApiSecurity('InternalSecret')
+  @UseGuards(InternalSecretGuard)
+  opsDirectory() {
+    return this.merchants.listOpsDirectory();
+  }
+
+  @Get('ops/:id/detail')
+  @ApiOperation({ summary: 'Detalle operativo merchant + actividad reciente (interno)' })
+  @ApiParam({ name: 'id', description: 'ID del merchant' })
+  @ApiSecurity('InternalSecret')
+  @UseGuards(InternalSecretGuard)
+  opsDetail(@Param('id') id: string) {
+    return this.merchants.getOpsDetail(id);
+  }
+
+  @Patch('ops/:id/active')
+  @ApiOperation({ summary: 'Activar/desactivar merchant (interno)' })
+  @ApiParam({ name: 'id', description: 'ID del merchant' })
+  @ApiBody({ type: PatchMerchantActiveDto })
+  @ApiSecurity('InternalSecret')
+  @UseGuards(InternalSecretGuard)
+  opsSetActive(@Param('id') id: string, @Body() body: PatchMerchantActiveDto) {
+    return this.merchants.setMerchantActive(id, body.isActive);
+  }
+
+  @Get('ops/:id/payment-methods')
+  @ApiOperation({ summary: 'Métodos de pago configurados del merchant (interno)' })
+  @ApiParam({ name: 'id', description: 'ID del merchant' })
+  @ApiSecurity('InternalSecret')
+  @UseGuards(InternalSecretGuard)
+  opsListPaymentMethods(@Param('id') id: string) {
+    return this.merchants.listMerchantPaymentMethods(id);
+  }
+
+  @Patch('ops/:id/payment-methods/:mpmId')
+  @ApiOperation({ summary: 'Actualizar método de pago del merchant (kill switch / límites) (interno)' })
+  @ApiParam({ name: 'id', description: 'ID del merchant' })
+  @ApiParam({ name: 'mpmId', description: 'ID de MerchantPaymentMethod' })
+  @ApiBody({ type: PatchMerchantPaymentMethodDto })
+  @ApiSecurity('InternalSecret')
+  @UseGuards(InternalSecretGuard)
+  opsPatchPaymentMethod(
+    @Param('id') merchantId: string,
+    @Param('mpmId') mpmId: string,
+    @Body() body: PatchMerchantPaymentMethodDto,
+  ) {
+    return this.merchants.patchMerchantPaymentMethod(merchantId, mpmId, body);
+  }
 
   @Post()
   @ApiOperation({ summary: 'Crear comercio (solo bootstrap; requiere X-Internal-Secret)' })

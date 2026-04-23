@@ -249,6 +249,32 @@ export function validateEnv(input: EnvInput): EnvInput {
     ),
   );
 
+  env.FX_ENABLED = String(parseBoolean(getString(env.FX_ENABLED), true, 'FX_ENABLED'));
+  env.FX_PROVIDER = (getString(env.FX_PROVIDER) ?? 'frankfurter').toLowerCase();
+  if (env.FX_PROVIDER !== 'frankfurter') {
+    throw new Error('FX_PROVIDER must be "frankfurter" (extensible later)');
+  }
+  env.FX_BASE_URL = getString(env.FX_BASE_URL) ?? 'https://api.frankfurter.app';
+  env.FX_HTTP_TIMEOUT_MS = String(
+    parsePositiveInt(getString(env.FX_HTTP_TIMEOUT_MS), 5000, 'FX_HTTP_TIMEOUT_MS'),
+  );
+  env.FX_AUTO_REFRESH_ENABLED = String(
+    parseBoolean(getString(env.FX_AUTO_REFRESH_ENABLED), true, 'FX_AUTO_REFRESH_ENABLED'),
+  );
+  {
+    const raw = getString(env.FX_AUTO_REFRESH_INTERVAL_MS);
+    const defaultIntervalMs = 6 * 60 * 60 * 1000;
+    if (raw === undefined || raw === '') {
+      env.FX_AUTO_REFRESH_INTERVAL_MS = String(defaultIntervalMs);
+    } else {
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 0) {
+        throw new Error('FX_AUTO_REFRESH_INTERVAL_MS must be a non-negative integer (ms, 0 = no periodic refresh)');
+      }
+      env.FX_AUTO_REFRESH_INTERVAL_MS = String(n);
+    }
+  }
+
   if (nodeEnv === 'sandbox') {
     const redisUrl = getString(env.REDIS_URL);
     if (!redisUrl) {

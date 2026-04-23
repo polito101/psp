@@ -1,6 +1,6 @@
 # PROJECT_CONTEXT
 
-Ultima actualizacion: 2026-04-19
+Ultima actualizacion: 2026-04-23
 
 ## 1) Resumen del proyecto
 
@@ -79,7 +79,7 @@ C:/AA psp/
 │   │   └── README.md
 │   └── psp-backoffice/
 │       ├── src/
-│       │   ├── app/ (Next App Router: `/` inicio con stats, `/transactions` listado ops, `/monitor`, `/payments/[paymentId]`; BFF `/api/internal/*`)
+│       │   ├── app/ (Next: `/`, `/transactions`, `/merchants/*`, `/operations`, `/monitor`, `/payments/[paymentId]`; BFF `/api/internal/*` incl. settlements y merchants ops)
 │       │   ├── components/
 │       │   └── lib/
 │       ├── package.json

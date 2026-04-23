@@ -5,12 +5,22 @@ import type {
   MerchantFinanceSummaryResponse,
   MerchantFinanceTransactionsFilters,
   MerchantFinanceTransactionsResponse,
+  MerchantPaymentMethodRow,
+  MerchantsOpsDetailResponse,
+  MerchantsOpsDirectoryResponse,
+  MerchantsOpsMerchantSummary,
+  OpsDashboardVolumeUsdFilters,
+  OpsDashboardVolumeUsdResponse,
   OpsPaymentDetailResponse,
   OpsTransactionCountsFilters,
   OpsTransactionCountsResponse,
   OpsTransactionsResponse,
   OpsVolumeHourlyResponse,
   ProviderHealthResponse,
+  SettlementAvailableBalanceResponse,
+  SettlementInboxFilters,
+  SettlementRequestRow,
+  SettlementRequestsListResponse,
   TransactionsFilters,
 } from "@/lib/api/contracts";
 import type { OpsPaymentProvider } from "@/lib/api/payment-providers";
@@ -33,6 +43,12 @@ function toSearchParams(filters: TransactionsFilters): URLSearchParams {
   if (filters.provider) params.set("provider", filters.provider);
   if (filters.createdFrom) params.set("createdFrom", filters.createdFrom);
   if (filters.createdTo) params.set("createdTo", filters.createdTo);
+  if (filters.payerCountry) params.set("payerCountry", filters.payerCountry);
+  if (filters.paymentMethodCode) params.set("paymentMethodCode", filters.paymentMethodCode);
+  if (filters.paymentMethodFamily) params.set("paymentMethodFamily", filters.paymentMethodFamily);
+  if (filters.weekday !== undefined) params.set("weekday", String(filters.weekday));
+  if (filters.merchantActive === false) params.set("merchantActive", "false");
+  if (filters.merchantActive === true) params.set("merchantActive", "true");
   if (filters.includeTotal === false) params.set("includeTotal", "false");
   if (filters.includeTotal === true) params.set("includeTotal", "true");
   return params;
@@ -71,6 +87,12 @@ export async function fetchOpsTransactionCounts(
   if (filters.provider) params.set("provider", filters.provider);
   if (filters.createdFrom) params.set("createdFrom", filters.createdFrom);
   if (filters.createdTo) params.set("createdTo", filters.createdTo);
+  if (filters.payerCountry) params.set("payerCountry", filters.payerCountry);
+  if (filters.paymentMethodCode) params.set("paymentMethodCode", filters.paymentMethodCode);
+  if (filters.paymentMethodFamily) params.set("paymentMethodFamily", filters.paymentMethodFamily);
+  if (filters.weekday !== undefined) params.set("weekday", String(filters.weekday));
+  if (filters.merchantActive === false) params.set("merchantActive", "false");
+  if (filters.merchantActive === true) params.set("merchantActive", "true");
   const response = await fetch(`/api/internal/transactions/counts?${params.toString()}`, {
     ...internalBffInit,
     method: "GET",
@@ -83,6 +105,33 @@ export type OpsVolumeHourlyFilters = {
   provider?: OpsPaymentProvider;
   currency?: string;
 };
+
+function opsDashboardVolumeUsdParams(filters: OpsDashboardVolumeUsdFilters): URLSearchParams {
+  const params = new URLSearchParams();
+  if (filters.merchantId) params.set("merchantId", filters.merchantId);
+  if (filters.paymentId) params.set("paymentId", filters.paymentId);
+  if (filters.provider) params.set("provider", filters.provider);
+  if (filters.createdFrom) params.set("createdFrom", filters.createdFrom);
+  if (filters.createdTo) params.set("createdTo", filters.createdTo);
+  if (filters.payerCountry) params.set("payerCountry", filters.payerCountry);
+  if (filters.paymentMethodCode) params.set("paymentMethodCode", filters.paymentMethodCode);
+  if (filters.paymentMethodFamily) params.set("paymentMethodFamily", filters.paymentMethodFamily);
+  if (filters.weekday !== undefined) params.set("weekday", String(filters.weekday));
+  if (filters.merchantActive === false) params.set("merchantActive", "false");
+  if (filters.merchantActive === true) params.set("merchantActive", "true");
+  return params;
+}
+
+export async function fetchOpsDashboardVolumeUsd(
+  filters: OpsDashboardVolumeUsdFilters = {},
+): Promise<OpsDashboardVolumeUsdResponse> {
+  const qs = opsDashboardVolumeUsdParams(filters).toString();
+  const response = await fetch(
+    `/api/internal/transactions/dashboard-volume-usd${qs ? `?${qs}` : ""}`,
+    { ...internalBffInit, method: "GET" },
+  );
+  return parseResponse<OpsDashboardVolumeUsdResponse>(response);
+}
 
 export async function fetchOpsVolumeHourly(
   filters: OpsVolumeHourlyFilters = {},
@@ -196,4 +245,161 @@ export async function fetchMerchantFinancePayouts(
     { ...internalBffInit, method: "GET" },
   );
   return parseResponse<MerchantFinancePayoutsResponse>(response);
+}
+
+export async function fetchSettlementAvailableBalance(
+  merchantId: string,
+  currency?: string,
+): Promise<SettlementAvailableBalanceResponse> {
+  const params = new URLSearchParams();
+  if (currency) params.set("currency", currency.toUpperCase());
+  const qs = params.toString();
+  const encoded = encodeURIComponent(merchantId);
+  const response = await fetch(
+    `/api/internal/settlements/merchants/${encoded}/available-balance${qs ? `?${qs}` : ""}`,
+    { ...internalBffInit, method: "GET" },
+  );
+  return parseResponse<SettlementAvailableBalanceResponse>(response);
+}
+
+export async function fetchSettlementRequestsForMerchant(
+  merchantId: string,
+): Promise<SettlementRequestsListResponse> {
+  const encoded = encodeURIComponent(merchantId);
+  const response = await fetch(`/api/internal/settlements/merchants/${encoded}/requests`, {
+    ...internalBffInit,
+    method: "GET",
+  });
+  return parseResponse<SettlementRequestsListResponse>(response);
+}
+
+export async function createSettlementRequest(
+  merchantId: string,
+  options: { currency?: string; notes?: string } = {},
+): Promise<SettlementRequestRow> {
+  const params = new URLSearchParams();
+  if (options.currency) params.set("currency", options.currency.toUpperCase());
+  const qs = params.toString();
+  const encoded = encodeURIComponent(merchantId);
+  const response = await fetch(
+    `/api/internal/settlements/merchants/${encoded}/requests${qs ? `?${qs}` : ""}`,
+    {
+      ...internalBffInit,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notes: options.notes }),
+    },
+  );
+  return parseResponse<SettlementRequestRow>(response);
+}
+
+export async function fetchSettlementInbox(
+  filters: SettlementInboxFilters = {},
+): Promise<SettlementRequestsListResponse> {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("status", filters.status);
+  const qs = params.toString();
+  const response = await fetch(
+    `/api/internal/settlements/requests/inbox${qs ? `?${qs}` : ""}`,
+    { ...internalBffInit, method: "GET" },
+  );
+  return parseResponse<SettlementRequestsListResponse>(response);
+}
+
+export async function approveSettlementRequest(
+  requestId: string,
+  body: { reviewedNotes?: string } = {},
+): Promise<SettlementRequestRow> {
+  const encoded = encodeURIComponent(requestId);
+  const response = await fetch(`/api/internal/settlements/requests/${encoded}/approve`, {
+    ...internalBffInit,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseResponse<SettlementRequestRow>(response);
+}
+
+export async function rejectSettlementRequest(
+  requestId: string,
+  body: { reviewedNotes?: string } = {},
+): Promise<SettlementRequestRow> {
+  const encoded = encodeURIComponent(requestId);
+  const response = await fetch(`/api/internal/settlements/requests/${encoded}/reject`, {
+    ...internalBffInit,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseResponse<SettlementRequestRow>(response);
+}
+
+export async function fetchMerchantsOpsDirectory(): Promise<MerchantsOpsDirectoryResponse> {
+  const response = await fetch("/api/internal/merchants/ops/directory", {
+    ...internalBffInit,
+    method: "GET",
+  });
+  return parseResponse<MerchantsOpsDirectoryResponse>(response);
+}
+
+export async function fetchMerchantsOpsDetail(merchantId: string): Promise<MerchantsOpsDetailResponse> {
+  const encoded = encodeURIComponent(merchantId);
+  const response = await fetch(`/api/internal/merchants/ops/${encoded}/detail`, {
+    ...internalBffInit,
+    method: "GET",
+  });
+  return parseResponse<MerchantsOpsDetailResponse>(response);
+}
+
+export async function patchMerchantOpsActive(
+  merchantId: string,
+  body: { isActive: boolean },
+): Promise<MerchantsOpsMerchantSummary> {
+  const encoded = encodeURIComponent(merchantId);
+  const response = await fetch(`/api/internal/merchants/ops/${encoded}/active`, {
+    ...internalBffInit,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseResponse<MerchantsOpsMerchantSummary>(response);
+}
+
+export async function fetchMerchantPaymentMethods(
+  merchantId: string,
+): Promise<MerchantPaymentMethodRow[]> {
+  const encoded = encodeURIComponent(merchantId);
+  const response = await fetch(`/api/internal/merchants/ops/${encoded}/payment-methods`, {
+    ...internalBffInit,
+    method: "GET",
+  });
+  return parseResponse<MerchantPaymentMethodRow[]>(response);
+}
+
+export type PatchMerchantPaymentMethodBody = {
+  merchantEnabled?: boolean;
+  adminEnabled?: boolean;
+  minAmountMinor?: number | null;
+  maxAmountMinor?: number | null;
+  visibleToMerchant?: boolean;
+  lastChangedBy?: string;
+};
+
+export async function patchMerchantPaymentMethod(
+  merchantId: string,
+  mpmId: string,
+  body: PatchMerchantPaymentMethodBody,
+): Promise<MerchantPaymentMethodRow> {
+  const encMerchant = encodeURIComponent(merchantId);
+  const encMpm = encodeURIComponent(mpmId);
+  const response = await fetch(
+    `/api/internal/merchants/ops/${encMerchant}/payment-methods/${encMpm}`,
+    {
+      ...internalBffInit,
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  return parseResponse<MerchantPaymentMethodRow>(response);
 }

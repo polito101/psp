@@ -1,5 +1,5 @@
 import { Transform, Type } from 'class-transformer';
-import { IsBoolean, IsDateString, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { IsBoolean, IsDateString, IsIn, IsInt, IsOptional, IsString, Length, Max, MaxLength, Min } from 'class-validator';
 import { PAYMENT_PROVIDER_NAMES, PaymentProviderName } from '../domain/payment-provider-names';
 
 const PAYMENT_STATUSES = [
@@ -80,6 +80,33 @@ export class ListOpsTransactionsDto {
   @IsOptional()
   @IsDateString()
   createdTo?: string;
+
+  @IsOptional()
+  @IsString()
+  @Length(2, 2)
+  payerCountry?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  paymentMethodCode?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  paymentMethodFamily?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(6)
+  weekday?: number;
+
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  merchantActive?: boolean;
 
   /**
    * Si es `false`, no se ejecuta `count()` sobre los filtros (útil con polling frecuente).

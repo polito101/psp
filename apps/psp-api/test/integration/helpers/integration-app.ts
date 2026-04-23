@@ -55,7 +55,20 @@ export async function createIntegrationApp(): Promise<{
   };
 }
 
+async function tryDeleteMany(fn: () => Promise<unknown>): Promise<void> {
+  try {
+    await fn();
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('does not exist') || msg.includes('Unknown model')) {
+      return;
+    }
+    throw e;
+  }
+}
+
 export async function resetIntegrationDb(prisma: PrismaService): Promise<void> {
+  await tryDeleteMany(() => prisma.settlementRequest.deleteMany());
   await prisma.paymentOperation.deleteMany();
   await prisma.paymentAttempt.deleteMany();
   await prisma.webhookDelivery.deleteMany();
@@ -68,6 +81,8 @@ export async function resetIntegrationDb(prisma: PrismaService): Promise<void> {
   await prisma.payment.deleteMany();
   await prisma.paymentLink.deleteMany();
   await prisma.merchant.deleteMany();
+  await tryDeleteMany(() => prisma.paymentMethodDefinition.deleteMany());
+  await tryDeleteMany(() => prisma.fxRateSnapshot.deleteMany());
 }
 
 export async function createMerchantViaHttp(

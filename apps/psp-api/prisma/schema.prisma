@@ -31,6 +31,14 @@ enum PayoutStatus {
   FAILED
 }
 
+enum SettlementRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PAID
+  CANCELED
+}
+
 model Merchant {
   id                      String    @id @default(cuid())
   name                    String
@@ -40,16 +48,20 @@ model Merchant {
   webhookUrl              String?   @map("webhook_url")
   webhookSecretCiphertext String    @map("webhook_secret_ciphertext")
   feeBps                  Int       @default(290) @map("fee_bps")
+  isActive                Boolean   @default(true) @map("is_active")
+  deactivatedAt           DateTime? @map("deactivated_at")
   createdAt               DateTime  @default(now()) @map("created_at")
 
-  paymentLinks PaymentLink[]
-  payments     Payment[]
-  ledgerLines  LedgerLine[]
-  webhooks     WebhookDelivery[]
-  rateTables   MerchantRateTable[]
-  feeQuotes    PaymentFeeQuote[]
-  settlements  PaymentSettlement[]
-  payouts      Payout[]
+  paymentLinks          PaymentLink[]
+  payments              Payment[]
+  ledgerLines           LedgerLine[]
+  webhooks              WebhookDelivery[]
+  rateTables            MerchantRateTable[]
+  feeQuotes             PaymentFeeQuote[]
+  settlements           PaymentSettlement[]
+  payouts               Payout[]
+  merchantPaymentMethods MerchantPaymentMethod[]
+  settlementRequests    SettlementRequest[]
 }
 
 model PaymentLink {
@@ -83,6 +95,14 @@ model Payment {
   selectedProvider String? @map("selected_provider")
   providerRef    String?  @map("provider_ref")
   rail           String   @default("fiat")
+  /// ISO 3166-1 alpha-2 (opcional) — país del pagador para reporting ops.
+  payerCountry         String?  @map("payer_country") @db.VarChar(2)
+  /// Código de método de pago del catálogo (`PaymentMethodDefinition.code`), p. ej. mock_card.
+  paymentMethodCode    String?  @map("payment_method_code") @db.VarChar(64)
+  /// Familia de instrumento (card, transfer, wallet, …) para filtros agregados.
+  paymentMethodFamily  String?  @map("payment_method_family") @db.VarChar(32)
+  /// Día de la semana UTC de `created_at` (0=domingo … 6=sábado), denormalizado para filtros ops.
+  createdWeekdayUtc Int? @map("created_weekday_utc")
   lastAttemptAt  DateTime? @map("last_attempt_at")
   succeededAt    DateTime? @map("succeeded_at")
   failedAt       DateTime? @map("failed_at")
@@ -109,6 +129,83 @@ model Payment {
   @@index([selectedProvider, createdAt, id])
   @@index([merchantId, createdAt, id])
   @@index([selectedProvider, providerRef])
+  @@index([payerCountry, createdAt])
+  @@index([paymentMethodCode, createdAt])
+}
+
+/// Catálogo global de métodos de pago (arranque provider-based: mock_card, mock_transfer).
+model PaymentMethodDefinition {
+  id         String   @id @default(cuid())
+  code       String   @unique @db.VarChar(64)
+  label      String
+  /// Debe alinearse con `PaymentProviderName` cuando aplique (mock, acme).
+  provider   String   @db.VarChar(32)
+  category   String   @db.VarChar(32)
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  merchantMethods MerchantPaymentMethod[]
+
+  @@index([provider, active])
+}
+
+/// Configuración por merchant: kill switch, límites y visibilidad.
+model MerchantPaymentMethod {
+  id                   String   @id @default(cuid())
+  merchantId           String   @map("merchant_id")
+  definitionId         String   @map("definition_id")
+  /// Habilitado por el comercio (kill switch merchant).
+  merchantEnabled      Boolean  @default(true) @map("merchant_enabled")
+  /// Habilitado por plataforma/admin.
+  adminEnabled         Boolean  @default(true) @map("admin_enabled")
+  minAmountMinor       Int?     @map("min_amount_minor")
+  maxAmountMinor       Int?     @map("max_amount_minor")
+  visibleToMerchant    Boolean  @default(true) @map("visible_to_merchant")
+  lastChangedBy        String?  @map("last_changed_by") @db.VarChar(128)
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  merchant   Merchant               @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  definition PaymentMethodDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, definitionId])
+  @@index([merchantId, merchantEnabled, adminEnabled])
+}
+
+/// Solicitud manual de liquidación/payout (workflow backoffice).
+model SettlementRequest {
+  id                 String                  @id @default(cuid())
+  merchantId         String                  @map("merchant_id")
+  currency           String                  @db.VarChar(8)
+  requestedNetMinor  Int                     @map("requested_net_minor")
+  status             SettlementRequestStatus @default(PENDING)
+  payoutId           String?                 @unique @map("payout_id")
+  notes              String?                 @db.Text
+  requestedByRole    String                  @map("requested_by_role") @db.VarChar(16)
+  reviewedNotes      String?                 @map("reviewed_notes") @db.Text
+  createdAt          DateTime                @default(now()) @map("created_at")
+  updatedAt          DateTime                @updatedAt @map("updated_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  payout   Payout?  @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+
+  @@index([merchantId, status, createdAt])
+  @@index([status, createdAt])
+}
+
+/// Snapshot de tipo de cambio para reporting auditable (base → quote, p. ej. EUR→USD).
+model FxRateSnapshot {
+  id             String   @id @default(cuid())
+  baseCurrency   String   @map("base_currency") @db.VarChar(8)
+  quoteCurrency  String   @map("quote_currency") @db.VarChar(8)
+  /// Tasa: 1 base = rateDecimal quote (Prisma Decimal).
+  rateDecimal    Decimal  @map("rate_decimal") @db.Decimal(28, 14)
+  effectiveAt    DateTime @map("effective_at")
+  source         String   @db.VarChar(64)
+  externalRef    String?  @map("external_ref") @db.VarChar(256)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([baseCurrency, quoteCurrency, effectiveAt])
 }
 
 // `merchantId` debe coincidir con `Payment.merchantId` del mismo `paymentId`; el servicio valida ownership antes del lock y purga filas incoherentes en `claimPaymentOperation`.
@@ -247,9 +344,10 @@ model Payout {
   netMinor      Int          @map("net_minor")
   createdAt     DateTime     @default(now()) @map("created_at")
 
-  merchant    Merchant           @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  items       PayoutItem[]
-  settlements PaymentSettlement[]
+  merchant            Merchant            @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  items               PayoutItem[]
+  settlements         PaymentSettlement[]
+  settlementRequest  SettlementRequest?
 
   @@index([merchantId, createdAt])
 }

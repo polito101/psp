@@ -1,6 +1,6 @@
 # BACKOFFICE_CONTEXT — PSP Backoffice
 
-Ultima actualizacion: 2026-04-20
+Ultima actualizacion: 2026-04-23
 
 Documento **local** del app `apps/psp-backoffice` (nombre distinto de `PROJECT_CONTEXT.md` en la raíz para evitar confusion). El monorepo mantiene visión global y API en **`PROJECT_CONTEXT.md`** (raíz); aquí se detalla solo el panel administrativo.
 
@@ -26,21 +26,24 @@ Puerto dev por defecto: **3005** (`next dev -p 3005`). API local típica: **3003
 ```text
 src/
 ├── app/
-│   ├── layout.tsx, page.tsx          # `/` inicio (stats + volumen hoy vs ayer)
+│   ├── layout.tsx, page.tsx          # `/` inicio (admin vs merchant)
 │   ├── transactions/page.tsx         # `/transactions` listado ops
+│   ├── operations/page.tsx           # `/operations` inbox settlements (admin)
+│   ├── merchants/page.tsx            # directorio merchants (admin)
+│   ├── merchants/[merchantId]/overview|payments|settlements|payment-methods|admin|finance/page.tsx
 │   ├── monitor/page.tsx              # `/monitor`
 │   ├── payments/[paymentId]/page.tsx # detalle pago
-│   ├── merchants/[merchantId]/finance/page.tsx # finanzas merchant (gross/fee/net, payouts)
 │   └── api/internal/                 # BFF (solo servidor)
 │       ├── transactions/route.ts
 │       ├── transactions/counts/route.ts
 │       ├── transactions/volume-hourly/route.ts
-│       ├── merchants/[merchantId]/finance/summary/route.ts
-│       ├── merchants/[merchantId]/finance/transactions/route.ts
-│       ├── merchants/[merchantId]/finance/payouts/route.ts
+│       ├── transactions/dashboard-volume-usd/route.ts
+│       ├── settlements/...
+│       ├── merchants/ops/...
+│       ├── merchants/[merchantId]/finance/...
 │       ├── payments/[paymentId]/route.ts
 │       └── provider-health/route.ts
-├── components/                       # UI por feature
+├── components/                       # UI por feature (home/, merchant-portal/, settlements/, merchants/)
 └── lib/                              # clientes API, utilidades
 ```
 
@@ -61,8 +64,15 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 
 ## 5) Rutas de producto
 
-- **`/`** — Inicio: tarjetas de conteo del día (UTC) y bloque **Volumen bruto**: totales succeeded hoy vs ayer (EUR) encima del gráfico; líneas acumuladas por hora UTC con hover que compara el volumen bruto de cada hora frente al mismo tramo de ayer (incluye %).
-- **`/transactions`** — Dashboard de transacciones (lista ops, filtros, export CSV de pagina visible, conteos por estado, cursores).
+- **`/`** — Inicio: **admin** — mismas tarjetas UTC + volumen EUR + card volumen **USD** (`/ops/dashboard/volume-usd` vía BFF) + accesos a `/merchants` y `/operations`. **Merchant** — resumen scoped + enlaces al portal.
+- **`/transactions`** — Dashboard de transacciones (lista ops, filtros, export CSV de pagina visible, conteos por estado, cursores). Filtros extendidos (país, método, weekday, `merchantActive`) se reenvían al BFF.
+- **`/merchants`** — Directorio merchants (solo admin); desde aquí **Ver** → overview, **Admin** → panel activación / admin-enabled métodos.
+- **`/merchants/[merchantId]/overview`** — Resumen merchant/admin con timeline (detalle ops interno).
+- **`/merchants/[merchantId]/payments`** — Mismo listado ops con `merchantId` precargado (`TransactionsDashboard`).
+- **`/merchants/[merchantId]/settlements`** — Saldo AVAILABLE + crear solicitud + historial.
+- **`/merchants/[merchantId]/payment-methods`** — Tabla métodos y kill-switch merchant.
+- **`/merchants/[merchantId]/admin`** — Solo admin: activar/desactivar cuenta y toggles `adminEnabled` por método.
+- **`/operations`** — Solo admin: inbox de `SettlementRequest` PENDING (aprobar/rechazar).
 - **`/monitor`** — Vista compacta + health de proveedores.
 - **`/payments/[paymentId]`** — Detalle de pago (intentos acotados a los 200 más recientes si el historial crece; aviso en UI si `attemptsTruncated`), metadatos, enlaces operativos.
 - **`/merchants/[merchantId]/finance`** — Resumen gross/fee/net (EUR), tabla de fee quotes y payouts; enlaces desde transacciones y detalle de pago.
@@ -70,11 +80,11 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 ## 6) BFF y seguridad
 
 - El merchant **no** envía proveedor en `POST /api/v2/payments` (ruteo del PSP en API); los filtros por `provider` en este panel son solo operativos sobre datos ya persistidos. Los valores permitidos en BFF/UI siguen `OPS_PAYMENT_PROVIDERS` en `src/lib/api/payment-providers.ts` (debe mantenerse alineado con `PAYMENT_PROVIDER_NAMES` en `psp-api`).
-- Las rutas `app/api/internal/*` reenvian a endpoints internos de Nest (`/api/v2/payments/ops/...`, health, etc.) con `X-Internal-Secret` solo en servidor. El listado ops va a `.../ops/transactions`; los conteos agregados por estado del dashboard a `.../ops/transactions/counts` (`GET /api/internal/transactions/counts`); la serie de volumen horario a `.../ops/transactions/volume-hourly` (`GET /api/internal/transactions/volume-hourly`). Finanzas por merchant (resumen gross/fee/net, filas por `PaymentFeeQuote`, payouts): `GET /api/internal/merchants/:merchantId/finance/summary|transactions|payouts` → `.../ops/merchants/:merchantId/finance/...`. La respuesta de `volume-hourly` expone acumulados y totales en **unidades menores como string** (mismo contrato que la API Nest); el panel las convierte a `bigint` para el gráfico y el formateo.
+- Las rutas `app/api/internal/*` reenvian a endpoints internos de Nest (`/api/v2/payments/ops/...`, `/api/v1/settlements/...`, `/api/v1/merchants/ops/...`, health, etc.) con `X-Internal-Secret` solo en servidor. El listado ops va a `.../ops/transactions`; los conteos agregados por estado del dashboard a `.../ops/transactions/counts` (`GET /api/internal/transactions/counts`); la serie de volumen horario a `.../ops/transactions/volume-hourly` (`GET /api/internal/transactions/volume-hourly`); volumen agregado en USD a `.../ops/dashboard/volume-usd` (`GET /api/internal/transactions/dashboard-volume-usd`). Finanzas por merchant (resumen gross/fee/net, filas por `PaymentFeeQuote`, payouts): `GET /api/internal/merchants/:merchantId/finance/summary|transactions|payouts` → `.../ops/merchants/:merchantId/finance/...`. Settlements: `.../internal/settlements/merchants/:id/available-balance`, `.../requests` (GET/POST), inbox y approve/reject. Merchants ops: `.../internal/merchants/ops/directory`, `.../ops/:id/detail|active|payment-methods`. El proxy (`lib/server/backoffice-api.ts`) exige `backofficeScope` en cualquier ruta payments ops **o** settlements **o** `merchants/ops` (RBAC fail-closed alineado con `InternalSecretGuard` en API). Soporta `proxyInternalPost` / `proxyInternalPatch` para cuerpos JSON.
 - Detalle de pago: `GET /api/internal/payments/:paymentId` hace proxy a `.../ops/payments/:id`. Por defecto **no** se incluye `responsePayload` por intento (menos payload y menos metadata de proveedor en el navegador). Solo si la peticion al BFF lleva `?includePayload=true` se reenvia ese flag a la API (uso depuracion).
 - Sesión: cookie HttpOnly `backoffice_session` con JWT (claims `role: admin` o `merchant` y `merchantId` si aplica). El BFF acepta también `Authorization: Bearer <JWT>` (p. ej. tests). Sin sesión válida: `401`/`403`. Faltan `BACKOFFICE_SESSION_JWT_SECRET` o conflictos con otros secretos → `500` (fail-closed).
 - Login: `POST /api/auth/session` con `{ "mode": "admin", "token": "<BACKOFFICE_ADMIN_SECRET>" }` o `{ "mode": "merchant", "merchantId": "...", "merchantToken": "<expUnix>:<hmac_hex>" }` (HMAC de ``merchantId.exp`` con caducidad). Ver `README.md`.
-- Navegación: rol **merchant** no puede `/monitor` ni `/merchants/lookup` (redirige a su `/merchants/{id}/finance`). El layout oculta enlaces admin-only en la barra lateral.
+- Navegación: rol **merchant** no ve `/monitor` ni `/merchants/lookup`; enlaces a **Mi comercio** (`/merchants/{id}/overview` y subrutas) y **Finanzas**. Admin ve **Merchants**, **Operaciones**, monitor y lookup financiero.
 - Detalle de pago: un merchant que pida un `paymentId` de otro comercio recibe **404** (anti-enumeración), en BFF y en API.
 - Alcance **merchant** en BFF: rutas con `merchantId` en path o query fuerzan/validan contra el claim; métricas globales (`provider-health` → `ops/metrics`) solo **admin**. El proxy añade cabeceras `X-Backoffice-Role` y `X-Backoffice-Merchant-Id` para que `psp-api` vuelva a validar (defensa en profundidad).
 - Proxy (`src/proxy.ts`, Next.js 16+): páginas sin cookie de sesión redirigen a `/login`; rutas `/api/*` no se redirigen (el BFF sigue respondiendo 401/403).

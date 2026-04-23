@@ -84,6 +84,11 @@ export type TransactionsFilters = {
   provider?: TransactionProvider;
   createdFrom?: string;
   createdTo?: string;
+  payerCountry?: string;
+  paymentMethodCode?: string;
+  paymentMethodFamily?: string;
+  weekday?: number;
+  merchantActive?: boolean;
   /** Si es false, el BFF/API omiten el agregado total (menos carga en DB con polling). */
   includeTotal?: boolean;
 };
@@ -91,13 +96,143 @@ export type TransactionsFilters = {
 /** Filtros base del listado ops (sin paginación ni estado) para el agregado de conteos por status. */
 export type OpsTransactionCountsFilters = Pick<
   TransactionsFilters,
-  "merchantId" | "paymentId" | "provider" | "createdFrom" | "createdTo"
+  | "merchantId"
+  | "paymentId"
+  | "provider"
+  | "createdFrom"
+  | "createdTo"
+  | "payerCountry"
+  | "paymentMethodCode"
+  | "paymentMethodFamily"
+  | "weekday"
+  | "merchantActive"
 >;
 
 export type OpsTransactionCountsResponse = {
   total: number;
   /** Claves = valores de `Payment.status` en DB. */
   byStatus: Record<string, number>;
+};
+
+/** Respuesta de `GET .../ops/dashboard/volume-usd` (montos USD minor como string). */
+export type OpsDashboardVolumeUsdResponse = {
+  viewCurrency: "USD";
+  asOf: string;
+  paidUsdMinor: string;
+  pendingUsdMinor: string;
+  failedOrExpiredUsdMinor: string;
+  conversionUnavailable: boolean;
+};
+
+export type OpsDashboardVolumeUsdFilters = Pick<
+  TransactionsFilters,
+  | "merchantId"
+  | "paymentId"
+  | "provider"
+  | "createdFrom"
+  | "createdTo"
+  | "payerCountry"
+  | "paymentMethodCode"
+  | "paymentMethodFamily"
+  | "weekday"
+  | "merchantActive"
+>;
+
+export type SettlementAvailableBalanceResponse = {
+  availableNetMinor: number;
+};
+
+export type SettlementRequestStatus =
+  | "PENDING"
+  | "APPROVED"
+  | "REJECTED"
+  | "PAID"
+  | "CANCELED";
+
+export type SettlementInboxFilters = {
+  status?: SettlementRequestStatus;
+};
+
+export type SettlementRequestRow = {
+  id: string;
+  merchantId: string;
+  currency: string;
+  requestedNetMinor: number;
+  status: SettlementRequestStatus | string;
+  payoutId: string | null;
+  notes: string | null;
+  requestedByRole: string;
+  reviewedNotes: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SettlementRequestsListResponse = {
+  items: SettlementRequestRow[];
+};
+
+export type MerchantsOpsDirectoryRow = {
+  id: string;
+  name: string;
+  isActive: boolean;
+  deactivatedAt: string | null;
+  apiKeyExpiresAt: string | null;
+  apiKeyRevokedAt: string | null;
+  createdAt: string;
+};
+
+/** `GET .../merchants/ops/directory` devuelve un array plano. */
+export type MerchantsOpsDirectoryResponse = MerchantsOpsDirectoryRow[];
+
+export type MerchantsOpsMerchantSummary = {
+  id: string;
+  name: string;
+  isActive: boolean;
+  deactivatedAt: string | null;
+};
+
+export type MerchantsOpsRecentPayment = {
+  id: string;
+  status: string;
+  amountMinor: number;
+  currency: string;
+  createdAt: string;
+};
+
+export type PaymentMethodDefinitionSummary = {
+  id: string;
+  code: string;
+  label: string;
+  provider: string;
+  category: string;
+  active: boolean;
+  createdAt: string;
+};
+
+export type MerchantPaymentMethodRow = {
+  id: string;
+  merchantId: string;
+  definitionId: string;
+  merchantEnabled: boolean;
+  adminEnabled: boolean;
+  minAmountMinor: number | null;
+  maxAmountMinor: number | null;
+  visibleToMerchant: boolean;
+  lastChangedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+  definition?: PaymentMethodDefinitionSummary;
+};
+
+export type MerchantsOpsDetailResponse = {
+  merchant: MerchantsOpsMerchantSummary & {
+    apiKeyExpiresAt: string | null;
+    apiKeyRevokedAt: string | null;
+    createdAt: string;
+  };
+  recentPayments: MerchantsOpsRecentPayment[];
+  settlementRequests: SettlementRequestRow[];
+  paymentMethods: MerchantPaymentMethodRow[];
 };
 
 /** Respuesta de `GET .../ops/transactions/volume-hourly` (límites de día en UTC). */

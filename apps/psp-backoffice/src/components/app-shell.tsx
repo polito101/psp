@@ -3,7 +3,16 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Activity, Building2, CreditCard, Landmark, LayoutDashboard, LogIn, LogOut } from "lucide-react";
+import {
+  Activity,
+  Building2,
+  ClipboardList,
+  CreditCard,
+  Landmark,
+  LayoutDashboard,
+  LogIn,
+  LogOut,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { LayoutSession } from "@/lib/session-types";
 
@@ -19,31 +28,58 @@ function buildNavItems(session: LayoutSession | null): NavItem[] {
   const financeHref =
     session?.role === "merchant" ? `/merchants/${session.merchantId}/finance` : "/merchants/lookup";
 
+  if (session?.role === "merchant") {
+    const mid = encodeURIComponent(session.merchantId);
+    return [
+      { href: "/", id: "home", label: "Inicio", icon: LayoutDashboard },
+      { href: "/login", id: "login", label: "Iniciar sesión", icon: LogIn },
+      { href: "/transactions", id: "transactions", label: "Transacciones", icon: CreditCard },
+      {
+        href: `/merchants/${mid}/overview`,
+        id: "merchant-portal",
+        label: "Mi comercio",
+        icon: Building2,
+        activeMatch: (pathname: string) => pathname.startsWith(`/merchants/${session.merchantId}/`),
+      },
+      {
+        href: financeHref,
+        id: "merchant-finance",
+        label: "Finanzas",
+        icon: Landmark,
+        activeMatch: (pathname: string) => /^\/merchants\/[^/]+\/finance/.test(pathname),
+      },
+    ];
+  }
+
   const base: NavItem[] = [
     { href: "/", id: "home", label: "Inicio", icon: LayoutDashboard },
     { href: "/login", id: "login", label: "Iniciar sesión", icon: LogIn },
     { href: "/transactions", id: "transactions", label: "Transacciones", icon: CreditCard },
+    {
+      href: "/merchants",
+      id: "merchants-directory",
+      label: "Merchants",
+      icon: Building2,
+      activeMatch: (pathname: string) =>
+        pathname === "/merchants" || /^\/merchants\/[^/]+\/(overview|payments|settlements|payment-methods|admin)/.test(pathname),
+    },
+    {
+      href: "/operations",
+      id: "operations",
+      label: "Operaciones",
+      icon: ClipboardList,
+    },
     {
       href: financeHref,
       id: "merchant-finance-lookup",
       label: "Finanzas merchant",
       icon: Landmark,
       activeMatch: (pathname: string) =>
-        pathname === "/merchants/lookup" ||
-        /^\/merchants\/[^/]+\/finance/.test(pathname),
+        pathname === "/merchants/lookup" || /^\/merchants\/[^/]+\/finance/.test(pathname),
     },
     { href: "/monitor", id: "monitor", label: "Monitor operativo (API)", icon: Activity },
-    {
-      href: null,
-      id: "merchants",
-      label: "Merchants",
-      icon: Building2,
-    },
   ];
 
-  if (session?.role === "merchant") {
-    return base.filter((item) => item.id !== "monitor");
-  }
   return base;
 }
 

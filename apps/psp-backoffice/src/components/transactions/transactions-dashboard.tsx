@@ -324,12 +324,21 @@ const DEFAULT_VISIBILITY: VisibilityState = {
   reason: true,
 };
 
-export function TransactionsDashboard() {
+export function TransactionsDashboard({ initialMerchantId }: { initialMerchantId?: string } = {}) {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<TabId>("pagos");
   const [summaryKey, setSummaryKey] = useState<SummaryCardKey>("all");
-  const [applied, setApplied] = useState<AdvancedFilters>(EMPTY_ADVANCED);
+  const [applied, setApplied] = useState<AdvancedFilters>(() => ({
+    ...EMPTY_ADVANCED,
+    ...(initialMerchantId ? { merchantId: initialMerchantId } : {}),
+  }));
   const [draftAdvanced, setDraftAdvanced] = useState<AdvancedFilters>(EMPTY_ADVANCED);
+
+  useEffect(() => {
+    if (!initialMerchantId) return;
+    setApplied((prev) => ({ ...prev, merchantId: initialMerchantId }));
+    setDraftAdvanced((prev) => ({ ...prev, merchantId: initialMerchantId }));
+  }, [initialMerchantId]);
   const [cursorStack, setCursorStack] = useState<({ createdAt: string; id: string } | null)[]>([null]);
   const [selection, setSelection] = useState<Set<string>>(() => new Set());
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(DEFAULT_VISIBILITY);

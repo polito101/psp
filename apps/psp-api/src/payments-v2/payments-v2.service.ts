@@ -18,6 +18,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { SettlementService } from '../settlements/settlement.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
+import { FxRatesService } from '../fx/fx-rates.service';
 import { hashCreatePaymentIntentPayload } from './create-payment-intent-payload-hash';
 import { CreatePaymentIntentDto } from './dto/create-payment-intent.dto';
 import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
@@ -26,6 +27,7 @@ import { OpsMerchantFinanceSummaryQueryDto } from './dto/ops-merchant-finance-su
 import { OpsMerchantFinanceTransactionsQueryDto } from './dto/ops-merchant-finance-transactions-query.dto';
 import { OpsTransactionCountsQueryDto } from './dto/ops-transaction-counts-query.dto';
 import { OpsVolumeHourlyQueryDto } from './dto/ops-volume-hourly-query.dto';
+import { OpsDashboardVolumeUsdQueryDto } from './dto/ops-dashboard-volume-usd-query.dto';
 import {
   LEGACY_STRIPE_DB_PROVIDER,
   PAYMENT_V2_STATUS,
@@ -86,6 +88,10 @@ type OpsTransactionsItem = {
   statusReason: string | null;
   amountMinor: number;
   currency: string;
+  payerCountry: string | null;
+  paymentMethodCode: string | null;
+  paymentMethodFamily: string | null;
+  createdWeekdayUtc: number | null;
   selectedProvider: string | null;
   providerRef: string | null;
   createdAt: Date;
@@ -171,6 +177,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     private readonly fee: FeeService,
     private readonly merchantRateLimit: PaymentsV2MerchantRateLimitService,
     private readonly correlationContext: CorrelationContextService,
+    private readonly fxRates: FxRatesService,
   ) {
     this.cbRedisEnabled = Boolean(this.redis.getClient?.());
     this.cbHalfOpenEnabled =
@@ -303,7 +310,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     idempotencyKey?: string | string[],
   ): Promise<OperationResult> {
     idempotencyKey = this.parseOptionalIdempotencyKey(idempotencyKey);
-    this.assertMerchantEnabled(merchantId);
+    await this.assertMerchantEnabled(merchantId);
     await this.assertPaymentLinkConsistency(merchantId, dto.paymentLinkId, dto.amountMinor, dto.currency);
 
     if (idempotencyKey) {
@@ -329,6 +336,11 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       );
     }
 
+    const paymentMethodMeta = await this.resolvePaymentMethodForCreate(merchantId, dto);
+    const payerCountry = dto.payerCountry ? dto.payerCountry.toUpperCase() : null;
+    const nowUtc = new Date();
+    const createdWeekdayUtc = nowUtc.getUTCDay();
+
     const selectedProvider = providerOrder[0];
     let payment: OperationResult['payment'];
     try {
@@ -343,6 +355,10 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
           status: PAYMENT_V2_STATUS.PROCESSING,
           rail: 'fiat',
           selectedProvider,
+          payerCountry,
+          paymentMethodCode: paymentMethodMeta.code,
+          paymentMethodFamily: paymentMethodMeta.family,
+          createdWeekdayUtc,
         },
         select: {
           id: true,
@@ -384,7 +400,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   }
 
   async getPayment(merchantId: string, paymentId: string) {
-    this.assertMerchantEnabled(merchantId);
+    await this.assertMerchantEnabled(merchantId);
     const payment = await this.findMerchantPayment(merchantId, paymentId);
     const attempts = await this.prisma.paymentAttempt.findMany({
       where: { paymentId },
@@ -410,7 +426,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     idempotencyKey?: string | string[],
   ): Promise<OperationResult> {
     idempotencyKey = this.parseOptionalIdempotencyKey(idempotencyKey);
-    this.assertMerchantEnabled(merchantId);
+    await this.assertMerchantEnabled(merchantId);
 
     if (idempotencyKey) {
       const duplicate = await this.tryAcquireOperationIdempotency({
@@ -483,7 +499,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     idempotencyKey?: string | string[],
   ): Promise<OperationResult> {
     idempotencyKey = this.parseOptionalIdempotencyKey(idempotencyKey);
-    this.assertMerchantEnabled(merchantId);
+    await this.assertMerchantEnabled(merchantId);
 
     if (idempotencyKey) {
       const duplicate = await this.tryAcquireOperationIdempotency({
@@ -558,7 +574,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     idempotencyKey?: string | string[],
   ): Promise<OperationResult> {
     idempotencyKey = this.parseOptionalIdempotencyKey(idempotencyKey);
-    this.assertMerchantEnabled(merchantId);
+    await this.assertMerchantEnabled(merchantId);
     const payment = await this.findMerchantPayment(merchantId, paymentId);
     if (payment.status === PAYMENT_V2_STATUS.REFUNDED) {
       return { payment, nextAction: null };
@@ -651,6 +667,11 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     provider?: PaymentProviderName;
     createdFrom?: string;
     createdTo?: string;
+    payerCountry?: string;
+    paymentMethodCode?: string;
+    paymentMethodFamily?: string;
+    weekday?: number;
+    merchantActive?: boolean;
   }): Prisma.PaymentWhereInput {
     const createdAt: Prisma.DateTimeFilter = {};
     if (params.createdFrom) {
@@ -661,13 +682,47 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     }
 
     const paymentId = params.paymentId?.trim();
+    const payer = params.payerCountry?.trim().toUpperCase();
+    const methodCode = params.paymentMethodCode?.trim();
+    const methodFamily = params.paymentMethodFamily?.trim();
     return {
       ...(params.merchantId ? { merchantId: params.merchantId } : {}),
       ...(paymentId ? { id: { contains: paymentId, mode: 'insensitive' } } : {}),
       ...(params.status ? { status: params.status } : {}),
       ...(params.provider ? { selectedProvider: params.provider } : {}),
       ...(Object.keys(createdAt).length > 0 ? { createdAt } : {}),
+      ...(payer ? { payerCountry: payer } : {}),
+      ...(methodCode ? { paymentMethodCode: methodCode } : {}),
+      ...(methodFamily ? { paymentMethodFamily: methodFamily } : {}),
+      ...(params.weekday !== undefined && params.weekday !== null
+        ? { createdWeekdayUtc: params.weekday }
+        : {}),
+      ...(params.merchantActive !== undefined
+        ? { merchant: { isActive: params.merchantActive } }
+        : {}),
     };
+  }
+
+  private async resolvePaymentMethodForCreate(
+    merchantId: string,
+    dto: CreatePaymentIntentDto,
+  ): Promise<{ code: string; family: string }> {
+    const raw = (dto.paymentMethodCode ?? 'mock_card').trim().toLowerCase();
+    const row = await this.prisma.merchantPaymentMethod.findFirst({
+      where: {
+        merchantId,
+        merchantEnabled: true,
+        adminEnabled: true,
+        definition: { code: raw, active: true },
+      },
+      include: { definition: true },
+    });
+    if (!row) {
+      throw new BadRequestException(
+        `Método de pago no disponible o deshabilitado para este merchant: ${raw}`,
+      );
+    }
+    return { code: row.definition.code, family: row.definition.category };
   }
 
   private buildOpsMerchantFinanceFeeQuoteWhere(
@@ -1259,6 +1314,11 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       provider: query.provider,
       createdFrom: query.createdFrom,
       createdTo: query.createdTo,
+      payerCountry: query.payerCountry,
+      paymentMethodCode: query.paymentMethodCode,
+      paymentMethodFamily: query.paymentMethodFamily,
+      weekday: query.weekday,
+      merchantActive: query.merchantActive,
     });
 
     const rows = await this.prisma.payment.groupBy({
@@ -1375,6 +1435,77 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   }
 
   /**
+   * Volumen agregado por bandas de estado, convertido a USD minor con snapshots FX persistidos.
+   */
+  async getOpsDashboardVolumeUsd(query: OpsDashboardVolumeUsdQueryDto) {
+    const where = this.buildOpsPaymentListWhere({
+      merchantId: query.merchantId,
+      paymentId: query.paymentId,
+      provider: query.provider,
+      createdFrom: query.createdFrom,
+      createdTo: query.createdTo,
+      payerCountry: query.payerCountry,
+      paymentMethodCode: query.paymentMethodCode,
+      paymentMethodFamily: query.paymentMethodFamily,
+      weekday: query.weekday,
+      merchantActive: query.merchantActive,
+    });
+
+    const groups = await this.prisma.payment.groupBy({
+      by: ['status', 'currency'],
+      where,
+      _sum: { amountMinor: true },
+    });
+
+    const paidStatuses = new Set<string>([PAYMENT_V2_STATUS.SUCCEEDED]);
+    const pendingStatuses = new Set<string>([
+      PAYMENT_V2_STATUS.PENDING,
+      PAYMENT_V2_STATUS.PROCESSING,
+      PAYMENT_V2_STATUS.REQUIRES_ACTION,
+      PAYMENT_V2_STATUS.AUTHORIZED,
+    ]);
+    const failedStatuses = new Set<string>([
+      PAYMENT_V2_STATUS.FAILED,
+      PAYMENT_V2_STATUS.CANCELED,
+      PAYMENT_V2_STATUS.DISPUTED,
+      PAYMENT_V2_STATUS.DISPUTE_LOST,
+    ]);
+
+    const at = query.createdTo ? new Date(query.createdTo) : new Date();
+    let paidUsdMinor = 0;
+    let pendingUsdMinor = 0;
+    let failedUsdMinor = 0;
+    let conversionUnavailable = false;
+
+    for (const g of groups) {
+      const minor = Number(g._sum.amountMinor ?? 0);
+      if (!Number.isFinite(minor) || minor === 0) continue;
+      const conv = await this.fxRates.convertMinorToUsdSnapshot({
+        amountMinor: minor,
+        currency: g.currency,
+        at,
+      });
+      if (!conv.ok) {
+        conversionUnavailable = true;
+        continue;
+      }
+      const usd = conv.usdMinor;
+      if (paidStatuses.has(g.status)) paidUsdMinor += usd;
+      else if (pendingStatuses.has(g.status)) pendingUsdMinor += usd;
+      else if (failedStatuses.has(g.status)) failedUsdMinor += usd;
+    }
+
+    return {
+      viewCurrency: 'USD' as const,
+      asOf: at.toISOString(),
+      paidUsdMinor: String(paidUsdMinor),
+      pendingUsdMinor: String(pendingUsdMinor),
+      failedOrExpiredUsdMinor: String(failedUsdMinor),
+      conversionUnavailable,
+    };
+  }
+
+  /**
    * Lista transacciones para monitoreo interno con filtros operativos y último intento de provider.
    *
    * @param query.includeTotal - Por defecto `true`. Con `false` no se ejecuta `count()`; `page.total` y `page.totalPages` serán `null`.
@@ -1408,6 +1539,11 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       provider: query.provider,
       createdFrom: query.createdFrom,
       createdTo: query.createdTo,
+      payerCountry: query.payerCountry,
+      paymentMethodCode: query.paymentMethodCode,
+      paymentMethodFamily: query.paymentMethodFamily,
+      weekday: query.weekday,
+      merchantActive: query.merchantActive,
     });
 
     const orderBy: Prisma.PaymentOrderByWithRelationInput[] = [{ createdAt: 'desc' }, { id: 'desc' }];
@@ -1451,6 +1587,10 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
           statusReason: true,
           amountMinor: true,
           currency: true,
+          payerCountry: true,
+          paymentMethodCode: true,
+          paymentMethodFamily: true,
+          createdWeekdayUtc: true,
           selectedProvider: true,
           providerRef: true,
           createdAt: true,
@@ -1568,6 +1708,10 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
         statusReason: row.statusReason,
         amountMinor: row.amountMinor,
         currency: row.currency,
+        payerCountry: row.payerCountry ?? null,
+        paymentMethodCode: row.paymentMethodCode ?? null,
+        paymentMethodFamily: row.paymentMethodFamily ?? null,
+        createdWeekdayUtc: row.createdWeekdayUtc ?? null,
         selectedProvider: row.selectedProvider,
         providerRef: row.providerRef,
         createdAt: row.createdAt,
@@ -2738,12 +2882,22 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   ) {
     if (!paymentLinkId) return;
     const link = await this.links.findForMerchant(merchantId, paymentLinkId, { requireUsable: true });
+    if (!link) {
+      throw new BadRequestException('Payment link not found');
+    }
     if (link.amountMinor !== amountMinor || link.currency !== currency.toUpperCase()) {
       throw new BadRequestException('Amount/currency must match payment link');
     }
   }
 
-  private assertMerchantEnabled(merchantId: string) {
+  private async assertMerchantEnabled(merchantId: string) {
+    const merchant = await this.prisma.merchant.findUnique({
+      where: { id: merchantId },
+      select: { isActive: true },
+    });
+    if (!merchant?.isActive) {
+      throw new ForbiddenException('Merchant account is inactive or missing');
+    }
     const entries = this.paymentsV2EnabledMerchantsRaw
       .split(',')
       .map((entry) => entry.trim())

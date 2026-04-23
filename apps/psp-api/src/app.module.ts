@@ -14,6 +14,7 @@ import { SettlementsModule } from './settlements/settlements.module';
 import { validateEnv } from './config/env.validation';
 import { HttpLoggingInterceptor } from './common/interceptors/http-logging.interceptor';
 import { PaymentsV2Module } from './payments-v2/payments-v2.module';
+import { FxModule } from './fx/fx.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { PaymentsV2Module } from './payments-v2/payments-v2.module';
     FeesModule,
     SettlementsModule,
     PaymentsV2Module,
+    FxModule,
   ],
   providers: [
     {

@@ -5,6 +5,7 @@ import {
   proxyInternalGet,
   ProxyUpstreamError,
   readResponseTextWithByteLimit,
+  requiresBackofficeScopePath,
 } from "./backoffice-api";
 
 const MAX_BYTES = 64 * 1024;
@@ -144,6 +145,10 @@ describe("proxyInternalGet RBAC", () => {
     await expect(proxyInternalGet({ path: "/api/v2/payments/ops/metrics" })).rejects.toThrow(/backofficeScope/);
   });
 
+  it("rejects settlements path without backofficeScope before fetch", async () => {
+    await expect(proxyInternalGet({ path: "/api/v1/settlements/requests/inbox" })).rejects.toThrow(/backofficeScope/);
+  });
+
   it("sends X-Backoffice-Role for admin on ops path", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
@@ -188,5 +193,14 @@ describe("proxyInternalGet RBAC", () => {
 describe("isPaymentsV2OpsPath", () => {
   it("returns true for metrics path", () => {
     expect(isPaymentsV2OpsPath("/api/v2/payments/ops/metrics")).toBe(true);
+  });
+});
+
+describe("requiresBackofficeScopePath", () => {
+  it("includes merchants ops and settlements", () => {
+    expect(requiresBackofficeScopePath("/api/v1/merchants/ops/directory")).toBe(true);
+    expect(requiresBackofficeScopePath("/api/v1/settlements/merchants/x/requests")).toBe(true);
+    expect(requiresBackofficeScopePath("/api/v2/payments/ops/transactions")).toBe(true);
+    expect(requiresBackofficeScopePath("/api/v1/merchants")).toBe(false);
   });
 });
