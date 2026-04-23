@@ -1,4 +1,9 @@
-import { ExecutionContext, ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ExecutionContext,
+  ForbiddenException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { InternalSecretGuard } from './internal-secret.guard';
 
 // Wrapping timingSafeEqual en jest.fn() delegando a la implementación real.
@@ -17,7 +22,7 @@ import { timingSafeEqual } from 'crypto';
 
 const makeContext = (
   headers: Record<string, string | string[] | undefined>,
-  path = '/api/v2/payments/ops/transactions',
+  path = '/api/v1/merchants',
   query: Record<string, unknown> = {},
 ): ExecutionContext =>
   ({
@@ -120,6 +125,30 @@ describe('InternalSecretGuard', () => {
     ).toThrow(ForbiddenException);
   });
 
+  it('throws BadRequest (not 500) when finance path merchant segment has invalid percent-encoding', () => {
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+    try {
+      guard.canActivate(
+        makeContext(
+          {
+            'x-internal-secret': VALID_SECRET,
+            'x-backoffice-role': 'merchant',
+            'x-backoffice-merchant-id': 'mrc_1',
+          },
+          '/api/v2/payments/ops/merchants/%ZZ/finance/summary',
+          {},
+        ),
+      );
+      throw new Error('expected BadRequestException');
+    } catch (e) {
+      if (e instanceof Error && e.message === 'expected BadRequestException') {
+        throw e;
+      }
+      expect(e).toBeInstanceOf(BadRequestException);
+      expect((e as BadRequestException).getStatus()).toBe(400);
+    }
+  });
+
   it('throws Forbidden when merchant scope hits global metrics', () => {
     const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
     expect(() =>
@@ -169,5 +198,47 @@ describe('InternalSecretGuard', () => {
         ),
       ),
     ).toBe(true);
+  });
+
+  it('throws Forbidden when payments ops request misses X-Backoffice-Role', () => {
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+    expect(() =>
+      guard.canActivate(
+        makeContext({ 'x-internal-secret': VALID_SECRET }, '/api/v2/payments/ops/metrics', {}),
+      ),
+    ).toThrow(ForbiddenException);
+  });
+
+  it('allows payments ops metrics with admin role', () => {
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+    expect(
+      guard.canActivate(
+        makeContext(
+          {
+            'x-internal-secret': VALID_SECRET,
+            'x-backoffice-role': 'admin',
+          },
+          '/api/v2/payments/ops/metrics',
+          {},
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it('throws Forbidden when non-ops request sends merchant backoffice role', () => {
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+    expect(() =>
+      guard.canActivate(
+        makeContext(
+          {
+            'x-internal-secret': VALID_SECRET,
+            'x-backoffice-role': 'merchant',
+            'x-backoffice-merchant-id': 'm1',
+          },
+          '/api/v1/merchants',
+          {},
+        ),
+      ),
+    ).toThrow(ForbiddenException);
   });
 });

@@ -1,13 +1,12 @@
 import { ConfigService } from '@nestjs/config';
-import { PAYMENT_V2_STATUS } from '../domain/payment-status';
+import { AcmeProviderAdapter } from './acme/acme-provider.adapter';
 import { MockProviderAdapter } from './mock-provider.adapter';
 import { PaymentProvider } from './payment-provider.interface';
 import { ProviderRegistryService } from './provider-registry.service';
-import { StripeProviderAdapter } from './stripe-provider.adapter';
 
 describe('ProviderRegistryService', () => {
-  const stripe = { name: 'stripe' as const, run: jest.fn() } as unknown as StripeProviderAdapter;
   const mock = new MockProviderAdapter();
+  const acme = { name: 'acme' as const, run: jest.fn() } as unknown as AcmeProviderAdapter;
 
   const configWithOrder = (order: string) =>
     ({
@@ -15,37 +14,37 @@ describe('ProviderRegistryService', () => {
     }) as unknown as ConfigService;
 
   it('construye orden y resuelve getProvider', () => {
-    const registry = new ProviderRegistryService(configWithOrder('mock,stripe'), [stripe, mock]);
-    expect(registry.orderedProviders()).toEqual(['mock', 'stripe']);
-    expect(registry.getProvider('stripe')).toBe(stripe);
-    expect(registry.getRegisteredProviderNames()).toEqual(['stripe', 'mock']);
+    const registry = new ProviderRegistryService(configWithOrder('mock,acme'), [mock, acme]);
+    expect(registry.orderedProviders()).toEqual(['mock', 'acme']);
+    expect(registry.getProvider('acme')).toBe(acme);
+    expect(registry.getRegisteredProviderNames()).toEqual(['mock', 'acme']);
   });
 
   it('getProvider falla si el nombre no está registrado', () => {
     const registry = new ProviderRegistryService(configWithOrder('mock'), [mock]);
-    expect(() => registry.getProvider('stripe')).toThrow(/Unknown payment provider/);
+    expect(() => registry.getProvider('acme')).toThrow(/Unknown payment provider/);
   });
 
   it('falla al arrancar si el orden incluye un proveedor no registrado', () => {
-    expect(() => new ProviderRegistryService(configWithOrder('stripe,mock'), [mock])).toThrow(
+    expect(() => new ProviderRegistryService(configWithOrder('acme,mock'), [mock])).toThrow(
       /not registered/,
     );
   });
 
   it('orderedProviders(preferred) acepta proveedor registrado aunque no esté en PAYMENTS_PROVIDER_ORDER', () => {
-    const registry = new ProviderRegistryService(configWithOrder('stripe'), [stripe, mock]);
+    const registry = new ProviderRegistryService(configWithOrder('mock'), [mock, acme]);
+    expect(registry.orderedProviders('acme')).toEqual(['acme']);
+    expect(registry.orderedProviders()).toEqual(['mock']);
     expect(registry.orderedProviders('mock')).toEqual(['mock']);
-    expect(registry.orderedProviders()).toEqual(['stripe']);
-    expect(registry.orderedProviders('stripe')).toEqual(['stripe']);
   });
 
   it('orderedProviders(preferred) falla si el proveedor no está registrado', () => {
     const registry = new ProviderRegistryService(configWithOrder('mock'), [mock]);
-    expect(() => registry.orderedProviders('stripe')).toThrow(/Unknown payment provider/);
+    expect(() => registry.orderedProviders('acme')).toThrow(/Unknown payment provider/);
   });
 
   it('rechaza nombres desconocidos en PAYMENTS_PROVIDER_ORDER', () => {
-    expect(() => new ProviderRegistryService(configWithOrder('nope'), [stripe, mock])).toThrow(
+    expect(() => new ProviderRegistryService(configWithOrder('nope'), [mock, acme])).toThrow(
       /invalid provider/,
     );
   });

@@ -5,37 +5,66 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Activity, Building2, CreditCard, Landmark, LayoutDashboard, LogIn, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { LayoutSession } from "@/lib/session-types";
 
-const navItems = [
-  { href: "/", id: "home", label: "Inicio", icon: LayoutDashboard },
-  { href: "/login", id: "login", label: "Iniciar sesión", icon: LogIn },
-  { href: "/transactions", id: "transactions", label: "Transacciones", icon: CreditCard },
-  {
-    href: "/merchants/lookup",
-    id: "merchant-finance-lookup",
-    label: "Finanzas merchant",
-    icon: Landmark,
-    activeMatch: (pathname: string) =>
-      pathname === "/merchants/lookup" || /^\/merchants\/[^/]+\/finance/.test(pathname),
-  },
-  { href: "/monitor", id: "monitor", label: "Monitor operativo (API)", icon: Activity },
-  {
-    href: null as string | null,
-    id: "merchants",
-    label: "Merchants",
-    icon: Building2,
-  },
-];
+type NavItem = {
+  href: string | null;
+  id: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  activeMatch?: (pathname: string) => boolean;
+};
 
-export function AppShell({ children }: { children: ReactNode }) {
+function buildNavItems(session: LayoutSession | null): NavItem[] {
+  const financeHref =
+    session?.role === "merchant" ? `/merchants/${session.merchantId}/finance` : "/merchants/lookup";
+
+  const base: NavItem[] = [
+    { href: "/", id: "home", label: "Inicio", icon: LayoutDashboard },
+    { href: "/login", id: "login", label: "Iniciar sesión", icon: LogIn },
+    { href: "/transactions", id: "transactions", label: "Transacciones", icon: CreditCard },
+    {
+      href: financeHref,
+      id: "merchant-finance-lookup",
+      label: "Finanzas merchant",
+      icon: Landmark,
+      activeMatch: (pathname: string) =>
+        pathname === "/merchants/lookup" ||
+        /^\/merchants\/[^/]+\/finance/.test(pathname),
+    },
+    { href: "/monitor", id: "monitor", label: "Monitor operativo (API)", icon: Activity },
+    {
+      href: null,
+      id: "merchants",
+      label: "Merchants",
+      icon: Building2,
+    },
+  ];
+
+  if (session?.role === "merchant") {
+    return base.filter((item) => item.id !== "monitor");
+  }
+  return base;
+}
+
+export function AppShell({
+  children,
+  session,
+}: {
+  children: ReactNode;
+  session: LayoutSession | null;
+}) {
   const pathname = usePathname();
   const router = useRouter();
+  const navItems = buildNavItems(session);
 
   async function logout() {
     await fetch("/api/auth/session", { method: "DELETE", credentials: "include" });
     router.push("/login");
     router.refresh();
   }
+
+  const showLoginLink = !session && pathname !== "/login";
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -68,6 +97,9 @@ export function AppShell({ children }: { children: ReactNode }) {
           <nav className="space-y-1">
             {navItems.map((item) => {
               const { id, label, icon: Icon, href } = item;
+              if (id === "login" && !showLoginLink) {
+                return null;
+              }
               const active =
                 href != null &&
                 ("activeMatch" in item && item.activeMatch

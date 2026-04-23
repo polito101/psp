@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import type { OpsPaymentDetailResponse } from "@/lib/api/contracts";
-import { mapProxyError, proxyInternalGet } from "@/lib/server/backoffice-api";
+import { mapProxyError, proxyInternalGet, ProxyUpstreamError } from "@/lib/server/backoffice-api";
 import { enforceInternalRouteAuth } from "@/lib/server/internal-route-auth";
-import { enforceMerchantScope } from "@/lib/server/internal-route-scope";
 
 const paramSchema = z.object({
   paymentId: z.string().trim().min(1).max(64),
@@ -35,14 +34,20 @@ export async function GET(
       searchParams: searchParams.size > 0 ? searchParams : undefined,
       backofficeScope: auth.claims,
     });
-    const scopeResp = enforceMerchantScope(auth.claims, data.merchantId);
-    if (scopeResp) {
-      return scopeResp;
+    if (auth.claims.role === "merchant" && data.merchantId !== auth.claims.merchantId) {
+      return NextResponse.json({ message: "Payment not found" }, { status: 404 });
     }
     return NextResponse.json(data);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unhandled proxy error";
-    if (message.includes("PSP API 404")) {
+    if (error instanceof ProxyUpstreamError && error.upstreamStatus === 404) {
+      return NextResponse.json({ message: "Payment not found" }, { status: 404 });
+    }
+    // Defense-in-depth: older upstream (or other scope 403) must not let merchants distinguish 403 vs 404.
+    if (
+      auth.claims.role === "merchant" &&
+      error instanceof ProxyUpstreamError &&
+      error.upstreamStatus === 403
+    ) {
       return NextResponse.json({ message: "Payment not found" }, { status: 404 });
     }
     return mapProxyError(error);

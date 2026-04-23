@@ -19,14 +19,8 @@ process.env.INTERNAL_API_SECRET ??= 'integration-internal-secret';
 process.env.APP_ENCRYPTION_KEY ??= 'integration-encryption-key-32-chars';
 process.env.ENABLE_SWAGGER ??= 'false';
 process.env.PAYMENTS_V2_ENABLED_MERCHANTS ??= '*';
-/** Primero `mock` para que los POST create de integración sin body `provider` ejerciten el adapter mock. */
-process.env.PAYMENTS_PROVIDER_ORDER ??= 'mock,stripe';
+/** `mock` por defecto para que los POST create de integración no dependan de PSP externo. */
+process.env.PAYMENTS_PROVIDER_ORDER ??= 'mock';
 process.env.PAYMENTS_ALLOW_MOCK ??= 'true';
 process.env.PAYMENTS_PROVIDER_RETRY_BASE_MS ??= '0';
-if (!process.env.STRIPE_WEBHOOK_SECRET) {
-  process.env.STRIPE_WEBHOOK_SECRET = 'whsec_integration_test_secret';
-}
-if (!process.env.STRIPE_WEBHOOK_TOLERANCE_SEC) {
-  process.env.STRIPE_WEBHOOK_TOLERANCE_SEC = '300';
-}
 process.env.WEBHOOK_WORKER_ENABLED ??= 'false';

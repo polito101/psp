@@ -1229,7 +1229,7 @@ export function TransactionsDashboard() {
         </Button>
       </Dialog>
 
-      <Dialog open={dialog === "method"} onOpenChange={(o) => !o && setDialog(null)} title="Proveedor" description="Mapea al query `provider` de la API (stripe, mock, acme).">
+      <Dialog open={dialog === "method"} onOpenChange={(o) => !o && setDialog(null)} title="Proveedor" description="Mapea al query `provider` de la API (mock, acme).">
         <div className="space-y-2">
           <label className="flex items-center gap-2 text-sm">
             <input
@@ -1239,15 +1239,6 @@ export function TransactionsDashboard() {
               onChange={() => setDraftAdvanced((d) => ({ ...d, provider: "" }))}
             />
             Todos
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="radio"
-              name="pv"
-              checked={draftAdvanced.provider === "stripe"}
-              onChange={() => setDraftAdvanced((d) => ({ ...d, provider: "stripe" }))}
-            />
-            Stripe
           </label>
           <label className="flex items-center gap-2 text-sm">
             <input

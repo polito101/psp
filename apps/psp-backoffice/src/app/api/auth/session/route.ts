@@ -6,6 +6,8 @@ import {
   BACKOFFICE_ADMIN_COOKIE_NAME,
   BACKOFFICE_SESSION_COOKIE_NAME,
   getSessionJwtSecret,
+  MAX_ADMIN_SESSION_TOKEN_CHARS,
+  MERCHANT_PORTAL_TOKEN_REGEX,
   validateAdminTokenForSession,
   validateMerchantPortalLogin,
 } from "@/lib/server/internal-route-auth";
@@ -15,12 +17,12 @@ const COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 7;
 const loginBodySchema = z.discriminatedUnion("mode", [
   z.object({
     mode: z.literal("admin"),
-    token: z.string().min(1),
+    token: z.string().min(1).max(MAX_ADMIN_SESSION_TOKEN_CHARS),
   }),
   z.object({
     mode: z.literal("merchant"),
     merchantId: z.string().trim().min(1).max(64),
-    merchantToken: z.string().min(1),
+    merchantToken: z.string().regex(MERCHANT_PORTAL_TOKEN_REGEX),
   }),
 ]);
 

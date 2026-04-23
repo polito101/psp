@@ -19,8 +19,8 @@ const OPERATION_LABELS_ES: Record<string, string> = {
 
 function providerDisplayName(selected: string | null | undefined): string {
   if (!selected) return "—";
-  if (selected === "stripe") return "Stripe";
   if (selected === "mock") return "Mock";
+  if (selected === "acme") return "Acme";
   return selected;
 }
 
@@ -30,15 +30,15 @@ function fundsAvailableLabel(detail: {
   updatedAt: string;
 }): string {
   if (detail.succeededAt) {
-    return formatStripeStyleDateTime(detail.succeededAt);
+    return formatFundsDateTime(detail.succeededAt);
   }
   if (detail.status === "succeeded" || detail.status === "refunded") {
-    return formatStripeStyleDateTime(detail.updatedAt);
+    return formatFundsDateTime(detail.updatedAt);
   }
   return "—";
 }
 
-function formatStripeStyleDateTime(iso: string): string {
+function formatFundsDateTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.valueOf())) return "—";
   return new Intl.DateTimeFormat("es-ES", {

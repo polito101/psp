@@ -3,13 +3,25 @@ import { join } from 'node:path';
 import pg from 'pg';
 
 /**
- * Index names created on `"Payment"` by `prisma/ops/create-indexes-concurrently.sql`.
- * After a successful script pass they are checked in `pg_index` (`indisvalid`) so an
- * aborted concurrent build cannot go unnoticed (`IF NOT EXISTS` would not rebuild).
+ * Índices creados por `prisma/ops/create-indexes-concurrently.sql`.
+ * Tras un pase correcto se comprueba `pg_index.indisvalid` por tabla para detectar builds concurrentes abortados.
  */
-const PAYMENT_CONCURRENT_INDEX_NAMES = [
-  'Payment_selected_provider_provider_ref_idx',
-  'Payment_status_currency_succeeded_at_idx',
+const CONCURRENT_INDEX_CHECKLIST = [
+  {
+    table: 'Payment',
+    indexNames: [
+      'Payment_selected_provider_provider_ref_idx',
+      'Payment_status_currency_succeeded_at_idx',
+    ],
+  },
+  {
+    table: 'PaymentSettlement',
+    indexNames: ['PaymentSettlement_provider_idx'],
+  },
+  {
+    table: 'MerchantRateTable',
+    indexNames: ['MerchantRateTable_provider_merchant_id_currency_idx'],
+  },
 ];
 
 function envInt(name, fallback) {
@@ -119,38 +131,37 @@ async function runStatements(connectionString, statements) {
 }
 
 /**
- * Ensures expected indexes exist on `Payment` and are valid in `pg_index` (not a failed
- * concurrent build).
- *
  * @param {string} connectionString
- * @param {readonly string[]} indexNames
+ * @param {readonly { table: string; indexNames: readonly string[] }[]} checklist
  */
-async function assertPaymentConcurrentIndexesValid(connectionString, indexNames) {
+async function assertConcurrentIndexesValid(connectionString, checklist) {
   const client = new pg.Client({ connectionString });
   await client.connect();
   try {
-    const res = await client.query(
-      `SELECT i.relname AS index_name, idx.indisvalid AS is_valid
-       FROM pg_index idx
-       INNER JOIN pg_class i ON i.oid = idx.indexrelid
-       INNER JOIN pg_class c ON c.oid = idx.indrelid
-       WHERE c.relname = 'Payment'
-         AND i.relname = ANY($1::text[])`,
-      [indexNames],
-    );
-    const byName = new Map(res.rows.map((r) => [r.index_name, r]));
-    for (const name of indexNames) {
-      const row = byName.get(name);
-      if (!row) {
-        throw new Error(
-          `[prisma:ops:indexes] expected index "${name}" on "Payment" not found after script run.`,
-        );
-      }
-      if (!row.is_valid) {
-        throw new Error(
-          `[prisma:ops:indexes] index "${name}" on "Payment" exists but is invalid (indisvalid=false). ` +
-            `Drop it with DROP INDEX CONCURRENTLY and re-run this script.`,
-        );
+    for (const { table, indexNames } of checklist) {
+      const res = await client.query(
+        `SELECT i.relname AS index_name, idx.indisvalid AS is_valid
+         FROM pg_index idx
+         INNER JOIN pg_class i ON i.oid = idx.indexrelid
+         INNER JOIN pg_class c ON c.oid = idx.indrelid
+         WHERE c.relname = $1
+           AND i.relname = ANY($2::text[])`,
+        [table, indexNames],
+      );
+      const byName = new Map(res.rows.map((r) => [r.index_name, r]));
+      for (const name of indexNames) {
+        const row = byName.get(name);
+        if (!row) {
+          throw new Error(
+            `[prisma:ops:indexes] expected index "${name}" on "${table}" not found after script run.`,
+          );
+        }
+        if (!row.is_valid) {
+          throw new Error(
+            `[prisma:ops:indexes] index "${name}" on "${table}" exists but is invalid (indisvalid=false). ` +
+              `Drop it with DROP INDEX CONCURRENTLY and re-run this script.`,
+          );
+        }
       }
     }
   } finally {
@@ -186,7 +197,7 @@ async function main() {
   while (true) {
     try {
       await runStatements(databaseUrl, statements);
-      await assertPaymentConcurrentIndexesValid(databaseUrl, PAYMENT_CONCURRENT_INDEX_NAMES);
+      await assertConcurrentIndexesValid(databaseUrl, CONCURRENT_INDEX_CHECKLIST);
       return;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

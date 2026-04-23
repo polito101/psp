@@ -101,7 +101,7 @@ describe('validateEnv payments provider retry backoff', () => {
     expect(() =>
       validateEnv({
         ...minimalEnv(),
-        PAYMENTS_PROVIDER_ORDER: 'stripe,unknownpsp',
+        PAYMENTS_PROVIDER_ORDER: 'mock,unknownpsp',
       }),
     ).toThrow(/invalid provider/);
   });
@@ -110,9 +110,9 @@ describe('validateEnv payments provider retry backoff', () => {
     const out = validateEnv({
       ...minimalEnv(),
       NODE_ENV: 'development',
-      PAYMENTS_PROVIDER_ORDER: 'stripe,mock,acme',
+      PAYMENTS_PROVIDER_ORDER: 'mock,acme',
     });
-    expect(out.PAYMENTS_PROVIDER_ORDER).toBe('stripe,mock,acme');
+    expect(out.PAYMENTS_PROVIDER_ORDER).toBe('mock,acme');
   });
 
   it('no rechaza ventana >300s si la sonda half-open Redis no aplica (half-open desactivado por defecto)', () => {
@@ -215,5 +215,27 @@ describe('validateEnv payments v2 merchant rate limit', () => {
         PAYMENTS_ALLOW_MOCK: 'yes',
       }),
     ).toThrow(/PAYMENTS_ALLOW_MOCK must be "true" or "false"/);
+  });
+});
+
+describe('validateEnv PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS', () => {
+  const minimalEnv = (): Record<string, string> => ({
+    DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
+    INTERNAL_API_SECRET: 'internal-secret',
+    APP_ENCRYPTION_KEY: '01234567890123456789012345678901',
+    NODE_ENV: 'development',
+  });
+
+  it('normaliza a false por defecto', () => {
+    const out = validateEnv({ ...minimalEnv() });
+    expect(out.PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS).toBe('false');
+  });
+
+  it('acepta true', () => {
+    const out = validateEnv({
+      ...minimalEnv(),
+      PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS: 'true',
+    });
+    expect(out.PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS).toBe('true');
   });
 });

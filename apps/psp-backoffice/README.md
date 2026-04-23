@@ -23,21 +23,19 @@ Variables:
 - `PSP_INTERNAL_API_SECRET`: secreto interno usado solo en server-side BFF.
 - `BACKOFFICE_ADMIN_SECRET`: credencial de login **admin** (debe ser distinta de `PSP_INTERNAL_API_SECRET`).
 - `BACKOFFICE_SESSION_JWT_SECRET`: firma del JWT de sesión en cookie HttpOnly (distinta de `PSP_INTERNAL_API_SECRET` y de `BACKOFFICE_ADMIN_SECRET`).
-- `BACKOFFICE_MERCHANT_PORTAL_SECRET`: clave HMAC para validar login **merchant** junto con `merchantId`.
+- `BACKOFFICE_MERCHANT_PORTAL_SECRET`: clave HMAC para login **merchant** (token con caducidad; ver abajo).
 - `NEXT_PUBLIC_TRANSACTIONS_REFRESH_MS`: intervalo de auto-refresh del monitor.
 
-Login merchant (token esperado por el servidor):
+Login merchant: el campo **merchantToken** debe ser `expUnix:hexHmac` donde `hexHmac` = HMAC-SHA256 en hex de la cadena `` `${merchantId}.${expUnix}` `` con `BACKOFFICE_MERCHANT_PORTAL_SECRET`. `expUnix` debe estar dentro de unos minutos del reloj del servidor (anti-replay).
 
 ```bash
-# merchantId = por ejemplo mrc_abc
-node -e "const c=require('crypto');const id=process.argv[1];const s=process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET;console.log(c.createHmac('sha256',s).update(id,'utf8').digest('hex'))" "mrc_abc"
+# merchantId = mrc_abc (ajusta BACKOFFICE_MERCHANT_PORTAL_SECRET en el entorno)
+node -e "const c=require('crypto');const id=process.argv[1];const s=process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET;const exp=Math.floor(Date.now()/1000);const sig=c.createHmac('sha256',s).update(id+'.'+exp,'utf8').digest('hex');console.log(exp+':'+sig)" "mrc_abc"
 ```
-
-(Ejecutar con `BACKOFFICE_MERCHANT_PORTAL_SECRET` igual que en `.env.local`.)
 
 ## Rutas principales
 
-- `/login` — Establece sesión (cookie HttpOnly `backoffice_session` con JWT). Modo admin valida `BACKOFFICE_ADMIN_SECRET`; modo merchant valida HMAC-SHA256(hex) de `merchantId` con `BACKOFFICE_MERCHANT_PORTAL_SECRET`. Sin sesión válida, `/api/internal/*` responde **401/403**.
+- `/login` — Establece sesión (cookie HttpOnly `backoffice_session` con JWT). Modo admin valida `BACKOFFICE_ADMIN_SECRET`; modo merchant valida token `exp:HMAC` descrito arriba. Sin sesión válida, `/api/internal/*` responde **401/403**.
 - `/` — Inicio con estadísticas del día (UTC) y gráfico de volumen hoy vs ayer.
 - `/transactions` — Panel de transacciones (lista ops contra la API vía BFF, export y filtros).
 - `/monitor` — Monitor operativo compacto (misma fuente + health de proveedores).
@@ -68,6 +66,6 @@ Salida esperada: `src/lib/api/generated/openapi.d.ts`.
 - Nunca enviar `X-Internal-Secret` desde el navegador.
 - Todos los llamados administrativos pasan por `src/app/api/internal/*`.
 - El secreto vive solo en variables server-side de Next.
-- Los endpoints `src/app/api/internal/*` exigen `Authorization: Bearer <JWT_de_sesión>` o cookie HttpOnly `backoffice_session=<JWT>`.
+- Los endpoints `src/app/api/internal/*` exigen `Authorization: Bearer <JWT_de_sesión>` o cookie HttpOnly `backoffice_session=<JWT>`. Hacia `psp-api`, las rutas `/api/v2/payments/ops/*` llevan siempre `X-Backoffice-Role` (y `X-Backoffice-Merchant-Id` si el rol es merchant).
 - En local, usa **`/login`** o `POST /api/auth/session` con JSON `{ "mode": "admin", "token": "..." }` o `{ "mode": "merchant", "merchantId": "...", "merchantToken": "..." }`; el cliente en `src/lib/api/client.ts` envía `credentials: "include"` en las peticiones al BFF.
 - En producción, no exponer el backoffice sin un gateway/SSO delante que inyecte la credencial (header o cookie) para usuarios autenticados/autorizados.

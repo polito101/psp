@@ -1,0 +1,10 @@
+-- CreateIndex
+-- NOTE:
+-- No creamos aquí `PaymentSettlement_provider_idx` ni `MerchantRateTable_provider_merchant_id_currency_idx`
+-- porque `prisma migrate deploy` envuelve las migraciones en una transacción en PostgreSQL y
+-- `CREATE INDEX CONCURRENTLY` no puede ejecutarse dentro de un bloque transaccional.
+--
+-- Paso operativo (post-migrate, fuera de transacción):
+--   npm -w apps/psp-api run prisma:ops:indexes
+--
+-- Los índices se definen en `prisma/schema.prisma` y se materializan en `prisma/ops/create-indexes-concurrently.sql`.

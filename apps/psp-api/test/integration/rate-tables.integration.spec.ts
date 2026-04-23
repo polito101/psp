@@ -27,7 +27,7 @@ describe('merchant rate tables integration', () => {
     await request(app.getHttpServer())
       .post(`/api/v1/merchants/${merchant.id}/rate-tables`)
       .send({
-        provider: 'stripe',
+        provider: 'mock',
         currency: 'EUR',
         percentageBps: 150,
         fixedMinor: 25,
@@ -47,7 +47,7 @@ describe('merchant rate tables integration', () => {
       .post(`/api/v1/merchants/${merchant.id}/rate-tables`)
       .set('X-Internal-Secret', internalSecret)
       .send({
-        provider: 'stripe',
+        provider: 'mock',
         currency: 'EUR',
         percentageBps: 150,
         fixedMinor: 25,
@@ -67,7 +67,7 @@ describe('merchant rate tables integration', () => {
     expect(Array.isArray(listed.body)).toBe(true);
     expect(listed.body[0]).toMatchObject({
       merchantId: merchant.id,
-      provider: 'stripe',
+      provider: 'mock',
       currency: 'EUR',
       percentageBps: 150,
     });

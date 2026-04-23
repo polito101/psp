@@ -48,11 +48,10 @@ describe('PaymentsV2 merchant finance', () => {
     getQueueSnapshot: jest.fn(),
   };
 
-  const stripeProvider = { run: jest.fn() };
   const registry = {
     orderedProviders: jest.fn(),
     getProvider: jest.fn(),
-    getRegisteredProviderNames: jest.fn().mockReturnValue(['stripe', 'mock']),
+    getRegisteredProviderNames: jest.fn().mockReturnValue(['mock', 'acme']),
   };
 
   const observability = {
@@ -60,10 +59,6 @@ describe('PaymentsV2 merchant finance', () => {
     registerAttemptPersistFailure: jest.fn(),
     logProviderEvent: jest.fn(),
     snapshot: jest.fn(),
-  };
-
-  const stripeAdapter = {
-    retrievePaymentIntent: jest.fn(),
   };
 
   const merchantRateLimit = {
@@ -91,7 +86,6 @@ describe('PaymentsV2 merchant finance', () => {
       webhooks as never,
       registry as never,
       observability as never,
-      stripeAdapter as never,
       fee as never,
       merchantRateLimit as never,
       correlationContext as never,
@@ -114,7 +108,7 @@ describe('PaymentsV2 merchant finance', () => {
 
     const result = await service.getOpsMerchantFinanceSummary('merch_1', {
       currency: 'EUR',
-      provider: 'stripe',
+      provider: 'mock',
       createdFrom: '2026-04-01T00:00:00.000Z',
       createdTo: '2026-04-30T23:59:59.999Z',
     });
@@ -185,7 +179,7 @@ describe('PaymentsV2 merchant finance', () => {
         id: 'fq_1',
         paymentId: 'pay_1',
         merchantId: 'merch_1',
-        provider: 'stripe',
+        provider: 'mock',
         currency: 'EUR',
         grossMinor: 2500,
         feeMinor: 75,
@@ -195,7 +189,7 @@ describe('PaymentsV2 merchant finance', () => {
         payment: {
           id: 'pay_1',
           status: 'succeeded',
-          selectedProvider: 'stripe',
+          selectedProvider: 'mock',
           createdAt: new Date('2026-04-10T11:59:00.000Z'),
         },
       },

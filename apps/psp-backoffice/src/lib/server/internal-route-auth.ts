@@ -5,14 +5,32 @@ import {
   verifySession,
   type SessionClaims,
 } from "@/lib/server/auth/session-claims";
+import { BACKOFFICE_SESSION_COOKIE_NAME } from "@/lib/session-cookie";
+
+export { BACKOFFICE_SESSION_COOKIE_NAME };
 
 export const BACKOFFICE_ADMIN_COOKIE_NAME = "backoffice_admin_token";
-/** Cookie HttpOnly con JWT de sesión (admin o merchant). */
-export const BACKOFFICE_SESSION_COOKIE_NAME = "backoffice_session";
 
 const AUTH_SCHEME = "Bearer";
 
+/** Evita `Buffer.from` con cadenas enormes (DoS); secretos de entorno deben mantenerse por debajo. */
+const MAX_SECURE_COMPARE_STRING_CHARS = 1024;
+
+/** Límite del token admin en login público (alineado con el esquema Zod del route). */
+export const MAX_ADMIN_SESSION_TOKEN_CHARS = 512;
+
+/**
+ * Formato `merchantToken` para login: `${unixExp}:${hexHmacSha256}` (hex 64 chars), ver `validateMerchantPortalLogin`.
+ * Longitud máxima ~90 (24 + ':' + 64).
+ */
+export const MERCHANT_PORTAL_TOKEN_REGEX = /^\d{1,24}:[0-9a-f]{64}$/i;
+
+const MERCHANT_PORTAL_TOKEN_MAX_CHARS = 96;
+
 function secureCompare(left: string, right: string): boolean {
+  if (left.length > MAX_SECURE_COMPARE_STRING_CHARS || right.length > MAX_SECURE_COMPARE_STRING_CHARS) {
+    return false;
+  }
   const expectedBuf = Buffer.from(right);
   const providedBuf = Buffer.from(left);
   const sameLength = expectedBuf.length === providedBuf.length;
@@ -103,8 +121,14 @@ export function validateAdminTokenForSession(
   return { ok: true };
 }
 
+/** Antigüedad máxima permitida de `exp` respecto a `now` (ventana anti-replay hacia el pasado). */
+const MERCHANT_LOGIN_MAX_AGE_SEC = 300;
+/** Tolera `exp` ligeramente en el futuro por desfase de reloj del cliente (segundos). */
+const MERCHANT_LOGIN_CLOCK_SKEW_SEC = 60;
+
 /**
- * Valida login merchant: `merchantToken` debe ser HMAC-SHA256(hex) de `merchantId` con BACKOFFICE_MERCHANT_PORTAL_SECRET.
+ * Valida login merchant: `merchantToken` = `${unixExp}:${hexHmac}` donde
+ * HMAC-SHA256(`${merchantId}.${unixExp}`, BACKOFFICE_MERCHANT_PORTAL_SECRET) en hex.
  */
 export function validateMerchantPortalLogin(
   merchantId: string,
@@ -121,6 +145,13 @@ export function validateMerchantPortalLogin(
     };
   }
 
+  if (token.length > MERCHANT_PORTAL_TOKEN_MAX_CHARS) {
+    return {
+      ok: false,
+      response: NextResponse.json({ message: "Invalid credentials" }, { status: 401 }),
+    };
+  }
+
   let portalSecret: string;
   try {
     portalSecret = getMerchantPortalSecret();
@@ -131,8 +162,34 @@ export function validateMerchantPortalLogin(
     };
   }
 
-  const expected = createHmac("sha256", portalSecret).update(id, "utf8").digest("hex");
-  if (!secureCompare(token, expected)) {
+  const colon = token.indexOf(":");
+  if (colon < 1) {
+    return {
+      ok: false,
+      response: NextResponse.json({ message: "Invalid credentials" }, { status: 401 }),
+    };
+  }
+  const expPart = token.slice(0, colon);
+  const sigPart = token.slice(colon + 1);
+  const expSec = Number.parseInt(expPart, 10);
+  if (!Number.isFinite(expSec) || expSec < 0 || !/^[0-9a-f]{64}$/i.test(sigPart)) {
+    return {
+      ok: false,
+      response: NextResponse.json({ message: "Invalid credentials" }, { status: 401 }),
+    };
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (expSec < nowSec - MERCHANT_LOGIN_MAX_AGE_SEC || expSec > nowSec + MERCHANT_LOGIN_CLOCK_SKEW_SEC) {
+    return {
+      ok: false,
+      response: NextResponse.json({ message: "Invalid credentials" }, { status: 401 }),
+    };
+  }
+
+  const payload = `${id}.${expSec}`;
+  const expected = createHmac("sha256", portalSecret).update(payload, "utf8").digest("hex");
+  if (!secureCompare(sigPart.toLowerCase(), expected)) {
     return {
       ok: false,
       response: NextResponse.json({ message: "Invalid credentials" }, { status: 401 }),
@@ -150,6 +207,16 @@ function getMerchantPortalSecret(): string {
   const pspInternal = process.env.PSP_INTERNAL_API_SECRET;
   if (pspInternal && secureCompare(s, pspInternal)) {
     throw new Error("BACKOFFICE_MERCHANT_PORTAL_SECRET must be different from PSP_INTERNAL_API_SECRET");
+  }
+  const adminSecret = process.env.BACKOFFICE_ADMIN_SECRET;
+  if (adminSecret && secureCompare(s, adminSecret)) {
+    throw new Error("BACKOFFICE_MERCHANT_PORTAL_SECRET must be different from BACKOFFICE_ADMIN_SECRET");
+  }
+  const sessionSecret = process.env.BACKOFFICE_SESSION_JWT_SECRET;
+  if (sessionSecret && secureCompare(s, sessionSecret)) {
+    throw new Error(
+      "BACKOFFICE_MERCHANT_PORTAL_SECRET must be different from BACKOFFICE_SESSION_JWT_SECRET",
+    );
   }
   return s;
 }

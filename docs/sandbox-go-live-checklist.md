@@ -19,7 +19,6 @@
 - [ ] Gate de readiness exige `/health` con `status=ok` y checks `db=ok`, `redis=ok`.
 - [ ] Gate de readiness operativo (`/api/v2/payments/ops/metrics`) en verde.
 - [ ] Smoke tests de flujo crítico en verde.
-- [ ] Smoke Stripe en verde (si sandbox expone credenciales de test Stripe para CI).
 - [ ] Runbook actualizado (`docs/sandbox-runbook.md`).
 - [ ] Matriz de variables actualizada (`docs/sandbox-env.md`).
 

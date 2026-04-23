@@ -117,7 +117,7 @@ describe('settlements integration', () => {
       paymentId: payments[idx].id,
       merchantId: merchant.id,
       currency,
-      provider: 'stripe',
+      provider: 'mock',
       settlementMode: SettlementMode.NET,
       status: SettlementStatus.PENDING,
       grossMinor: 1_000,

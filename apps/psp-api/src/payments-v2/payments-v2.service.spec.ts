@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { hashCreatePaymentIntentPayload } from './create-payment-intent-payload-hash';
 import { PaymentsV2Service } from './payments-v2.service';
-import { PAYMENT_V2_STATUS } from './domain/payment-status';
+import { PAYMENT_V2_STATUS, unsupportedPersistedProviderLifecycleMessage } from './domain/payment-status';
 import { ProviderResult } from './providers/payment-provider.interface';
 
 describe('PaymentsV2Service', () => {
@@ -17,6 +17,7 @@ describe('PaymentsV2Service', () => {
   };
 
   const prisma = {
+    $queryRaw: jest.fn(),
     payment: {
       create: jest.fn(),
       update: jest.fn(),
@@ -124,7 +125,6 @@ describe('PaymentsV2Service', () => {
       webhooks as never,
       registry as never,
       observability as never,
-      stripeAdapter as never,
       fee as never,
       merchantRateLimit as never,
       correlationContext as never,
@@ -146,6 +146,8 @@ describe('PaymentsV2Service', () => {
     process.env.PAYMENTS_V2_TOLERATE_ATTEMPT_PERSIST_FAILURE = 'true';
     service = buildService();
     prisma.$transaction.mockImplementation(async (fn: (trx: unknown) => Promise<unknown>) => fn(prisma));
+    prisma.$queryRaw.mockResolvedValue([{ n: BigInt(0) }]);
+    prisma.payment.findFirst.mockResolvedValue(null);
     redis.getClient.mockReturnValue(null);
     redis.getIdempotency.mockResolvedValue(null);
     redis.setIdempotency.mockResolvedValue(true);
@@ -448,11 +450,11 @@ describe('PaymentsV2Service', () => {
     expect(mockProvider.run).not.toHaveBeenCalled();
   });
 
-  it('rechaza replay idempotente si difiere stripePaymentMethodId (misma clave)', async () => {
+  it('rechaza replay idempotente si difiere paymentLinkId (misma clave)', async () => {
     registry.orderedProviders.mockReturnValue(['mock']);
-    const firstPm = { amountMinor: 1000, currency: 'EUR', stripePaymentMethodId: 'pm_card_visa' as const };
+    const firstPayload = { amountMinor: 1000, currency: 'EUR', paymentLinkId: 'plink_a' };
     prisma.payment.findUnique.mockResolvedValue({
-      id: 'pay_idem_pm',
+      id: 'pay_idem_plink',
       merchantId: 'm_1',
       status: PAYMENT_V2_STATUS.AUTHORIZED,
       amountMinor: 1000,
@@ -460,15 +462,15 @@ describe('PaymentsV2Service', () => {
       selectedProvider: 'mock',
       providerRef: 'pi_x',
       statusReason: null,
-      paymentLinkId: null,
-      createPayloadHash: hashCreatePaymentIntentPayload(firstPm),
+      paymentLinkId: 'plink_a',
+      createPayloadHash: hashCreatePaymentIntentPayload(firstPayload),
     });
 
     await expect(
       service.createIntent(
         'm_1',
-        { amountMinor: 1000, currency: 'EUR', stripePaymentMethodId: 'pm_card_mastercard' },
-        'idem-pm-mismatch',
+        { amountMinor: 1000, currency: 'EUR', paymentLinkId: 'plink_b' },
+        'idem-plink-mismatch',
       ),
     ).rejects.toBeInstanceOf(ConflictException);
 
@@ -1557,403 +1559,6 @@ describe('PaymentsV2Service', () => {
     );
   });
 
-  it('stripe webhook devuelve missing_provider_ref cuando no puede extraer providerRef', async () => {
-    const result = await service.applyStripeWebhookEvent('charge.refunded', {
-      id: 'ch_1',
-      refunded: true,
-      // payment_intent ausente
-    });
-
-    expect(result).toEqual({ handled: false, reason: 'missing_provider_ref' });
-    expect(prisma.payment.findFirst).not.toHaveBeenCalled();
-  });
-
-  it('stripe webhook devuelve payment_not_found para providerRef desconocido', async () => {
-    prisma.payment.findFirst.mockResolvedValue(null);
-
-    const result = await service.applyStripeWebhookEvent('payment_intent.succeeded', {
-      id: 'pi_unknown',
-      object: 'payment_intent',
-    });
-
-    expect(result).toEqual({ handled: false, reason: 'payment_not_found' });
-  });
-
-  it('stripe webhook payment_failed NO marca FAILED si el pago está AUTHORIZED; preserva status y setea reason', async () => {
-    prisma.payment.findFirst.mockResolvedValue({
-      id: 'pay_webhook_failed',
-      merchantId: 'm_1',
-      status: PAYMENT_V2_STATUS.AUTHORIZED,
-      amountMinor: 1000,
-      currency: 'EUR',
-      selectedProvider: 'stripe',
-      providerRef: 'pi_failed',
-      statusReason: null,
-      paymentLinkId: null,
-    });
-
-    const result = await service.applyStripeWebhookEvent('payment_intent.payment_failed', {
-      id: 'pi_failed',
-      last_payment_error: { type: 'card_error' },
-    });
-
-    expect(result).toEqual({ handled: true, paymentId: 'pay_webhook_failed' });
-    expect(prisma.payment.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: 'pay_webhook_failed', status: PAYMENT_V2_STATUS.AUTHORIZED },
-        data: expect.objectContaining({
-          status: PAYMENT_V2_STATUS.AUTHORIZED,
-          statusReason: 'provider_declined',
-        }),
-      }),
-    );
-  });
-
-  it('stripe webhook payment_failed traduce estados no finales a PENDING y conserva reason', async () => {
-    prisma.payment.findFirst.mockResolvedValue({
-      id: 'pay_webhook_pending',
-      merchantId: 'm_1',
-      status: PAYMENT_V2_STATUS.PROCESSING,
-      amountMinor: 1000,
-      currency: 'EUR',
-      selectedProvider: 'stripe',
-      providerRef: 'pi_processing',
-      statusReason: null,
-      paymentLinkId: null,
-    });
-
-    const result = await service.applyStripeWebhookEvent('payment_intent.payment_failed', {
-      id: 'pi_processing',
-      last_payment_error: { type: 'card_error' },
-    });
-
-    expect(result).toEqual({ handled: true, paymentId: 'pay_webhook_pending' });
-    expect(prisma.payment.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          id: 'pay_webhook_pending',
-          status: { in: [PAYMENT_V2_STATUS.PROCESSING, PAYMENT_V2_STATUS.PENDING, PAYMENT_V2_STATUS.REQUIRES_ACTION] },
-        },
-        data: expect.objectContaining({
-          status: PAYMENT_V2_STATUS.PENDING,
-          statusReason: 'provider_declined',
-          failedAt: null,
-        }),
-      }),
-    );
-  });
-
-  it('stripe webhook unsupported event devuelve handled=false con paymentId', async () => {
-    prisma.payment.findFirst.mockResolvedValue({
-      id: 'pay_unsupported',
-      merchantId: 'm_1',
-      status: PAYMENT_V2_STATUS.AUTHORIZED,
-      amountMinor: 1000,
-      currency: 'EUR',
-      selectedProvider: 'stripe',
-      providerRef: 'pi_unsupported',
-      statusReason: null,
-      paymentLinkId: null,
-    });
-
-    const result = await service.applyStripeWebhookEvent('payment_intent.processing', {
-      id: 'pi_unsupported',
-    });
-
-    expect(result).toEqual({
-      handled: false,
-      paymentId: 'pay_unsupported',
-      reason: 'unsupported_event_type',
-    });
-  });
-
-  it('stripe webhook charge.refunded fully refunded hace CAS y ledger refund', async () => {
-    prisma.payment.findFirst.mockResolvedValue({
-      id: 'pay_refunded',
-      merchantId: 'm_1',
-      status: PAYMENT_V2_STATUS.SUCCEEDED,
-      amountMinor: 2000,
-      currency: 'EUR',
-      selectedProvider: 'stripe',
-      providerRef: 'pi_refunded',
-      statusReason: null,
-      paymentLinkId: null,
-    });
-    const tx = {
-      payment: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-      },
-    };
-    prisma.$transaction.mockImplementationOnce(async (fn: (trx: unknown) => Promise<unknown>) => fn(tx));
-
-    const result = await service.applyStripeWebhookEvent('charge.refunded', {
-      id: 'ch_1',
-      payment_intent: 'pi_refunded',
-      refunded: true,
-      amount_refunded: 1200,
-    });
-
-    expect(result).toEqual({ handled: true, paymentId: 'pay_refunded' });
-    expect(tx.payment.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: 'pay_refunded', status: PAYMENT_V2_STATUS.SUCCEEDED },
-      }),
-    );
-    expect(ledger.recordSuccessfulRefund).toHaveBeenCalledWith(tx, {
-      merchantId: 'm_1',
-      paymentId: 'pay_refunded',
-      amountMinor: 1200,
-      currency: 'EUR',
-    });
-  });
-
-  it('stripe webhook payment_intent.succeeded delega en captureSucceeded', async () => {
-    prisma.payment.findFirst.mockResolvedValue({
-      id: 'pay_succeeded',
-      merchantId: 'm_1',
-      status: PAYMENT_V2_STATUS.AUTHORIZED,
-      amountMinor: 999,
-      currency: 'EUR',
-      selectedProvider: 'stripe',
-      providerRef: 'pi_ok',
-      statusReason: null,
-      paymentLinkId: null,
-    });
-    const captureSpy = jest
-      .spyOn(service as unknown as { captureSucceeded: (...args: unknown[]) => Promise<unknown> }, 'captureSucceeded')
-      .mockResolvedValue({
-        id: 'pay_succeeded',
-        merchantId: 'm_1',
-        status: PAYMENT_V2_STATUS.SUCCEEDED,
-      });
-
-    const result = await service.applyStripeWebhookEvent('payment_intent.succeeded', {
-      id: 'pi_ok',
-    });
-
-    expect(result).toEqual({ handled: true, paymentId: 'pay_succeeded' });
-    expect(captureSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'pay_succeeded' }),
-      'stripe',
-      expect.objectContaining({ status: PAYMENT_V2_STATUS.SUCCEEDED, providerPaymentId: 'pi_ok' }),
-    );
-    captureSpy.mockRestore();
-  });
-
-  it('stripe webhook charge.dispute.created marca DISPUTED desde SUCCEEDED', async () => {
-    prisma.payment.findFirst.mockResolvedValue({
-      id: 'pay_dsp',
-      merchantId: 'm_1',
-      status: PAYMENT_V2_STATUS.SUCCEEDED,
-      amountMinor: 2000,
-      currency: 'EUR',
-      selectedProvider: 'stripe',
-      providerRef: 'pi_dsp',
-      statusReason: null,
-      paymentLinkId: null,
-    });
-    prisma.payment.updateMany.mockResolvedValueOnce({ count: 1 });
-
-    const result = await service.applyStripeWebhookEvent('charge.dispute.created', {
-      id: 'dp_1',
-      object: 'dispute',
-      status: 'needs_response',
-      charge: {
-        object: 'charge',
-        id: 'ch_1',
-        payment_intent: 'pi_dsp',
-      },
-    });
-
-    expect(result).toEqual({ handled: true, paymentId: 'pay_dsp' });
-    expect(prisma.payment.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: 'pay_dsp', status: PAYMENT_V2_STATUS.SUCCEEDED },
-        data: expect.objectContaining({ status: PAYMENT_V2_STATUS.DISPUTED }),
-      }),
-    );
-  });
-
-  it('stripe webhook charge.dispute.* usa payment_intent plano en el dispute', async () => {
-    prisma.payment.findFirst.mockResolvedValue({
-      id: 'pay_dsp2',
-      merchantId: 'm_1',
-      status: PAYMENT_V2_STATUS.SUCCEEDED,
-      amountMinor: 1000,
-      currency: 'EUR',
-      selectedProvider: 'stripe',
-      providerRef: 'pi_flat',
-      statusReason: null,
-      paymentLinkId: null,
-    });
-    prisma.payment.updateMany.mockResolvedValueOnce({ count: 1 });
-
-    const result = await service.applyStripeWebhookEvent('charge.dispute.funds_withdrawn', {
-      id: 'dp_2',
-      payment_intent: 'pi_flat',
-      status: 'needs_response',
-    });
-
-    expect(result).toEqual({ handled: true, paymentId: 'pay_dsp2' });
-  });
-
-  it('stripe webhook dispute opening idempotente si ya está DISPUTED', async () => {
-    prisma.payment.findFirst.mockResolvedValue({
-      id: 'pay_dsp3',
-      merchantId: 'm_1',
-      status: PAYMENT_V2_STATUS.DISPUTED,
-      amountMinor: 1000,
-      currency: 'EUR',
-      selectedProvider: 'stripe',
-      providerRef: 'pi_dsp3',
-      statusReason: null,
-      paymentLinkId: null,
-    });
-    prisma.payment.updateMany.mockResolvedValueOnce({ count: 0 });
-    prisma.payment.findUnique.mockResolvedValueOnce({ status: PAYMENT_V2_STATUS.DISPUTED });
-
-    const result = await service.applyStripeWebhookEvent('charge.dispute.updated', {
-      id: 'dp_3',
-      payment_intent: 'pi_dsp3',
-      status: 'under_review',
-    });
-
-    expect(result).toEqual({ handled: true, paymentId: 'pay_dsp3' });
-  });
-
-  it('stripe webhook dispute opening devuelve dispute_requires_succeeded_or_disputed si el pago no califica', async () => {
-    prisma.payment.findFirst.mockResolvedValue({
-      id: 'pay_auth',
-      merchantId: 'm_1',
-      status: PAYMENT_V2_STATUS.AUTHORIZED,
-      amountMinor: 1000,
-      currency: 'EUR',
-      selectedProvider: 'stripe',
-      providerRef: 'pi_auth',
-      statusReason: null,
-      paymentLinkId: null,
-    });
-    prisma.payment.updateMany.mockResolvedValueOnce({ count: 0 });
-    prisma.payment.findUnique.mockResolvedValueOnce({ status: PAYMENT_V2_STATUS.AUTHORIZED });
-
-    const result = await service.applyStripeWebhookEvent('charge.dispute.created', {
-      id: 'dp_4',
-      payment_intent: 'pi_auth',
-      status: 'needs_response',
-    });
-
-    expect(result).toEqual({
-      handled: false,
-      paymentId: 'pay_auth',
-      reason: 'dispute_requires_succeeded_or_disputed',
-    });
-  });
-
-  it('stripe webhook charge.dispute.closed won restaura SUCCEEDED', async () => {
-    prisma.payment.findFirst.mockResolvedValue({
-      id: 'pay_won',
-      merchantId: 'm_1',
-      status: PAYMENT_V2_STATUS.DISPUTED,
-      amountMinor: 1000,
-      currency: 'EUR',
-      selectedProvider: 'stripe',
-      providerRef: 'pi_won',
-      statusReason: null,
-      paymentLinkId: null,
-    });
-    prisma.payment.updateMany.mockResolvedValueOnce({ count: 1 });
-
-    const result = await service.applyStripeWebhookEvent('charge.dispute.closed', {
-      id: 'dp_won',
-      payment_intent: 'pi_won',
-      status: 'won',
-    });
-
-    expect(result).toEqual({ handled: true, paymentId: 'pay_won' });
-    expect(prisma.payment.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: 'pay_won', status: PAYMENT_V2_STATUS.DISPUTED },
-        data: expect.objectContaining({ status: PAYMENT_V2_STATUS.SUCCEEDED }),
-      }),
-    );
-  });
-
-  it('stripe webhook charge.dispute.closed lost marca DISPUTE_LOST y revierte saldo', async () => {
-    prisma.payment.findFirst.mockResolvedValue({
-      id: 'pay_lost',
-      merchantId: 'm_1',
-      status: PAYMENT_V2_STATUS.DISPUTED,
-      amountMinor: 1000,
-      currency: 'EUR',
-      selectedProvider: 'stripe',
-      providerRef: 'pi_lost',
-      statusReason: null,
-      paymentLinkId: null,
-    });
-    prisma.payment.updateMany.mockResolvedValueOnce({ count: 1 });
-
-    const result = await service.applyStripeWebhookEvent('charge.dispute.closed', {
-      id: 'dp_lost',
-      payment_intent: 'pi_lost',
-      status: 'lost',
-      amount: 700,
-    });
-
-    expect(result).toEqual({ handled: true, paymentId: 'pay_lost' });
-    expect(prisma.payment.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: 'pay_lost', status: PAYMENT_V2_STATUS.DISPUTED },
-        data: expect.objectContaining({ status: PAYMENT_V2_STATUS.DISPUTE_LOST }),
-      }),
-    );
-    expect(ledger.recordSuccessfulRefund).toHaveBeenCalledWith(
-      prisma,
-      expect.objectContaining({
-        merchantId: 'm_1',
-        paymentId: 'pay_lost',
-        amountMinor: 700,
-        currency: 'EUR',
-      }),
-    );
-  });
-
-  it('stripe webhook charge.dispute.closed con status no soportado devuelve razon dedicada', async () => {
-    prisma.payment.findFirst.mockResolvedValue({
-      id: 'pay_misc',
-      merchantId: 'm_1',
-      status: PAYMENT_V2_STATUS.DISPUTED,
-      amountMinor: 1000,
-      currency: 'EUR',
-      selectedProvider: 'stripe',
-      providerRef: 'pi_misc',
-      statusReason: null,
-      paymentLinkId: null,
-    });
-
-    const result = await service.applyStripeWebhookEvent('charge.dispute.closed', {
-      id: 'dp_misc',
-      payment_intent: 'pi_misc',
-      status: 'warning_closed',
-    });
-
-    expect(result).toEqual({
-      handled: false,
-      paymentId: 'pay_misc',
-      reason: 'stripe_dispute_closed_unhandled_status',
-    });
-  });
-
-  it('stripe webhook dispute devuelve missing_provider_ref si charge es solo id', async () => {
-    const result = await service.applyStripeWebhookEvent('charge.dispute.created', {
-      id: 'dp_nopi',
-      charge: 'ch_only_id',
-      status: 'needs_response',
-    });
-
-    expect(result).toEqual({ handled: false, reason: 'missing_provider_ref' });
-    expect(prisma.payment.findFirst).not.toHaveBeenCalled();
-  });
-
   type CbSvc = {
     registerProviderFailure: (p: 'stripe' | 'mock') => Promise<void>;
     resetProviderFailure: (p: 'stripe' | 'mock') => Promise<void>;
@@ -2404,5 +2009,85 @@ describe('PaymentsV2Service', () => {
     expect(snap.stripe.halfOpen).toBe(true);
     expect(snap.stripe.circuitState).toBe('half_open');
     expect(snap.mock.circuitState).toBe('closed');
+  });
+
+  describe('selectedProvider persistido no reconocido (legacy)', () => {
+    afterEach(() => {
+      delete process.env.PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS;
+    });
+
+    const legacyPaymentBase = {
+      id: 'pay_legacy',
+      merchantId: 'm_1',
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'stripe',
+      providerRef: 'pi_stripe',
+      statusReason: null,
+      paymentLinkId: null,
+    };
+
+    it('capture: ConflictException y no enruta por PAYMENTS_PROVIDER_ORDER', async () => {
+      prisma.payment.findFirst.mockResolvedValue({
+        ...legacyPaymentBase,
+        status: PAYMENT_V2_STATUS.AUTHORIZED,
+      });
+
+      try {
+        await service.capture('m_1', 'pay_legacy');
+        throw new Error('expected ConflictException');
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(ConflictException);
+        expect((e as ConflictException).getResponse()).toEqual(
+          unsupportedPersistedProviderLifecycleMessage('capture', 'stripe'),
+        );
+      }
+      expect(registry.orderedProviders).not.toHaveBeenCalled();
+      expect(prisma.paymentOperation.create).not.toHaveBeenCalled();
+    });
+
+    it('cancel: ConflictException y no enruta por orden de proveedores', async () => {
+      prisma.payment.findFirst.mockResolvedValue({
+        ...legacyPaymentBase,
+        status: PAYMENT_V2_STATUS.PROCESSING,
+      });
+
+      try {
+        await service.cancel('m_1', 'pay_legacy');
+        throw new Error('expected ConflictException');
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(ConflictException);
+        expect((e as ConflictException).getResponse()).toEqual(
+          unsupportedPersistedProviderLifecycleMessage('cancel', 'stripe'),
+        );
+      }
+      expect(registry.orderedProviders).not.toHaveBeenCalled();
+    });
+
+    it('refund: ConflictException y no enruta por orden de proveedores', async () => {
+      prisma.payment.findFirst.mockResolvedValue({
+        ...legacyPaymentBase,
+        status: PAYMENT_V2_STATUS.SUCCEEDED,
+      });
+
+      try {
+        await service.refund('m_1', 'pay_legacy');
+        throw new Error('expected ConflictException');
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(ConflictException);
+        expect((e as ConflictException).getResponse()).toEqual(
+          unsupportedPersistedProviderLifecycleMessage('refund', 'stripe'),
+        );
+      }
+      expect(registry.orderedProviders).not.toHaveBeenCalled();
+    });
+
+    it('onApplicationBootstrap falla si PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS y quedan filas', async () => {
+      process.env.PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS = 'true';
+      config.get.mockImplementation((key: string) => process.env[key]);
+      prisma.$queryRaw.mockResolvedValueOnce([{ n: BigInt(2) }]);
+      const svc = buildService();
+      await expect(svc.onApplicationBootstrap()).rejects.toThrow(/PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS/);
+    });
   });
 });

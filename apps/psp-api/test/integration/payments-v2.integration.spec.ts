@@ -122,33 +122,6 @@ describe('payments-v2 integration', () => {
     expect(conflict.body.message).toContain('Idempotency key');
   });
 
-  it('rejects idempotency replay when only stripePaymentMethodId differs', async () => {
-    const merchant = await createMerchantViaHttp(app);
-    const idempotencyKey = randomUUID();
-    const base = {
-      amountMinor: 1999,
-      currency: 'EUR',
-      stripePaymentMethodId: 'pm_card_visa',
-      stripeReturnUrl: 'https://example.com/return',
-    };
-
-    await request(app.getHttpServer())
-      .post('/api/v2/payments')
-      .set('X-API-Key', merchant.apiKey)
-      .set('Idempotency-Key', idempotencyKey)
-      .send(base)
-      .expect(201);
-
-    const conflict = await request(app.getHttpServer())
-      .post('/api/v2/payments')
-      .set('X-API-Key', merchant.apiKey)
-      .set('Idempotency-Key', idempotencyKey)
-      .send({ ...base, stripePaymentMethodId: 'pm_card_mastercard' })
-      .expect(409);
-
-    expect(conflict.body.message).toContain('Idempotency key');
-  });
-
   it('rejects create intent when payment link is not active', async () => {
     const merchant = await createMerchantViaHttp(app);
     const link = await prisma.paymentLink.create({
@@ -251,6 +224,7 @@ describe('payments-v2 integration', () => {
     const vol = await request(app.getHttpServer())
       .get('/api/v2/payments/ops/transactions/volume-hourly')
       .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'admin')
       .expect(200);
 
     expect(vol.body.dayBoundary).toBe('UTC');
@@ -294,6 +268,15 @@ describe('payments-v2 integration', () => {
       .expect(401);
   });
 
+  it('rechaza merchant finance con secreto pero sin X-Backoffice-Role', async () => {
+    const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
+    const merchant = await createMerchantViaHttp(app);
+    await request(app.getHttpServer())
+      .get(`/api/v2/payments/ops/merchants/${merchant.id}/finance/summary?currency=EUR`)
+      .set('X-Internal-Secret', internalSecret)
+      .expect(403);
+  });
+
   it('rechaza merchant finance cuando createdFrom es posterior a createdTo', async () => {
     const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
     const merchant = await createMerchantViaHttp(app);
@@ -304,14 +287,17 @@ describe('payments-v2 integration', () => {
     await request(app.getHttpServer())
       .get(`${base}/summary?${badQuery}`)
       .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'admin')
       .expect(400);
     await request(app.getHttpServer())
       .get(`${base}/transactions?${badQuery}&pageSize=10`)
       .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'admin')
       .expect(400);
     await request(app.getHttpServer())
       .get(`${base}/payouts?${badQuery}`)
       .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'admin')
       .expect(400);
   });
 
@@ -332,6 +318,7 @@ describe('payments-v2 integration', () => {
     const summary = await request(app.getHttpServer())
       .get(`/api/v2/payments/ops/merchants/${merchant.id}/finance/summary?currency=EUR`)
       .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'admin')
       .expect(200);
 
     expect(summary.body.merchantId).toBe(merchant.id);
@@ -344,6 +331,7 @@ describe('payments-v2 integration', () => {
     const txs = await request(app.getHttpServer())
       .get(`/api/v2/payments/ops/merchants/${merchant.id}/finance/transactions?currency=EUR&pageSize=10`)
       .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'admin')
       .expect(200);
 
     expect(Array.isArray(txs.body.items)).toBe(true);
@@ -371,6 +359,7 @@ describe('payments-v2 integration', () => {
         `/api/v2/payments/ops/merchants/${merchant.id}/finance/transactions?currency=EUR&pageSize=10&includeTotal=false`,
       )
       .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'admin')
       .expect(200);
     expect(txsNoCount.body.page.total).toBeNull();
     expect(txsNoCount.body.page.totalPages).toBeNull();
@@ -378,6 +367,7 @@ describe('payments-v2 integration', () => {
     await request(app.getHttpServer())
       .get(`/api/v2/payments/ops/merchants/${merchant.id}/finance/transactions?currency=EUR&page=2`)
       .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'admin')
       .expect(400);
   });
 
@@ -402,6 +392,7 @@ describe('payments-v2 integration', () => {
     const res = await request(app.getHttpServer())
       .get(`/api/v2/payments/ops/merchants/${merchant.id}/finance/payouts?currency=EUR`)
       .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'admin')
       .expect(200);
 
     expect(Array.isArray(res.body.items)).toBe(true);
@@ -419,5 +410,39 @@ describe('payments-v2 integration', () => {
         next: expect.anything(),
       }),
     );
+  });
+
+  it('ops detalle de pago: merchant con scope no distingue 404 de pago ajeno vs inexistente', async () => {
+    const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
+    const merchantA = await createMerchantViaHttp(app);
+    const merchantB = await createMerchantViaHttp(app);
+
+    const created = await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchantA.apiKey)
+      .send({ amountMinor: 1_234, currency: 'EUR' })
+      .expect(201);
+
+    const paymentId = created.body.payment.id as string;
+    const unknownPaymentId = randomUUID();
+
+    const crossMerchant = await request(app.getHttpServer())
+      .get(`/api/v2/payments/ops/payments/${encodeURIComponent(paymentId)}`)
+      .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'merchant')
+      .set('X-Backoffice-Merchant-Id', merchantB.id);
+
+    const missing = await request(app.getHttpServer())
+      .get(`/api/v2/payments/ops/payments/${encodeURIComponent(unknownPaymentId)}`)
+      .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'merchant')
+      .set('X-Backoffice-Merchant-Id', merchantB.id);
+
+    expect(crossMerchant.status).toBe(404);
+    expect(missing.status).toBe(404);
+    expect(crossMerchant.body.message).toBe(missing.body.message);
+    expect(Object.keys(crossMerchant.body).sort()).toEqual(Object.keys(missing.body).sort());
+    expect(crossMerchant.body).toMatchObject({ message: 'Payment not found', paymentId });
+    expect(missing.body).toMatchObject({ message: 'Payment not found', paymentId: unknownPaymentId });
   });
 });

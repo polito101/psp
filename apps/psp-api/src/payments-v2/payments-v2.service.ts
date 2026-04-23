@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  OnApplicationBootstrap,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomBytes } from 'crypto';
@@ -26,17 +27,18 @@ import { OpsMerchantFinanceTransactionsQueryDto } from './dto/ops-merchant-finan
 import { OpsTransactionCountsQueryDto } from './dto/ops-transaction-counts-query.dto';
 import { OpsVolumeHourlyQueryDto } from './dto/ops-volume-hourly-query.dto';
 import {
+  LEGACY_STRIPE_DB_PROVIDER,
   PAYMENT_V2_STATUS,
   PaymentOperation,
   PaymentProviderName,
   PaymentReasonCode,
   isPaymentProviderName,
+  unsupportedPersistedProviderLifecycleMessage,
 } from './domain/payment-status';
 import { PaymentsV2MerchantRateLimitService } from './payments-v2-merchant-rate-limit.service';
 import { PaymentsV2ObservabilityService } from './payments-v2-observability.service';
 import { ProviderRegistryService } from './providers/provider-registry.service';
 import { ProviderContext, ProviderResult } from './providers/payment-provider.interface';
-import { StripeProviderAdapter } from './providers/stripe-provider.adapter';
 
 /** Máximo de `PaymentAttempt` en detalle ops: los más recientes, en orden ascendente en la respuesta. */
 const OPS_PAYMENT_DETAIL_ATTEMPTS_MAX = 200;
@@ -106,12 +108,6 @@ type OpsTransactionsItem = {
   } | null;
 };
 
-type StripeWebhookApplyResult = {
-  handled: boolean;
-  paymentId?: string;
-  reason?: string;
-};
-
 /**
  * Fallo del proveedor en refund: el pago sigue `succeeded`; el servicio lo mapea a `ConflictException` al caller.
  * Permite liberar lock/idempotencia y reintentar.
@@ -135,7 +131,7 @@ type CircuitBreakerState = {
 let paymentsV2CircuitBreakerRedisFallbackWarned = false;
 
 @Injectable()
-export class PaymentsV2Service {
+export class PaymentsV2Service implements OnApplicationBootstrap {
   /** Longitud máxima del valor persistido en `Payment.idempotencyKey` y validado en cabecera. */
   private static readonly IDEMPOTENCY_KEY_MAX_LEN = 256;
   private static readonly IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
@@ -172,7 +168,6 @@ export class PaymentsV2Service {
     private readonly webhooks: WebhooksService,
     private readonly registry: ProviderRegistryService,
     private readonly observability: PaymentsV2ObservabilityService,
-    private readonly stripeAdapter: StripeProviderAdapter,
     private readonly fee: FeeService,
     private readonly merchantRateLimit: PaymentsV2MerchantRateLimitService,
     private readonly correlationContext: CorrelationContextService,
@@ -219,6 +214,45 @@ export class PaymentsV2Service {
     } else {
       this.operationLockStaleMs = parsed;
     }
+  }
+
+  /**
+   * Opcional: con `PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS=true`, falla el arranque si quedan filas con proveedor `stripe`
+   * en tablas que afectan operaciones y reporting (misma cobertura que el SQL de saneamiento).
+   */
+  async onApplicationBootstrap(): Promise<void> {
+    const enabled =
+      (this.config.get<string>('PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS') ?? 'false').toLowerCase() === 'true';
+    if (!enabled) return;
+
+    const legacy = LEGACY_STRIPE_DB_PROVIDER;
+    // `EXISTS` evita contar toda la tabla en el camino sano; el `COUNT` detallado solo en la ruta de error.
+    const anyLegacy = await this.prisma.$queryRaw<Array<{ has_legacy: boolean }>>`
+      SELECT (
+        EXISTS(SELECT 1 FROM "Payment" WHERE "selected_provider" = ${legacy}) OR
+        EXISTS(SELECT 1 FROM "PaymentAttempt" WHERE "provider" = ${legacy}) OR
+        EXISTS(SELECT 1 FROM "MerchantRateTable" WHERE "provider" = ${legacy}) OR
+        EXISTS(SELECT 1 FROM "PaymentFeeQuote" WHERE "provider" = ${legacy}) OR
+        EXISTS(SELECT 1 FROM "PaymentSettlement" WHERE "provider" = ${legacy})
+      ) AS has_legacy
+    `;
+    if (!anyLegacy[0]?.has_legacy) return;
+
+    const rows = await this.prisma.$queryRaw<Array<{ n: bigint }>>`
+      SELECT (
+        (SELECT COUNT(*)::bigint FROM "Payment" WHERE "selected_provider" = ${legacy}) +
+        (SELECT COUNT(*)::bigint FROM "PaymentAttempt" WHERE "provider" = ${legacy}) +
+        (SELECT COUNT(*)::bigint FROM "MerchantRateTable" WHERE "provider" = ${legacy}) +
+        (SELECT COUNT(*)::bigint FROM "PaymentFeeQuote" WHERE "provider" = ${legacy}) +
+        (SELECT COUNT(*)::bigint FROM "PaymentSettlement" WHERE "provider" = ${legacy})
+      ) AS n
+    `;
+    const total = rows[0] ? Number(rows[0].n) : 0;
+    const totalForMessage = total > 0 ? total : 1;
+    throw new Error(
+      `PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS is enabled but ${totalForMessage} database row(s) still reference provider "${legacy}". ` +
+        `Run apps/psp-api/scripts/ops/sanitize-stripe-provider-to-mock.sql (see script header).`,
+    );
   }
 
   private getNumber(key: string, defaultValue: number): number {
@@ -346,10 +380,7 @@ export class PaymentsV2Service {
       await this.safeSetIdempotency(merchantId, idempotencyKey, payment.id);
     }
 
-    return this.executeProviderOperation(payment, 'create', dto.amountMinor, providerOrder, {
-      stripePaymentMethodId: dto.stripePaymentMethodId,
-      stripeReturnUrl: dto.stripeReturnUrl,
-    });
+    return this.executeProviderOperation(payment, 'create', dto.amountMinor, providerOrder);
   }
 
   async getPayment(merchantId: string, paymentId: string) {
@@ -402,15 +433,15 @@ export class PaymentsV2Service {
       return { payment, nextAction: null };
     }
     if (payment.status === PAYMENT_V2_STATUS.DISPUTED) {
-      throw new ConflictException(
-        'Payment is in dispute; capture is not applicable until Stripe resolves the dispute.',
-      );
+      throw new ConflictException('Payment is in dispute; capture is not applicable until the dispute is resolved.');
     }
     if (payment.status !== PAYMENT_V2_STATUS.AUTHORIZED) {
       throw new ConflictException(
-        'Payment is not capturable: status must be authorized (Stripe requires_capture). Complete payment confirmation or 3DS first.',
+        'Payment is not capturable: status must be authorized.',
       );
     }
+
+    this.assertRecognizedSelectedProviderForExclusiveRouting(payment, 'capture');
 
     const claim = await this.claimPaymentOperation({
       merchantId,
@@ -481,8 +512,10 @@ export class PaymentsV2Service {
       throw new ConflictException('Succeeded payment must be refunded, not canceled');
     }
     if (payment.status === PAYMENT_V2_STATUS.DISPUTED) {
-      throw new ConflictException('Payment is in dispute; cancel is not applicable until Stripe resolves the dispute.');
+      throw new ConflictException('Payment is in dispute; cancel is not applicable until the dispute is resolved.');
     }
+
+    this.assertRecognizedSelectedProviderForExclusiveRouting(payment, 'cancel');
 
     const claim = await this.claimPaymentOperation({
       merchantId,
@@ -537,6 +570,8 @@ export class PaymentsV2Service {
     if (refundAmount <= 0 || refundAmount > payment.amountMinor) {
       throw new BadRequestException('Invalid refund amount');
     }
+
+    this.assertRecognizedSelectedProviderForExclusiveRouting(payment, 'refund');
 
     const refundPayloadHash = `amount=${refundAmount}`;
     if (idempotencyKey) {
@@ -1614,7 +1649,7 @@ export class PaymentsV2Service {
 
     const scopeId = options?.backofficeMerchantScopeId;
     if (scopeId && row.merchantId !== scopeId) {
-      throw new ForbiddenException('Cross-merchant access denied');
+      throw new NotFoundException({ message: 'Payment not found', paymentId });
     }
 
     const [attemptsTotal, attemptsDesc] = await Promise.all([
@@ -1672,246 +1707,11 @@ export class PaymentsV2Service {
     };
   }
 
-  /**
-   * Aplica cambios de estado desde eventos inbound de Stripe usando CAS por estado para idempotencia.
-   * No duplica ledger aunque Stripe reintente el mismo evento.
-   *
-   * Disputas (`charge.dispute.*`): se resuelve el `Payment` por `payment_intent` en el payload (o en
-   * `charge` expandido con `payment_intent`, útil en tests y en payloads enriquecidos). Ganar/perder
-   * en Stripe (p. ej. textos `winning_evidence` / `losing_evidence` en pruebas) cierra la disputa allí;
-   * aquí solo reaccionamos a `charge.dispute.closed` con `status` `won` | `lost`.
-   */
-  async applyStripeWebhookEvent(
-    eventType: string,
-    eventObject: Record<string, unknown>,
-  ): Promise<StripeWebhookApplyResult> {
-    const providerRef = this.extractStripeProviderRef(eventType, eventObject);
-    if (!providerRef) {
-      return { handled: false, reason: 'missing_provider_ref' };
-    }
-
-    const payment = await this.prisma.payment.findFirst({
-      where: { selectedProvider: 'stripe', providerRef },
-      select: {
-        id: true,
-        merchantId: true,
-        status: true,
-        amountMinor: true,
-        currency: true,
-        selectedProvider: true,
-        providerRef: true,
-        statusReason: true,
-        paymentLinkId: true,
-      },
-    });
-    if (!payment) {
-      this.log.warn(
-        this.correlationLogJson({
-          event: 'payments_v2.stripe_webhook.payment_not_found',
-          eventType,
-          providerRef,
-        }),
-      );
-      return { handled: false, reason: 'payment_not_found' };
-    }
-
-    if (eventType === 'payment_intent.succeeded') {
-      const rateRow = await this.fee.findActiveRateTable(payment.merchantId, payment.currency, 'stripe');
-      if (!rateRow) {
-        this.log.error(
-          this.correlationLogJson({
-            event: 'payments_v2.stripe_webhook.capture_blocked_missing_fee_rate',
-            paymentId: payment.id,
-            merchantId: payment.merchantId,
-            currency: payment.currency,
-            provider: 'stripe',
-          }),
-        );
-        return { handled: false, reason: 'fee_configuration_missing' };
-      }
-      await this.captureSucceeded(payment, 'stripe', {
-        status: PAYMENT_V2_STATUS.SUCCEEDED,
-        providerPaymentId: providerRef,
-      });
-      return { handled: true, paymentId: payment.id };
-    }
-
-    if (eventType === 'payment_intent.canceled') {
-      const terminalStatuses = [
-        PAYMENT_V2_STATUS.SUCCEEDED,
-        PAYMENT_V2_STATUS.REFUNDED,
-        PAYMENT_V2_STATUS.CANCELED,
-        PAYMENT_V2_STATUS.DISPUTED,
-        PAYMENT_V2_STATUS.DISPUTE_LOST,
-      ];
-      await this.prisma.payment.updateMany({
-        where: {
-          id: payment.id,
-          status: { notIn: terminalStatuses },
-        },
-        data: {
-          status: PAYMENT_V2_STATUS.CANCELED,
-          canceledAt: new Date(),
-          selectedProvider: 'stripe',
-          providerRef,
-          statusReason: null,
-          failedAt: null,
-          lastAttemptAt: new Date(),
-        },
-      });
-      return { handled: true, paymentId: payment.id };
-    }
-
-    if (eventType === 'payment_intent.payment_failed') {
-      const reasonCode = this.toStripeWebhookFailureReasonCode(eventObject);
-      if (payment.status === PAYMENT_V2_STATUS.AUTHORIZED) {
-        // Un `payment_failed` no debe bloquear capturas futuras si ya está `requires_capture`.
-        await this.prisma.payment.updateMany({
-          where: { id: payment.id, status: PAYMENT_V2_STATUS.AUTHORIZED },
-          data: {
-            status: PAYMENT_V2_STATUS.AUTHORIZED,
-            statusReason: reasonCode,
-            failedAt: null,
-            selectedProvider: 'stripe',
-            providerRef,
-            lastAttemptAt: new Date(),
-          },
-        });
-        return { handled: true, paymentId: payment.id };
-      }
-
-      await this.prisma.payment.updateMany({
-        where: {
-          id: payment.id,
-          status: {
-            in: [PAYMENT_V2_STATUS.PROCESSING, PAYMENT_V2_STATUS.PENDING, PAYMENT_V2_STATUS.REQUIRES_ACTION],
-          },
-        },
-        data: {
-          status: PAYMENT_V2_STATUS.PENDING,
-          statusReason: reasonCode,
-          failedAt: null,
-          selectedProvider: 'stripe',
-          providerRef,
-          lastAttemptAt: new Date(),
-        },
-      });
-      return { handled: true, paymentId: payment.id };
-    }
-
-    if (eventType === 'charge.refunded') {
-      const refunded = eventObject.refunded === true;
-      if (!refunded) {
-        return { handled: false, paymentId: payment.id, reason: 'charge_not_fully_refunded' };
-      }
-      const amountMinor = this.toStripeRefundAmount(eventObject, payment.amountMinor);
-      if (amountMinor <= 0) {
-        return { handled: false, paymentId: payment.id, reason: 'invalid_refund_amount' };
-      }
-      await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-        const cas = await tx.payment.updateMany({
-          where: { id: payment.id, status: PAYMENT_V2_STATUS.SUCCEEDED },
-          data: {
-            status: PAYMENT_V2_STATUS.REFUNDED,
-            selectedProvider: 'stripe',
-            statusReason: null,
-            failedAt: null,
-            providerRef,
-            lastAttemptAt: new Date(),
-          },
-        });
-        if (cas.count === 0) return;
-        await this.ledger.recordSuccessfulRefund(tx, {
-          merchantId: payment.merchantId,
-          paymentId: payment.id,
-          amountMinor,
-          currency: payment.currency,
-        });
-      });
-      return { handled: true, paymentId: payment.id };
-    }
-
-    if (
-      eventType === 'charge.dispute.created' ||
-      eventType === 'charge.dispute.funds_withdrawn' ||
-      eventType === 'charge.dispute.updated'
-    ) {
-      const cas = await this.prisma.payment.updateMany({
-        where: { id: payment.id, status: PAYMENT_V2_STATUS.SUCCEEDED },
-        data: {
-          status: PAYMENT_V2_STATUS.DISPUTED,
-          statusReason: null,
-          failedAt: null,
-          selectedProvider: 'stripe',
-          providerRef,
-          lastAttemptAt: new Date(),
-        },
-      });
-      if (cas.count > 0) {
-        return { handled: true, paymentId: payment.id };
-      }
-      const current = await this.prisma.payment.findUnique({
-        where: { id: payment.id },
-        select: { status: true },
-      });
-      if (current?.status === PAYMENT_V2_STATUS.DISPUTED) {
-        return { handled: true, paymentId: payment.id };
-      }
-      return { handled: false, paymentId: payment.id, reason: 'dispute_requires_succeeded_or_disputed' };
-    }
-
-    if (eventType === 'charge.dispute.closed') {
-      const outcome = this.safeGetString(eventObject.status);
-      if (outcome === 'won') {
-        await this.prisma.payment.updateMany({
-          where: { id: payment.id, status: PAYMENT_V2_STATUS.DISPUTED },
-          data: {
-            status: PAYMENT_V2_STATUS.SUCCEEDED,
-            statusReason: null,
-            failedAt: null,
-            selectedProvider: 'stripe',
-            providerRef,
-            lastAttemptAt: new Date(),
-          },
-        });
-        return { handled: true, paymentId: payment.id };
-      }
-      if (outcome === 'lost') {
-        const amountMinor = this.toStripeDisputeAmount(eventObject, payment.amountMinor);
-        await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-          const cas = await tx.payment.updateMany({
-            where: { id: payment.id, status: PAYMENT_V2_STATUS.DISPUTED },
-            data: {
-              status: PAYMENT_V2_STATUS.DISPUTE_LOST,
-              statusReason: null,
-              failedAt: null,
-              selectedProvider: 'stripe',
-              providerRef,
-              lastAttemptAt: new Date(),
-            },
-          });
-          if (cas.count === 0) return;
-          await this.ledger.recordSuccessfulRefund(tx, {
-            merchantId: payment.merchantId,
-            paymentId: payment.id,
-            amountMinor,
-            currency: payment.currency,
-          });
-        });
-        return { handled: true, paymentId: payment.id };
-      }
-      return { handled: false, paymentId: payment.id, reason: 'stripe_dispute_closed_unhandled_status' };
-    }
-
-    return { handled: false, paymentId: payment.id, reason: 'unsupported_event_type' };
-  }
-
   private async executeProviderOperation(
     payment: OperationResult['payment'],
     operation: PaymentOperation,
     amountMinor: number,
     providerOrder: PaymentProviderName[],
-    createExtras?: Pick<ProviderContext, 'stripePaymentMethodId' | 'stripeReturnUrl'>,
   ): Promise<OperationResult> {
     let lastProviderAttempted: PaymentProviderName | null = null;
     let lastTerminalFailureReason: PaymentReasonCode = 'provider_unavailable';
@@ -1970,7 +1770,7 @@ export class PaymentsV2Service {
         }
       }
       try {
-        const result = await this.runWithRetry(providerName, operation, payment, amountMinor, createExtras);
+        const result = await this.runWithRetry(providerName, operation, payment, amountMinor);
         const shouldFallbackToNextProvider =
           result.status === PAYMENT_V2_STATUS.FAILED &&
           result.reasonCode === 'provider_unavailable' &&
@@ -2029,7 +1829,6 @@ export class PaymentsV2Service {
     operation: PaymentOperation,
     payment: OperationResult['payment'],
     amountMinor: number,
-    createExtras?: Pick<ProviderContext, 'stripePaymentMethodId' | 'stripeReturnUrl'>,
   ): Promise<ProviderResult> {
     let retries = 0;
     let finalResult: ProviderResult = {
@@ -2057,12 +1856,6 @@ export class PaymentsV2Service {
           providerPaymentId: payment.providerRef,
           idempotencyKey,
           ...(correlationId ? { correlationId } : {}),
-          ...(operation === 'create' && createExtras
-            ? {
-                stripePaymentMethodId: createExtras.stripePaymentMethodId,
-                stripeReturnUrl: createExtras.stripeReturnUrl,
-              }
-            : {}),
         };
         result = await adapter.run(operation, context);
       } catch (caught) {
@@ -2307,107 +2100,11 @@ export class PaymentsV2Service {
   }
 
   private sanitizeProviderRaw(provider: PaymentProviderName, raw: Record<string, unknown> | null) {
+    void provider;
     if (!raw) return null;
-
-    if (provider === 'stripe') {
-      const safe: Record<string, unknown> = {
-        id: this.safeGetString(raw.id),
-        object: this.safeGetString(raw.object),
-        status: this.safeGetString(raw.status),
-        request_id: this.safeGetString(raw.request_id) ?? this.safeGetString(raw.requestId),
-      };
-
-      const error = this.safeGetObject(raw.error);
-      if (error) {
-        safe.error = {
-          code: this.safeGetString(error.code),
-          type: this.safeGetString(error.type),
-          message: this.truncate(this.safeGetString(error.message), 500),
-          decline_code: this.safeGetString(error.decline_code),
-          param: this.safeGetString(error.param),
-        };
-      }
-
-      // Elimina campos undefined/null para mantener payloads compactos
-      Object.keys(safe).forEach((k) => {
-        if (safe[k] === undefined || safe[k] === null) delete safe[k];
-      });
-      if (safe.error && typeof safe.error === 'object') {
-        Object.keys(safe.error as Record<string, unknown>).forEach((k) => {
-          const obj = safe.error as Record<string, unknown>;
-          if (obj[k] === undefined || obj[k] === null) delete obj[k];
-        });
-        if (Object.keys(safe.error as Record<string, unknown>).length === 0) delete safe.error;
-      }
-
-      return safe;
-    }
 
     // Default: no persistimos raws desconocidos por seguridad.
     return null;
-  }
-
-  private safeGetObject(value: unknown): Record<string, unknown> | null {
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      return value as Record<string, unknown>;
-    }
-    return null;
-  }
-
-  private extractStripeProviderRef(eventType: string, eventObject: Record<string, unknown>): string | null {
-    if (eventType.startsWith('payment_intent.')) {
-      return this.safeGetString(eventObject.id) ?? null;
-    }
-    if (eventType === 'charge.refunded') {
-      return this.safeGetString(eventObject.payment_intent) ?? null;
-    }
-    if (eventType.startsWith('charge.dispute.')) {
-      const directPi = this.safeGetString(eventObject.payment_intent);
-      if (directPi) return directPi;
-      const charge = eventObject.charge;
-      if (charge && typeof charge === 'object' && !Array.isArray(charge)) {
-        return this.safeGetString((charge as Record<string, unknown>).payment_intent) ?? null;
-      }
-      return null;
-    }
-    return null;
-  }
-
-  private toStripeWebhookFailureReasonCode(eventObject: Record<string, unknown>): PaymentReasonCode {
-    const lastPaymentError = this.safeGetObject(eventObject.last_payment_error);
-    const type = this.safeGetString(lastPaymentError?.type);
-    if (type === 'card_error') return 'provider_declined';
-    if (type === 'invalid_request_error') return 'provider_validation_error';
-    if (type === 'api_connection_error' || type === 'api_error') return 'provider_unavailable';
-    return 'provider_error';
-  }
-
-  private toStripeRefundAmount(eventObject: Record<string, unknown>, fallbackAmountMinor: number): number {
-    const amount = eventObject.amount_refunded;
-    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
-      return fallbackAmountMinor;
-    }
-    const rounded = Math.floor(amount);
-    return rounded <= fallbackAmountMinor ? rounded : fallbackAmountMinor;
-  }
-
-  private toStripeDisputeAmount(eventObject: Record<string, unknown>, fallbackAmountMinor: number): number {
-    const amount = eventObject.amount;
-    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
-      return fallbackAmountMinor;
-    }
-    const rounded = Math.floor(amount);
-    return rounded <= fallbackAmountMinor ? rounded : fallbackAmountMinor;
-  }
-
-  private safeGetString(value: unknown): string | undefined {
-    return typeof value === 'string' ? value : undefined;
-  }
-
-  private truncate(value: string | undefined, maxLen: number): string | undefined {
-    if (!value) return value;
-    if (value.length <= maxLen) return value;
-    return value.slice(0, maxLen);
   }
 
   private async applyPaymentState(
@@ -2979,30 +2676,15 @@ export class PaymentsV2Service {
       return { type: '3ds' };
     }
     if (payment.status === PAYMENT_V2_STATUS.PENDING) {
-      return { type: 'confirm_with_stripe_js' };
+      return { type: 'none' };
     }
     return null;
   }
 
-  /**
-   * En repetición idempotente de `create`, enriquece `nextAction` para Stripe (p. ej. `client_secret`) vía GET al PaymentIntent.
-   */
   private async resolveCreateNextActionForExisting(
     payment: OperationResult['payment'],
   ): Promise<ProviderResult['nextAction'] | null> {
-    const fallback = this.nextActionFromPersistedPayment(payment);
-    if (
-      payment.selectedProvider !== 'stripe' ||
-      !payment.providerRef ||
-      (payment.status !== PAYMENT_V2_STATUS.PENDING && payment.status !== PAYMENT_V2_STATUS.REQUIRES_ACTION)
-    ) {
-      return fallback;
-    }
-    const retrieved = await this.stripeAdapter.retrievePaymentIntent(payment.providerRef);
-    if (retrieved.status === PAYMENT_V2_STATUS.FAILED) {
-      return fallback;
-    }
-    return retrieved.nextAction ?? fallback;
+    return this.nextActionFromPersistedPayment(payment);
   }
 
   private assertIdempotencyPayloadMatch(
@@ -3098,6 +2780,20 @@ export class PaymentsV2Service {
   private toProviderName(value: string | null): PaymentProviderName | undefined {
     if (value === null || value === '') return undefined;
     return isPaymentProviderName(value) ? value : undefined;
+  }
+
+  /**
+   * Tras `create`, `selectedProvider` debe ser un `PaymentProviderName` conocido. Si la BD conserva un código retirado
+   * (p. ej. `stripe`), no se debe enrutar por `PAYMENTS_PROVIDER_ORDER`: evita ejecutar el adapter equivocado.
+   */
+  private assertRecognizedSelectedProviderForExclusiveRouting(
+    payment: OperationResult['payment'],
+    operation: 'capture' | 'cancel' | 'refund',
+  ): void {
+    const raw = payment.selectedProvider;
+    if (raw === null || raw === '') return;
+    if (isPaymentProviderName(raw)) return;
+    throw new ConflictException(unsupportedPersistedProviderLifecycleMessage(operation, raw));
   }
 
   private toReasonCode(value: string | undefined): PaymentReasonCode {

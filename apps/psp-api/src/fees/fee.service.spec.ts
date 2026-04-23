@@ -62,7 +62,7 @@ describe('FeeService', () => {
       id: 'rt_1',
       merchantId: 'm_1',
       currency: 'EUR',
-      provider: 'stripe',
+      provider: 'mock',
       percentageBps: 150,
       fixedMinor: 25,
       minimumMinor: 50,
@@ -70,20 +70,20 @@ describe('FeeService', () => {
     });
     const service = new FeeService({ merchantRateTable: { findFirst } } as never);
 
-    const rate = await service.resolveActiveRateTable('m_1', 'EUR', 'stripe');
+    const rate = await service.resolveActiveRateTable('m_1', 'EUR', 'mock');
 
     expect(findFirst).toHaveBeenCalledWith({
       where: {
         merchantId: 'm_1',
         currency: 'EUR',
-        provider: 'stripe',
+        provider: 'mock',
         activeTo: null,
       },
       orderBy: { activeFrom: 'desc' },
     });
     expect(rate).toMatchObject({
       id: 'rt_1',
-      provider: 'stripe',
+      provider: 'mock',
       percentageBps: 150,
     });
   });
@@ -103,7 +103,7 @@ describe('FeeService', () => {
       merchantRateTable: { findFirst: jest.fn().mockResolvedValue(null) },
     } as never);
 
-    await expect(service.findActiveRateTable('m_1', 'USD', 'stripe')).resolves.toBeNull();
+    await expect(service.findActiveRateTable('m_1', 'USD', 'mock')).resolves.toBeNull();
   });
 
   it('hasActiveRateTableForAnyProvider es true si existe tarifa para algún proveedor', async () => {
@@ -111,14 +111,14 @@ describe('FeeService', () => {
     const service = new FeeService({ merchantRateTable: { findFirst } } as never);
 
     await expect(
-      service.hasActiveRateTableForAnyProvider('m_1', 'EUR', ['stripe', 'mock']),
+      service.hasActiveRateTableForAnyProvider('m_1', 'EUR', ['mock', 'acme']),
     ).resolves.toBe(true);
 
     expect(findFirst).toHaveBeenCalledWith({
       where: {
         merchantId: 'm_1',
         currency: 'EUR',
-        provider: { in: ['stripe', 'mock'] },
+        provider: { in: ['mock', 'acme'] },
         activeTo: null,
       },
       orderBy: { activeFrom: 'desc' },

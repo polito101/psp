@@ -1,5 +1,5 @@
 /**
- * Dataset demo para la vista estilo Stripe en `/`.
+ * Dataset demo para la vista de transacciones en `/`.
  * No representa datos reales del PSP.
  */
 
@@ -33,7 +33,7 @@ const BASE: DemoTransaction[] = [
     currency: "EUR",
     status: "refunded",
     paymentMethodLast4: "4242",
-    description: "(created by Stripe CLI)",
+    description: "(created by PSP CLI)",
     customer: null,
     createdAt: "2026-04-16T06:33:00.000Z",
     refundedAt: "2026-04-16T06:59:00.000Z",
@@ -57,7 +57,7 @@ const BASE: DemoTransaction[] = [
     currency: "EUR",
     status: "succeeded",
     paymentMethodLast4: "4242",
-    description: "(created by Stripe CLI)",
+    description: "(created by PSP CLI)",
     customer: "Acme SL",
     createdAt: "2026-04-15T14:22:00.000Z",
     refundedAt: null,
@@ -93,7 +93,7 @@ const BASE: DemoTransaction[] = [
     currency: "USD",
     status: "refunded",
     paymentMethodLast4: "4242",
-    description: "(created by Stripe CLI)",
+    description: "(created by PSP CLI)",
     customer: null,
     createdAt: "2026-04-14T09:30:00.000Z",
     refundedAt: "2026-04-14T10:05:00.000Z",
@@ -129,7 +129,7 @@ const BASE: DemoTransaction[] = [
     currency: "USD",
     status: "succeeded",
     paymentMethodLast4: "4242",
-    description: "(created by Stripe CLI)",
+    description: "(created by PSP CLI)",
     customer: null,
     createdAt: "2026-04-12T22:15:00.000Z",
     refundedAt: null,
@@ -165,7 +165,7 @@ const BASE: DemoTransaction[] = [
     currency: "EUR",
     status: "not_captured",
     paymentMethodLast4: "4242",
-    description: "(created by Stripe CLI)",
+    description: "(created by PSP CLI)",
     customer: null,
     createdAt: "2026-04-11T07:07:00.000Z",
     refundedAt: null,

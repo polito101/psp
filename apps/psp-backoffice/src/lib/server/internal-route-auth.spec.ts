@@ -120,6 +120,17 @@ describe("validateAdminTokenForSession", () => {
       expect(result.response.status).toBe(401);
     }
   });
+
+  it("returns 401 when token exceeds secure compare max length (no huge Buffer)", () => {
+    process.env.BACKOFFICE_ADMIN_SECRET = "admin-secret";
+    process.env.PSP_INTERNAL_API_SECRET = "internal-only";
+
+    const result = validateAdminTokenForSession("z".repeat(2000));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.response.status).toBe(401);
+    }
+  });
 });
 
 describe("validateMerchantPortalLogin", () => {
@@ -135,15 +146,77 @@ describe("validateMerchantPortalLogin", () => {
     process.env = { ...snapshot };
   });
 
-  it("returns ok when merchantToken matches HMAC(merchantId)", () => {
+  it("returns ok when merchantToken is exp:HMAC(merchantId.exp)", () => {
     const mid = "mrc_test";
-    const expected = createHmac("sha256", process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET!)
-      .update(mid, "utf8")
+    const exp = Math.floor(Date.now() / 1000);
+    const payload = `${mid}.${exp}`;
+    const sig = createHmac("sha256", process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET!)
+      .update(payload, "utf8")
       .digest("hex");
-    expect(validateMerchantPortalLogin(mid, expected)).toEqual({ ok: true });
+    expect(validateMerchantPortalLogin(mid, `${exp}:${sig}`)).toEqual({ ok: true });
   });
 
   it("returns 401 when token does not match", () => {
     expect(validateMerchantPortalLogin("mrc_test", "deadbeef").ok).toBe(false);
+  });
+
+  it("returns 401 when token string is longer than merchant portal max (defense in depth)", () => {
+    const longGarbage = `${"1".repeat(80)}:${"a".repeat(64)}`;
+    expect(validateMerchantPortalLogin("mrc_test", longGarbage).ok).toBe(false);
+  });
+
+  it("returns ok when exp is within max age in the past (e.g. now - 120s)", () => {
+    const mid = "mrc_test";
+    const exp = Math.floor(Date.now() / 1000) - 120;
+    const payload = `${mid}.${exp}`;
+    const sig = createHmac("sha256", process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET!)
+      .update(payload, "utf8")
+      .digest("hex");
+    expect(validateMerchantPortalLogin(mid, `${exp}:${sig}`)).toEqual({ ok: true });
+  });
+
+  it("returns 401 when exp is too old", () => {
+    const mid = "mrc_test";
+    const exp = Math.floor(Date.now() / 1000) - 400;
+    const payload = `${mid}.${exp}`;
+    const sig = createHmac("sha256", process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET!)
+      .update(payload, "utf8")
+      .digest("hex");
+    expect(validateMerchantPortalLogin(mid, `${exp}:${sig}`).ok).toBe(false);
+  });
+
+  it("returns 401 when exp is beyond allowed clock skew into the future", () => {
+    const mid = "mrc_test";
+    const exp = Math.floor(Date.now() / 1000) + 120;
+    const payload = `${mid}.${exp}`;
+    const sig = createHmac("sha256", process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET!)
+      .update(payload, "utf8")
+      .digest("hex");
+    expect(validateMerchantPortalLogin(mid, `${exp}:${sig}`).ok).toBe(false);
+  });
+
+  it("returns 401 when exp is far in the future", () => {
+    const mid = "mrc_test";
+    const exp = Math.floor(Date.now() / 1000) + 3600;
+    const payload = `${mid}.${exp}`;
+    const sig = createHmac("sha256", process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET!)
+      .update(payload, "utf8")
+      .digest("hex");
+    expect(validateMerchantPortalLogin(mid, `${exp}:${sig}`).ok).toBe(false);
+  });
+
+  it("returns 500 when portal secret equals BACKOFFICE_ADMIN_SECRET (distinct-secrets invariant)", () => {
+    process.env.BACKOFFICE_ADMIN_SECRET = process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET;
+    const mid = "mrc_test";
+    const exp = Math.floor(Date.now() / 1000);
+    const payload = `${mid}.${exp}`;
+    const sig = createHmac("sha256", process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET!)
+      .update(payload, "utf8")
+      .digest("hex");
+    const result = validateMerchantPortalLogin(mid, `${exp}:${sig}`);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.response.status).toBe(500);
+    }
   });
 });

@@ -16,12 +16,10 @@ import { MockProviderAdapter } from './providers/mock-provider.adapter';
 import { PaymentProvider } from './providers/payment-provider.interface';
 import { PAYMENT_PROVIDERS } from './providers/payment-providers.token';
 import { ProviderRegistryService } from './providers/provider-registry.service';
-import { StripeProviderAdapter } from './providers/stripe-provider.adapter';
-import { StripeWebhookController } from './stripe-webhook.controller';
 
 @Module({
   imports: [LedgerModule, WebhooksModule, PaymentLinksModule, FeesModule],
-  controllers: [PaymentsV2Controller, PaymentsV2InternalController, StripeWebhookController],
+  controllers: [PaymentsV2Controller, PaymentsV2InternalController],
   providers: [
     CorrelationContextService,
     CorrelationIdMiddleware,
@@ -29,23 +27,21 @@ import { StripeWebhookController } from './stripe-webhook.controller';
     PaymentsV2MerchantRateLimitService,
     PaymentsV2ObservabilityService,
     MockProviderAdapter,
-    StripeProviderAdapter,
     AcmeProviderAdapter,
     {
       provide: PAYMENT_PROVIDERS,
       useFactory: (
-        stripe: StripeProviderAdapter,
         mock: MockProviderAdapter,
         acme: AcmeProviderAdapter,
         config: ConfigService,
       ): PaymentProvider[] => {
-        const list: PaymentProvider[] = [stripe, mock];
+        const list: PaymentProvider[] = [mock];
         if ((config.get<string>('PAYMENTS_ACME_ENABLED') ?? 'false').toLowerCase() === 'true') {
           list.push(acme);
         }
         return list;
       },
-      inject: [StripeProviderAdapter, MockProviderAdapter, AcmeProviderAdapter, ConfigService],
+      inject: [MockProviderAdapter, AcmeProviderAdapter, ConfigService],
     },
     ProviderRegistryService,
   ],
@@ -54,6 +50,6 @@ export class PaymentsV2Module implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     consumer
       .apply(CorrelationIdMiddleware)
-      .forRoutes(PaymentsV2Controller, PaymentsV2InternalController, StripeWebhookController);
+      .forRoutes(PaymentsV2Controller, PaymentsV2InternalController);
   }
 }

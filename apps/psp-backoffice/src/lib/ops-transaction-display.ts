@@ -16,7 +16,7 @@ export type TransactionTableRow = {
 };
 
 /**
- * Heurística para mostrar últimos 4 dígitos / sufijo de método a partir de `providerRef` (Stripe u otros).
+ * Heurística para mostrar últimos 4 dígitos / sufijo de método a partir de `providerRef`.
  */
 export function extractPaymentMethodLast4(providerRef: string | null | undefined): string | null {
   const ref = providerRef ?? "";
