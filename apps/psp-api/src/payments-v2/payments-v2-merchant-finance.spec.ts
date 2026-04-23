@@ -81,6 +81,13 @@ describe('PaymentsV2 merchant finance', () => {
 
   const fxRates = {
     convertMinorToUsdSnapshot: jest.fn(),
+    getUsdSnapshotsAtOrBeforeForBases: jest.fn().mockResolvedValue(new Map()),
+    convertMinorToUsdWithPreloadedUsdSnapshots: jest.fn().mockReturnValue({
+      ok: true,
+      usdMinor: 0,
+      snapshotId: 'snap',
+      rateDecimal: '1',
+    }),
   };
 
   const buildService = () =>

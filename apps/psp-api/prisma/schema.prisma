@@ -131,6 +131,7 @@ model Payment {
   @@index([selectedProvider, providerRef])
   @@index([payerCountry, createdAt])
   @@index([paymentMethodCode, createdAt])
+  @@index([createdWeekdayUtc, createdAt], map: "Payment_created_weekday_utc_created_at_idx")
 }
 
 /// Catálogo global de métodos de pago (arranque provider-based: mock_card, mock_transfer).

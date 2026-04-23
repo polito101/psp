@@ -1477,13 +1477,25 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     let failedUsdMinor = 0;
     let conversionUnavailable = false;
 
+    const currenciesWithVolume = new Set<string>();
     for (const g of groups) {
       const minor = Number(g._sum.amountMinor ?? 0);
       if (!Number.isFinite(minor) || minor === 0) continue;
-      const conv = await this.fxRates.convertMinorToUsdSnapshot({
+      currenciesWithVolume.add(g.currency.toUpperCase());
+    }
+    const usdSnapshotsByBase = await this.fxRates.getUsdSnapshotsAtOrBeforeForBases(
+      [...currenciesWithVolume],
+      at,
+    );
+
+    for (const g of groups) {
+      const minor = Number(g._sum.amountMinor ?? 0);
+      if (!Number.isFinite(minor) || minor === 0) continue;
+      const conv = this.fxRates.convertMinorToUsdWithPreloadedUsdSnapshots({
         amountMinor: minor,
         currency: g.currency,
         at,
+        usdSnapshotsByBase,
       });
       if (!conv.ok) {
         conversionUnavailable = true;

@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { SettlementStatus, SettlementRequestStatus } from '../generated/prisma/enums';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettlementService } from './settlement.service';
@@ -62,47 +62,91 @@ export class SettlementRequestsService {
     });
   }
 
-  async approve(requestId: string, reviewedNotes?: string) {
-    const row = await this.prisma.settlementRequest.findUnique({ where: { id: requestId } });
-    if (!row) {
-      throw new NotFoundException('Settlement request not found');
-    }
-    if (row.status !== SettlementRequestStatus.PENDING) {
-      throw new BadRequestException('La solicitud no está en estado PENDING');
-    }
-    const payout = await this.settlements.createPayout({
-      merchantId: row.merchantId,
-      currency: row.currency,
+  /**
+   * Vuelve APPROVED → PENDING si el payout no pudo completarse (reintento admin).
+   */
+  private async revertApprovedToPending(requestId: string) {
+    await this.prisma.settlementRequest.updateMany({
+      where: { id: requestId, status: SettlementRequestStatus.APPROVED },
+      data: { status: SettlementRequestStatus.PENDING, reviewedNotes: null },
     });
+  }
+
+  async approve(requestId: string, reviewedNotes?: string) {
+    const reserved = await this.prisma.settlementRequest.updateMany({
+      where: { id: requestId, status: SettlementRequestStatus.PENDING },
+      data: {
+        status: SettlementRequestStatus.APPROVED,
+        reviewedNotes: reviewedNotes ?? null,
+      },
+    });
+
+    if (reserved.count === 0) {
+      const row = await this.prisma.settlementRequest.findUnique({ where: { id: requestId } });
+      if (!row) {
+        throw new NotFoundException('Settlement request not found');
+      }
+      throw new ConflictException(
+        'La solicitud ya no está PENDING; otro operador pudo resolverla o hubo un envío duplicado.',
+      );
+    }
+
+    const row = await this.prisma.settlementRequest.findUniqueOrThrow({ where: { id: requestId } });
+
+    let payout: Awaited<ReturnType<SettlementService['createPayout']>>;
+    try {
+      payout = await this.settlements.createPayout({
+        merchantId: row.merchantId,
+        currency: row.currency,
+      });
+    } catch (e) {
+      await this.revertApprovedToPending(requestId);
+      throw e;
+    }
+
     if (!payout) {
+      await this.revertApprovedToPending(requestId);
       throw new BadRequestException(
         'No se pudo crear payout: no hay settlements AVAILABLE elegibles (libera PENDING→AVAILABLE primero o espera ventana).',
       );
     }
-    return this.prisma.settlementRequest.update({
-      where: { id: requestId },
+
+    const finalized = await this.prisma.settlementRequest.updateMany({
+      where: { id: requestId, status: SettlementRequestStatus.APPROVED },
       data: {
         status: SettlementRequestStatus.PAID,
         payoutId: payout.id,
-        reviewedNotes: reviewedNotes ?? null,
       },
     });
+
+    if (finalized.count === 0) {
+      throw new BadRequestException(
+        'Payout creado pero no se pudo vincular a la solicitud; requiere revisión operativa.',
+      );
+    }
+
+    return this.prisma.settlementRequest.findUniqueOrThrow({ where: { id: requestId } });
   }
 
   async reject(requestId: string, reviewedNotes?: string) {
-    const row = await this.prisma.settlementRequest.findUnique({ where: { id: requestId } });
-    if (!row) {
-      throw new NotFoundException('Settlement request not found');
-    }
-    if (row.status !== SettlementRequestStatus.PENDING) {
-      throw new BadRequestException('La solicitud no está en estado PENDING');
-    }
-    return this.prisma.settlementRequest.update({
-      where: { id: requestId },
+    const updated = await this.prisma.settlementRequest.updateMany({
+      where: { id: requestId, status: SettlementRequestStatus.PENDING },
       data: {
         status: SettlementRequestStatus.REJECTED,
         reviewedNotes: reviewedNotes ?? null,
       },
     });
+
+    if (updated.count === 0) {
+      const row = await this.prisma.settlementRequest.findUnique({ where: { id: requestId } });
+      if (!row) {
+        throw new NotFoundException('Settlement request not found');
+      }
+      throw new ConflictException(
+        'La solicitud no está en PENDING; no se puede rechazar (p. ej. aprobación o pago en curso).',
+      );
+    }
+
+    return this.prisma.settlementRequest.findUniqueOrThrow({ where: { id: requestId } });
   }
 }

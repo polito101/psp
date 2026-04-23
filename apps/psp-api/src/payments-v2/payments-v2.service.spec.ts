@@ -123,6 +123,10 @@ describe('PaymentsV2Service', () => {
     convertMinorToUsdSnapshot: jest
       .fn()
       .mockResolvedValue({ ok: true, usdMinor: 1, snapshotId: 'snap', rateDecimal: '1' }),
+    getUsdSnapshotsAtOrBeforeForBases: jest.fn().mockResolvedValue(new Map()),
+    convertMinorToUsdWithPreloadedUsdSnapshots: jest
+      .fn()
+      .mockReturnValue({ ok: true, usdMinor: 1, snapshotId: 'snap', rateDecimal: '1' }),
   };
 
   let service: PaymentsV2Service;
