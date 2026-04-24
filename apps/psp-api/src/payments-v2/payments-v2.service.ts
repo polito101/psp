@@ -1639,28 +1639,40 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   /** Límite de días calendario UTC por ventana half-open para `getOpsPaymentsSummary` y `getOpsPaymentsSummaryDaily`. */
   private static readonly OPS_PAYMENTS_SUMMARY_MAX_DAYS = 124;
 
-  /** Días UTC cubiertos por `[from, toExclusive)` cuando ambos límites son instantes ISO (p. ej. medianoche UTC). */
-  private utcHalfOpenRangeDayCount(from: Date, toExclusive: Date): number {
+  /**
+   * Primera y última medianoche UTC (inicio de día) que intersectan `[from, toExclusive)`.
+   * Sirve para series diarias y para contar días calendario aunque `toExclusive` no sea medianoche.
+   */
+  private utcHalfOpenRangeCalendarDayBounds(
+    from: Date,
+    toExclusive: Date,
+  ): { firstDayStartMs: number; lastDayStartMs: number } | null {
     const spanMs = toExclusive.getTime() - from.getTime();
-    if (spanMs <= 0) return 0;
-    return Math.floor(spanMs / 86_400_000);
+    if (spanMs <= 0) return null;
+    const firstDayStartMs = Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate());
+    const endMs = toExclusive.getTime() - 1;
+    const end = new Date(endMs);
+    const lastDayStartMs = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
+    return { firstDayStartMs, lastDayStartMs };
   }
 
-  /** Etiquetas YYYY-MM-DD (UTC) para cada día calendario en `[from, toExclusive)`. */
+  /** Cantidad de días calendario UTC con datos posibles en `[from, toExclusive)` (alineado a buckets diarios). */
+  private utcHalfOpenRangeDayCount(from: Date, toExclusive: Date): number {
+    const b = this.utcHalfOpenRangeCalendarDayBounds(from, toExclusive);
+    if (!b) return 0;
+    return Math.floor((b.lastDayStartMs - b.firstDayStartMs) / 86_400_000) + 1;
+  }
+
+  /** Etiquetas YYYY-MM-DD (UTC): un punto por día calendario que cae en `[from, toExclusive)`. */
   private utcDayYmdListHalfOpen(from: Date, toExclusive: Date): string[] {
+    const b = this.utcHalfOpenRangeCalendarDayBounds(from, toExclusive);
+    if (!b) return [];
     const out: string[] = [];
-    let t = Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate());
-    const endExclusive = Date.UTC(
-      toExclusive.getUTCFullYear(),
-      toExclusive.getUTCMonth(),
-      toExclusive.getUTCDate(),
-    );
-    while (t < endExclusive) {
+    for (let t = b.firstDayStartMs; t <= b.lastDayStartMs; t += 86_400_000) {
       const d = new Date(t);
       out.push(
         `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`,
       );
-      t += 86_400_000;
     }
     return out;
   }
@@ -1780,6 +1792,118 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
 
     return {
       granularity: 'daily' as const,
+      currency: currency ?? null,
+      current,
+      compare,
+    };
+  }
+
+  /**
+   * Series horarias UTC (24 buckets 0–23) para un único día calendario UTC por ventana.
+   * Mismas métricas y filtros que `getOpsPaymentsSummaryDaily`.
+   */
+  async getOpsPaymentsSummaryHourly(query: OpsPaymentsSummaryQueryDto) {
+    const curFrom = new Date(query.currentFrom);
+    const curTo = new Date(query.currentTo);
+    const cmpFrom = new Date(query.compareFrom);
+    const cmpTo = new Date(query.compareTo);
+    if (Number.isNaN(curFrom.valueOf()) || Number.isNaN(curTo.valueOf())) {
+      throw new BadRequestException('Invalid current date range');
+    }
+    if (Number.isNaN(cmpFrom.valueOf()) || Number.isNaN(cmpTo.valueOf())) {
+      throw new BadRequestException('Invalid compare date range');
+    }
+    if (curFrom.getTime() >= curTo.getTime()) {
+      throw new BadRequestException('currentFrom must be before currentTo (half-open range [from, to))');
+    }
+    if (cmpFrom.getTime() >= cmpTo.getTime()) {
+      throw new BadRequestException('compareFrom must be before compareTo (half-open range [from, to))');
+    }
+    if (this.utcHalfOpenRangeDayCount(curFrom, curTo) !== 1) {
+      throw new BadRequestException(
+        'Hourly summary requires the current range to span exactly one UTC calendar day',
+      );
+    }
+    if (this.utcHalfOpenRangeDayCount(cmpFrom, cmpTo) !== 1) {
+      throw new BadRequestException(
+        'Hourly summary requires the compare range to span exactly one UTC calendar day',
+      );
+    }
+
+    const currency = query.currency?.trim().toUpperCase();
+    const merchantSql =
+      query.merchantId && query.merchantId.trim() !== ''
+        ? Prisma.sql`AND p.merchant_id = ${query.merchantId.trim()}`
+        : Prisma.empty;
+    const providerSql = query.provider
+      ? Prisma.sql`AND p.selected_provider = ${query.provider}`
+      : Prisma.empty;
+    const currencySql = currency ? Prisma.sql`AND p.currency = ${currency}` : Prisma.empty;
+
+    const hourlyForWindow = async (from: Date, toExclusive: Date) => {
+      const labels = [...Array(24)].map((_, h) => String(h).padStart(2, '0'));
+      const rows = await this.prisma.$queryRaw<
+        Array<{
+          hr: number;
+          pay: bigint;
+          gross: bigint;
+          net: bigint;
+          errs: bigint;
+        }>
+      >(
+        Prisma.sql`
+        SELECT
+          (EXTRACT(HOUR FROM (p.created_at AT TIME ZONE 'UTC'))::int) AS hr,
+          COUNT(*)::bigint AS pay,
+          COALESCE(SUM(p.amount_minor::bigint), 0::bigint) AS gross,
+          COALESCE(SUM(COALESCE(fq.net_minor::bigint, p.amount_minor::bigint)), 0::bigint) AS net,
+          COALESCE(
+            SUM(
+              CASE
+                WHEN p.status IN (${PAYMENT_V2_STATUS.FAILED}, ${PAYMENT_V2_STATUS.CANCELED}) THEN 1
+                ELSE 0
+              END
+            )::bigint,
+            0::bigint
+          ) AS errs
+        FROM "Payment" p
+        LEFT JOIN "PaymentFeeQuote" fq ON fq.payment_id = p.id
+        WHERE p.created_at >= ${from}
+          AND p.created_at < ${toExclusive}
+          ${merchantSql}
+          ${providerSql}
+          ${currencySql}
+        GROUP BY 1
+        ORDER BY 1
+        `,
+      );
+      const map = new Map<number, { pay: bigint; gross: bigint; net: bigint; errs: bigint }>();
+      for (const row of rows) {
+        const h = Number(row.hr);
+        if (!Number.isFinite(h) || h < 0 || h > 23) continue;
+        map.set(h, { pay: row.pay, gross: row.gross, net: row.net, errs: row.errs });
+      }
+      const paymentsTotal: string[] = [];
+      const grossVolumeMinor: string[] = [];
+      const netVolumeMinor: string[] = [];
+      const paymentErrorsTotal: string[] = [];
+      for (let h = 0; h < 24; h += 1) {
+        const v = map.get(h);
+        paymentsTotal.push((v?.pay ?? 0n).toString());
+        grossVolumeMinor.push((v?.gross ?? 0n).toString());
+        netVolumeMinor.push((v?.net ?? 0n).toString());
+        paymentErrorsTotal.push((v?.errs ?? 0n).toString());
+      }
+      return { labels, paymentsTotal, grossVolumeMinor, netVolumeMinor, paymentErrorsTotal };
+    };
+
+    const [current, compare] = await Promise.all([
+      hourlyForWindow(curFrom, curTo),
+      hourlyForWindow(cmpFrom, cmpTo),
+    ]);
+
+    return {
+      granularity: 'hourly' as const,
       currency: currency ?? null,
       current,
       compare,
