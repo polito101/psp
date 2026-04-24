@@ -278,6 +278,22 @@ export type OpsPaymentsSummaryResponse = {
   compare: OpsPaymentsSummaryBucket;
 };
 
+export type OpsPaymentsSummaryDailySeries = {
+  labels: string[];
+  paymentsTotal: string[];
+  grossVolumeMinor: string[];
+  netVolumeMinor: string[];
+  paymentErrorsTotal: string[];
+};
+
+/** Respuesta de `GET .../ops/transactions/summary-daily` (bucket diario UTC). */
+export type OpsPaymentsSummaryDailyResponse = {
+  granularity: "daily";
+  currency: string | null;
+  current: OpsPaymentsSummaryDailySeries;
+  compare: OpsPaymentsSummaryDailySeries;
+};
+
 export type OpsPaymentAttemptDetail = {
   id: string;
   operation: string;

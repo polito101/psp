@@ -12,6 +12,7 @@ import type {
   OpsDashboardVolumeUsdFilters,
   OpsDashboardVolumeUsdResponse,
   OpsPaymentDetailResponse,
+  OpsPaymentsSummaryDailyResponse,
   OpsPaymentsSummaryResponse,
   OpsTransactionCountsFilters,
   OpsTransactionCountsResponse,
@@ -138,6 +139,25 @@ export async function fetchOpsPaymentsSummary(
     method: "GET",
   });
   return parseResponse<OpsPaymentsSummaryResponse>(response);
+}
+
+export async function fetchOpsPaymentsSummaryDaily(
+  filters: OpsPaymentsSummaryFilters,
+): Promise<OpsPaymentsSummaryDailyResponse> {
+  const params = new URLSearchParams();
+  params.set("currentFrom", filters.currentFrom);
+  params.set("currentTo", filters.currentTo);
+  params.set("compareFrom", filters.compareFrom);
+  params.set("compareTo", filters.compareTo);
+  if (filters.merchantId) params.set("merchantId", filters.merchantId);
+  if (filters.provider) params.set("provider", filters.provider);
+  if (filters.currency) params.set("currency", filters.currency);
+  const qs = params.toString();
+  const response = await fetch(`/api/internal/transactions/summary-daily?${qs}`, {
+    ...internalBffInit,
+    method: "GET",
+  });
+  return parseResponse<OpsPaymentsSummaryDailyResponse>(response);
 }
 
 function opsDashboardVolumeUsdParams(filters: OpsDashboardVolumeUsdFilters): URLSearchParams {

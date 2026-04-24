@@ -81,8 +81,6 @@ export function AdminHomeDashboard() {
         </Link>
       </div>
 
-      <AdminHomeResumen />
-
       <div className="grid items-start gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader className="border-b-0 pb-4">
@@ -150,6 +148,8 @@ export function AdminHomeDashboard() {
           )}
         </CardContent>
       </Card>
+
+      <AdminHomeResumen />
 
       <Card className="border-dashed">
         <CardHeader className="flex flex-row items-center gap-2 space-y-0 pb-2">

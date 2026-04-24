@@ -57,6 +57,15 @@ export class PaymentsV2InternalController {
     return this.payments.getOpsPaymentsSummary(query);
   }
 
+  @Get('ops/transactions/summary-daily')
+  @ApiOperation({
+    summary:
+      'Series diarias UTC (agregados por día) para dos ventanas: payments, bruto, neto, errores failed+canceled (mismos filtros que summary)',
+  })
+  async paymentsSummaryDaily(@Query() query: OpsPaymentsSummaryQueryDto) {
+    return this.payments.getOpsPaymentsSummaryDaily(query);
+  }
+
   @Get('ops/transactions/volume-hourly')
   @ApiOperation({
     summary:

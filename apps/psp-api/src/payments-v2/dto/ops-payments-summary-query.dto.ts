@@ -2,7 +2,8 @@ import { IsDateString, IsIn, IsOptional, IsString, Matches, MaxLength } from 'cl
 import { PAYMENT_PROVIDER_NAMES, PaymentProviderName } from '../domain/payment-provider-names';
 
 /**
- * Agregados ops para dos ventanas temporales (created_at inclusive en ambos extremos).
+ * Agregados ops para dos ventanas temporales sobre `Payment.created_at`:
+ * half-open `[from, to)` (gte en `from`, lt en `to`).
  * Mismos filtros opcionales que conteos/listado ops (merchant, proveedor, moneda).
  */
 export class OpsPaymentsSummaryQueryDto {

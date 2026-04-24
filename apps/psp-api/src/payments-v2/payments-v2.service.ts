@@ -335,8 +335,15 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   ): Promise<OperationResult> {
     idempotencyKey = this.parseOptionalIdempotencyKey(idempotencyKey);
     this.assertPaymentsV2ConfigAllowlist(merchantId);
-    await this.assertPaymentLinkConsistency(merchantId, dto.paymentLinkId, dto.amountMinor, dto.currency);
-    await this.assertMerchantIsActiveFresh(merchantId);
+    const merchantCheckedInPaymentLinkRead = await this.assertPaymentLinkConsistency(
+      merchantId,
+      dto.paymentLinkId,
+      dto.amountMinor,
+      dto.currency,
+    );
+    if (!merchantCheckedInPaymentLinkRead) {
+      await this.assertMerchantIsActiveFresh(merchantId);
+    }
 
     if (idempotencyKey) {
       const existing = await this.resolveIdempotentPayment(merchantId, idempotencyKey, dto);
@@ -1536,6 +1543,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   /**
    * Agregados ops para dos ventanas sobre `Payment.created_at`: total pagos, suma bruta, suma neta
    * (`PaymentFeeQuote.net_minor` con fallback a `amount_minor`), y conteo `failed`+`canceled`.
+   * Ventanas half-open: `created_at >= from AND created_at < to`.
    */
   async getOpsPaymentsSummary(query: OpsPaymentsSummaryQueryDto) {
     const curFrom = new Date(query.currentFrom);
@@ -1548,11 +1556,21 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     if (Number.isNaN(cmpFrom.valueOf()) || Number.isNaN(cmpTo.valueOf())) {
       throw new BadRequestException('Invalid compare date range');
     }
-    if (curFrom.getTime() > curTo.getTime()) {
-      throw new BadRequestException('currentFrom must be before or equal to currentTo');
+    if (curFrom.getTime() >= curTo.getTime()) {
+      throw new BadRequestException('currentFrom must be before currentTo (half-open range [from, to))');
     }
-    if (cmpFrom.getTime() > cmpTo.getTime()) {
-      throw new BadRequestException('compareFrom must be before or equal to compareTo');
+    if (cmpFrom.getTime() >= cmpTo.getTime()) {
+      throw new BadRequestException('compareFrom must be before compareTo (half-open range [from, to))');
+    }
+    if (this.utcHalfOpenRangeDayCount(curFrom, curTo) > PaymentsV2Service.OPS_PAYMENTS_SUMMARY_MAX_DAYS) {
+      throw new BadRequestException(
+        `Current range exceeds ${PaymentsV2Service.OPS_PAYMENTS_SUMMARY_MAX_DAYS} days (UTC)`,
+      );
+    }
+    if (this.utcHalfOpenRangeDayCount(cmpFrom, cmpTo) > PaymentsV2Service.OPS_PAYMENTS_SUMMARY_MAX_DAYS) {
+      throw new BadRequestException(
+        `Compare range exceeds ${PaymentsV2Service.OPS_PAYMENTS_SUMMARY_MAX_DAYS} days (UTC)`,
+      );
     }
 
     const currency = query.currency?.trim().toUpperCase();
@@ -1591,7 +1609,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
         FROM "Payment" p
         LEFT JOIN "PaymentFeeQuote" fq ON fq.payment_id = p.id
         WHERE p.created_at >= ${from}
-          AND p.created_at <= ${to}
+          AND p.created_at < ${to}
           ${merchantSql}
           ${providerSql}
           ${currencySql}
@@ -1612,6 +1630,156 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     ]);
 
     return {
+      currency: currency ?? null,
+      current,
+      compare,
+    };
+  }
+
+  /** Límite de días calendario UTC por ventana half-open para `getOpsPaymentsSummary` y `getOpsPaymentsSummaryDaily`. */
+  private static readonly OPS_PAYMENTS_SUMMARY_MAX_DAYS = 124;
+
+  /** Días UTC cubiertos por `[from, toExclusive)` cuando ambos límites son instantes ISO (p. ej. medianoche UTC). */
+  private utcHalfOpenRangeDayCount(from: Date, toExclusive: Date): number {
+    const spanMs = toExclusive.getTime() - from.getTime();
+    if (spanMs <= 0) return 0;
+    return Math.floor(spanMs / 86_400_000);
+  }
+
+  /** Etiquetas YYYY-MM-DD (UTC) para cada día calendario en `[from, toExclusive)`. */
+  private utcDayYmdListHalfOpen(from: Date, toExclusive: Date): string[] {
+    const out: string[] = [];
+    let t = Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate());
+    const endExclusive = Date.UTC(
+      toExclusive.getUTCFullYear(),
+      toExclusive.getUTCMonth(),
+      toExclusive.getUTCDate(),
+    );
+    while (t < endExclusive) {
+      const d = new Date(t);
+      out.push(
+        `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`,
+      );
+      t += 86_400_000;
+    }
+    return out;
+  }
+
+  private pgDateToUtcYmd(d: unknown): string {
+    if (d instanceof Date) {
+      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+    }
+    if (typeof d === 'string') {
+      return d.slice(0, 10);
+    }
+    return String(d).slice(0, 10);
+  }
+
+  /**
+   * Series diarias (UTC) para gráficos del resumen: mismas ventanas half-open y filtros que `getOpsPaymentsSummary`.
+   * Máximo ~124 días por ventana.
+   */
+  async getOpsPaymentsSummaryDaily(query: OpsPaymentsSummaryQueryDto) {
+    const curFrom = new Date(query.currentFrom);
+    const curTo = new Date(query.currentTo);
+    const cmpFrom = new Date(query.compareFrom);
+    const cmpTo = new Date(query.compareTo);
+    if (Number.isNaN(curFrom.valueOf()) || Number.isNaN(curTo.valueOf())) {
+      throw new BadRequestException('Invalid current date range');
+    }
+    if (Number.isNaN(cmpFrom.valueOf()) || Number.isNaN(cmpTo.valueOf())) {
+      throw new BadRequestException('Invalid compare date range');
+    }
+    if (curFrom.getTime() >= curTo.getTime()) {
+      throw new BadRequestException('currentFrom must be before currentTo (half-open range [from, to))');
+    }
+    if (cmpFrom.getTime() >= cmpTo.getTime()) {
+      throw new BadRequestException('compareFrom must be before compareTo (half-open range [from, to))');
+    }
+    if (this.utcHalfOpenRangeDayCount(curFrom, curTo) > PaymentsV2Service.OPS_PAYMENTS_SUMMARY_MAX_DAYS) {
+      throw new BadRequestException(
+        `Current range exceeds ${PaymentsV2Service.OPS_PAYMENTS_SUMMARY_MAX_DAYS} days (UTC)`,
+      );
+    }
+    if (this.utcHalfOpenRangeDayCount(cmpFrom, cmpTo) > PaymentsV2Service.OPS_PAYMENTS_SUMMARY_MAX_DAYS) {
+      throw new BadRequestException(
+        `Compare range exceeds ${PaymentsV2Service.OPS_PAYMENTS_SUMMARY_MAX_DAYS} days (UTC)`,
+      );
+    }
+
+    const currency = query.currency?.trim().toUpperCase();
+    const merchantSql =
+      query.merchantId && query.merchantId.trim() !== ''
+        ? Prisma.sql`AND p.merchant_id = ${query.merchantId.trim()}`
+        : Prisma.empty;
+    const providerSql = query.provider
+      ? Prisma.sql`AND p.selected_provider = ${query.provider}`
+      : Prisma.empty;
+    const currencySql = currency ? Prisma.sql`AND p.currency = ${currency}` : Prisma.empty;
+
+    const dailyForWindow = async (from: Date, toExclusive: Date) => {
+      const labels = this.utcDayYmdListHalfOpen(from, toExclusive);
+      const rows = await this.prisma.$queryRaw<
+        Array<{
+          d: Date;
+          pay: bigint;
+          gross: bigint;
+          net: bigint;
+          errs: bigint;
+        }>
+      >(
+        Prisma.sql`
+        SELECT
+          (DATE_TRUNC('day', p.created_at AT TIME ZONE 'UTC'))::date AS d,
+          COUNT(*)::bigint AS pay,
+          COALESCE(SUM(p.amount_minor::bigint), 0::bigint) AS gross,
+          COALESCE(SUM(COALESCE(fq.net_minor::bigint, p.amount_minor::bigint)), 0::bigint) AS net,
+          COALESCE(
+            SUM(
+              CASE
+                WHEN p.status IN (${PAYMENT_V2_STATUS.FAILED}, ${PAYMENT_V2_STATUS.CANCELED}) THEN 1
+                ELSE 0
+              END
+            )::bigint,
+            0::bigint
+          ) AS errs
+        FROM "Payment" p
+        LEFT JOIN "PaymentFeeQuote" fq ON fq.payment_id = p.id
+        WHERE p.created_at >= ${from}
+          AND p.created_at < ${toExclusive}
+          ${merchantSql}
+          ${providerSql}
+          ${currencySql}
+        GROUP BY 1
+        ORDER BY 1
+        `,
+      );
+      const map = new Map<string, { pay: bigint; gross: bigint; net: bigint; errs: bigint }>();
+      for (const row of rows) {
+        const key = this.pgDateToUtcYmd(row.d);
+        map.set(key, { pay: row.pay, gross: row.gross, net: row.net, errs: row.errs });
+      }
+      const paymentsTotal: string[] = [];
+      const grossVolumeMinor: string[] = [];
+      const netVolumeMinor: string[] = [];
+      const paymentErrorsTotal: string[] = [];
+      for (const lab of labels) {
+        const v = map.get(lab);
+        paymentsTotal.push((v?.pay ?? 0n).toString());
+        grossVolumeMinor.push((v?.gross ?? 0n).toString());
+        netVolumeMinor.push((v?.net ?? 0n).toString());
+        paymentErrorsTotal.push((v?.errs ?? 0n).toString());
+      }
+      return { labels, paymentsTotal, grossVolumeMinor, netVolumeMinor, paymentErrorsTotal };
+    };
+
+    const [current, compare] = await Promise.all([
+      dailyForWindow(curFrom, curTo),
+      dailyForWindow(cmpFrom, cmpTo),
+    ]);
+
+    return {
+      granularity: 'daily' as const,
       currency: currency ?? null,
       current,
       compare,
@@ -3075,15 +3243,47 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     paymentLinkId: string | undefined,
     amountMinor: number,
     currency: string,
-  ) {
-    if (!paymentLinkId) return;
-    const link = await this.links.findForMerchant(merchantId, paymentLinkId, { requireUsable: true });
+  ): Promise<boolean> {
+    if (!paymentLinkId) return false;
+
+    // Fusiona validación de link + lectura fresca de merchant para evitar round-trip adicional.
+    const started = Date.now();
+    const link = await this.prisma.paymentLink.findFirst({
+      where: { id: paymentLinkId, merchantId },
+      select: {
+        amountMinor: true,
+        currency: true,
+        status: true,
+        expiresAt: true,
+        merchant: { select: { isActive: true } },
+      },
+    });
+    const latencyMs = Date.now() - started;
     if (!link) {
       throw new BadRequestException('Payment link not found');
+    }
+    if (link.status !== 'active') {
+      throw new BadRequestException('Payment link is not active');
+    }
+    if (link.expiresAt && link.expiresAt <= new Date()) {
+      throw new BadRequestException('Payment link has expired');
     }
     if (link.amountMinor !== amountMinor || link.currency !== currency.toUpperCase()) {
       throw new BadRequestException('Amount/currency must match payment link');
     }
+
+    const isActive = Boolean(link.merchant?.isActive);
+    this.recordMerchantIsActiveFreshObservation({
+      merchantId,
+      isActive,
+      latencyMs,
+      source: 'payment_link_join',
+    });
+    if (!isActive) {
+      throw new ForbiddenException('Merchant account is inactive or missing');
+    }
+
+    return true;
   }
 
   /**
@@ -3137,28 +3337,44 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     });
     const latencyMs = Date.now() - started;
     const isActive = Boolean(merchant?.isActive);
-    this.observability.recordMerchantIsActiveFreshAssertion({ latencyMs, passed: isActive });
-    this.setMerchantIsActiveInCache(merchantId, isActive);
-    this.log.debug(
-      this.correlationLogJson({
-        event: 'payments_v2.merchant_is_active_fresh',
-        merchantId,
-        latencyMs,
-        passed: isActive,
-      }),
-    );
-    if (latencyMs >= PaymentsV2Service.MERCHANT_IS_ACTIVE_FRESH_SLOW_MS) {
-      this.log.warn(
+    this.recordMerchantIsActiveFreshObservation({ merchantId, isActive, latencyMs, source: 'merchant' });
+    if (!isActive) {
+      throw new ForbiddenException('Merchant account is inactive or missing');
+    }
+  }
+
+  private recordMerchantIsActiveFreshObservation(params: {
+    merchantId: string;
+    isActive: boolean;
+    latencyMs: number;
+    source: 'merchant' | 'payment_link_join';
+  }): void {
+    this.observability.recordMerchantIsActiveFreshAssertion({
+      latencyMs: params.latencyMs,
+      passed: params.isActive,
+    });
+    this.setMerchantIsActiveInCache(params.merchantId, params.isActive);
+    if (!params.isActive) {
+      this.log.debug(
         this.correlationLogJson({
-          event: 'payments_v2.merchant_is_active_fresh_slow',
-          merchantId,
-          latencyMs,
-          thresholdMs: PaymentsV2Service.MERCHANT_IS_ACTIVE_FRESH_SLOW_MS,
+          event: 'payments_v2.merchant_is_active_fresh',
+          merchantId: params.merchantId,
+          latencyMs: params.latencyMs,
+          passed: false,
+          source: params.source,
         }),
       );
     }
-    if (!isActive) {
-      throw new ForbiddenException('Merchant account is inactive or missing');
+    if (params.latencyMs >= PaymentsV2Service.MERCHANT_IS_ACTIVE_FRESH_SLOW_MS) {
+      this.log.warn(
+        this.correlationLogJson({
+          event: 'payments_v2.merchant_is_active_fresh_slow',
+          merchantId: params.merchantId,
+          latencyMs: params.latencyMs,
+          thresholdMs: PaymentsV2Service.MERCHANT_IS_ACTIVE_FRESH_SLOW_MS,
+          source: params.source,
+        }),
+      );
     }
   }
 

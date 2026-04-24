@@ -1,6 +1,12 @@
 /** Modo de ventana de comparación respecto al intervalo principal (días UTC). */
 export type SummaryComparatorMode = "previous_period" | "previous_month" | "previous_year" | "custom";
 
+/**
+ * Días máximos por ventana (inclusive, calendario UTC), alineado con
+ * `PaymentsV2Service.OPS_PAYMENTS_SUMMARY_MAX_DAYS` en `psp-api` (summary / summary-daily).
+ */
+export const OPS_PAYMENTS_SUMMARY_MAX_DAYS_UTC = 124;
+
 function parseYmd(ymd: string): { y: number; m0: number; d: number } | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd.trim());
   if (!m) return null;
@@ -15,20 +21,29 @@ function utcDayStartMs(y: number, m0: number, d: number): number {
   return Date.UTC(y, m0, d, 0, 0, 0, 0);
 }
 
-function utcDayEndMs(y: number, m0: number, d: number): number {
-  return Date.UTC(y, m0, d, 23, 59, 59, 999);
+/** Inicio del día UTC siguiente al YMD dado (`d+1` normaliza mes/año en Date.UTC). */
+function utcNextDayStartMs(y: number, m0: number, d: number): number {
+  return Date.UTC(y, m0, d + 1, 0, 0, 0, 0);
 }
 
-/** Convierte rango inclusive YYYY-MM-DD (UTC) a ISO para la API (`created_at` gte/lte). */
+/**
+ * Convierte rango calendario YYYY-MM-DD (UTC) a ISO para la API: ventana half-open `[fromIso, toIso)`.
+ * `toIso` es 00:00:00.000Z del día siguiente al último día inclusive del rango.
+ */
 export function utcYmdRangeToIsoRange(fromYmd: string, toYmd: string): { fromIso: string; toIso: string } {
   const a = parseYmd(fromYmd);
   const b = parseYmd(toYmd);
   if (!a || !b) {
     throw new Error("Invalid YYYY-MM-DD range");
   }
+  const fromMs = utcDayStartMs(a.y, a.m0, a.d);
+  const toExclusiveMs = utcNextDayStartMs(b.y, b.m0, b.d);
+  if (fromMs >= toExclusiveMs) {
+    throw new Error("Invalid YYYY-MM-DD range: from must be <= to");
+  }
   return {
-    fromIso: new Date(utcDayStartMs(a.y, a.m0, a.d)).toISOString(),
-    toIso: new Date(utcDayEndMs(b.y, b.m0, b.d)).toISOString(),
+    fromIso: new Date(fromMs).toISOString(),
+    toIso: new Date(toExclusiveMs).toISOString(),
   };
 }
 
@@ -81,13 +96,32 @@ export function computeCompareYmdRange(
   const b = parseYmd(currentToYmd);
   if (!a || !b) throw new Error("Invalid current range");
   const fromMs = utcDayStartMs(a.y, a.m0, a.d);
-  const toMs = utcDayEndMs(b.y, b.m0, b.d);
-  const duration = toMs - fromMs;
-  const compareToMs = fromMs - 1;
-  const compareFromMs = compareToMs - duration;
-  const cFrom = new Date(compareFromMs);
-  const cTo = new Date(compareToMs);
+  const curExclusiveEndMs = utcNextDayStartMs(b.y, b.m0, b.d);
+  const duration = curExclusiveEndMs - fromMs;
+  const compareExclusiveEndMs = fromMs;
+  const compareStartMs = compareExclusiveEndMs - duration;
+  const cFrom = new Date(compareStartMs);
+  const cTo = new Date(compareExclusiveEndMs - 1);
   const fromYmd = `${cFrom.getUTCFullYear()}-${String(cFrom.getUTCMonth() + 1).padStart(2, "0")}-${String(cFrom.getUTCDate()).padStart(2, "0")}`;
   const toYmd = `${cTo.getUTCFullYear()}-${String(cTo.getUTCMonth() + 1).padStart(2, "0")}-${String(cTo.getUTCDate()).padStart(2, "0")}`;
   return { fromYmd, toYmd };
+}
+
+/** Días calendario UTC entre dos YYYY-MM-DD (inclusive). Devuelve `null` si el formato o el orden es inválido. */
+export function utcInclusiveDayCountYmd(fromYmd: string, toYmd: string): number | null {
+  const a = parseYmd(fromYmd);
+  const b = parseYmd(toYmd);
+  if (!a || !b) return null;
+  const start = Date.UTC(a.y, a.m0, a.d);
+  const end = Date.UTC(b.y, b.m0, b.d);
+  if (start > end) return null;
+  return Math.floor((end - start) / 86_400_000) + 1;
+}
+
+/** Suma `deltaDays` al día UTC de `ymd` (YYYY-MM-DD). */
+export function addUtcCalendarDaysYmd(ymd: string, deltaDays: number): string | null {
+  const p = parseYmd(ymd);
+  if (!p) return null;
+  const t = new Date(Date.UTC(p.y, p.m0, p.d + deltaDays));
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, "0")}-${String(t.getUTCDate()).padStart(2, "0")}`;
 }
