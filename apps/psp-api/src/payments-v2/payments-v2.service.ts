@@ -1624,10 +1624,19 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       };
     };
 
-    const [current, compare] = await Promise.all([
-      aggregateWindow(curFrom, curTo),
-      aggregateWindow(cmpFrom, cmpTo),
-    ]);
+    const sameWindow =
+      curFrom.getTime() === cmpFrom.getTime() && curTo.getTime() === cmpTo.getTime();
+    let current: Awaited<ReturnType<typeof aggregateWindow>>;
+    let compare: Awaited<ReturnType<typeof aggregateWindow>>;
+    if (sameWindow) {
+      current = await aggregateWindow(curFrom, curTo);
+      compare = current;
+    } else {
+      [current, compare] = await Promise.all([
+        aggregateWindow(curFrom, curTo),
+        aggregateWindow(cmpFrom, cmpTo),
+      ]);
+    }
 
     return {
       currency: currency ?? null,
@@ -1661,6 +1670,22 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     const b = this.utcHalfOpenRangeCalendarDayBounds(from, toExclusive);
     if (!b) return 0;
     return Math.floor((b.lastDayStartMs - b.firstDayStartMs) / 86_400_000) + 1;
+  }
+
+  /**
+   * true si `[from, toExclusive)` es exactamente un día calendario UTC completo `[00:00Z, 00:00Z+1d)`:
+   * `from` en medianoche UTC y `toExclusive.getTime() - from.getTime() === 86_400_000`.
+   */
+  private isUtcHalfOpenSingleFullCalendarDay(from: Date, toExclusive: Date): boolean {
+    if (
+      from.getUTCHours() !== 0 ||
+      from.getUTCMinutes() !== 0 ||
+      from.getUTCSeconds() !== 0 ||
+      from.getUTCMilliseconds() !== 0
+    ) {
+      return false;
+    }
+    return toExclusive.getTime() - from.getTime() === 86_400_000;
   }
 
   /** Etiquetas YYYY-MM-DD (UTC): un punto por día calendario que cae en `[from, toExclusive)`. */
@@ -1785,10 +1810,19 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       return { labels, paymentsTotal, grossVolumeMinor, netVolumeMinor, paymentErrorsTotal };
     };
 
-    const [current, compare] = await Promise.all([
-      dailyForWindow(curFrom, curTo),
-      dailyForWindow(cmpFrom, cmpTo),
-    ]);
+    const sameWindow =
+      curFrom.getTime() === cmpFrom.getTime() && curTo.getTime() === cmpTo.getTime();
+    let current: Awaited<ReturnType<typeof dailyForWindow>>;
+    let compare: Awaited<ReturnType<typeof dailyForWindow>>;
+    if (sameWindow) {
+      current = await dailyForWindow(curFrom, curTo);
+      compare = current;
+    } else {
+      [current, compare] = await Promise.all([
+        dailyForWindow(curFrom, curTo),
+        dailyForWindow(cmpFrom, cmpTo),
+      ]);
+    }
 
     return {
       granularity: 'daily' as const,
@@ -1819,14 +1853,14 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     if (cmpFrom.getTime() >= cmpTo.getTime()) {
       throw new BadRequestException('compareFrom must be before compareTo (half-open range [from, to))');
     }
-    if (this.utcHalfOpenRangeDayCount(curFrom, curTo) !== 1) {
+    if (!this.isUtcHalfOpenSingleFullCalendarDay(curFrom, curTo)) {
       throw new BadRequestException(
-        'Hourly summary requires the current range to span exactly one UTC calendar day',
+        'Hourly summary requires currentFrom at 00:00:00.000Z and currentTo exactly 24h later (one full UTC calendar day [from, to))',
       );
     }
-    if (this.utcHalfOpenRangeDayCount(cmpFrom, cmpTo) !== 1) {
+    if (!this.isUtcHalfOpenSingleFullCalendarDay(cmpFrom, cmpTo)) {
       throw new BadRequestException(
-        'Hourly summary requires the compare range to span exactly one UTC calendar day',
+        'Hourly summary requires compareFrom at 00:00:00.000Z and compareTo exactly 24h later (one full UTC calendar day [from, to))',
       );
     }
 
@@ -1897,10 +1931,19 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       return { labels, paymentsTotal, grossVolumeMinor, netVolumeMinor, paymentErrorsTotal };
     };
 
-    const [current, compare] = await Promise.all([
-      hourlyForWindow(curFrom, curTo),
-      hourlyForWindow(cmpFrom, cmpTo),
-    ]);
+    const sameWindow =
+      curFrom.getTime() === cmpFrom.getTime() && curTo.getTime() === cmpTo.getTime();
+    let current: Awaited<ReturnType<typeof hourlyForWindow>>;
+    let compare: Awaited<ReturnType<typeof hourlyForWindow>>;
+    if (sameWindow) {
+      current = await hourlyForWindow(curFrom, curTo);
+      compare = current;
+    } else {
+      [current, compare] = await Promise.all([
+        hourlyForWindow(curFrom, curTo),
+        hourlyForWindow(cmpFrom, cmpTo),
+      ]);
+    }
 
     return {
       granularity: 'hourly' as const,

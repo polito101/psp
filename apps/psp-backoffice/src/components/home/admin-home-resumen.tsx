@@ -1,15 +1,15 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { ChevronDown, CirclePlus } from "lucide-react";
 import type { OpsPaymentsSummaryChartResponse } from "@/lib/api/contracts";
 import { fetchOpsPaymentsSummaryDaily, fetchOpsPaymentsSummaryHourly } from "@/lib/api/client";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatAmountMinor } from "@/lib/ops-transaction-display";
+import { amountMinorToBigInt, formatAmountMinor } from "@/lib/ops-transaction-display";
 import { cn } from "@/lib/utils";
-import { ResumenHourlyLineChart } from "./resumen-hourly-line-chart";
+import { OpsCumulativeHourlyChart } from "./ops-cumulative-hourly-chart";
 import {
   addUtcCalendarDaysYmd,
   computeCompareYmdRange,
@@ -85,28 +85,6 @@ function formatYmdRangeLabel(fromYmd: string, toYmd: string): string {
   return `${fmt.format(ymdToUtcDate(fromYmd))} → ${fmt.format(ymdToUtcDate(toYmd))}`;
 }
 
-function stringsToNumsForChart(arr: string[]): number[] {
-  return arr.map((s) => {
-    const b = parseBig(s);
-    if (b > BigInt(Number.MAX_SAFE_INTEGER)) return Number.MAX_SAFE_INTEGER;
-    if (b < BigInt(Number.MIN_SAFE_INTEGER)) return Number.MIN_SAFE_INTEGER;
-    return Number(b);
-  });
-}
-
-function shortUtcLabel(ymd: string): string {
-  return new Intl.DateTimeFormat("es-ES", {
-    timeZone: "UTC",
-    day: "numeric",
-    month: "short",
-  }).format(ymdToUtcDate(ymd));
-}
-
-function alignSeriesPair(a: string[], b: string[]): { a: string[]; b: string[] } {
-  const n = Math.min(a.length, b.length);
-  return { a: a.slice(0, n), b: b.slice(0, n) };
-}
-
 function formatRelativeUpdated(updatedAt: number): string {
   const sec = Math.round((Date.now() - updatedAt) / 1000);
   if (sec < 10) return "hace un momento";
@@ -119,156 +97,60 @@ function formatRelativeUpdated(updatedAt: number): string {
   return `hace ${d} d`;
 }
 
-function SummarySparkline(props: {
-  current: string[];
-  compare: string[];
-  labels: string[];
-  showCompare?: boolean;
-  /** `hour`: 24 buckets, mismo layout que el gráfico de volumen (acumulado + rejilla). */
-  xAxisMode?: "day" | "hour";
-  utcHourDayCurrent?: string;
-  emptyLabel?: string;
-}) {
-  const showCompare = props.showCompare ?? true;
-  const isHour = props.xAxisMode === "hour";
-  const CHART_W = 400;
-  const CHART_H = 120;
-  const PAD = { t: 10, r: 10, b: 12, l: 10 };
-  const emptyMinH = 120;
-
-  const { a: c0, b: p0 } = alignSeriesPair(props.current, props.compare);
-  const cur = stringsToNumsForChart(c0);
-  const cmp = stringsToNumsForChart(p0);
-  if (isHour && c0.length === 24 && props.utcHourDayCurrent) {
-    return (
-      <ResumenHourlyLineChart
-        incrementalCurrent={c0}
-        incrementalCompare={p0}
-        showCompare={showCompare}
-        utcYmdCurrent={props.utcHourDayCurrent}
-      />
-    );
+/** Acumulado horario UTC (corte a hora actual si `dayYmd` es hoy). */
+function incrementalToCumulativeToday(
+  incr: string[],
+  dayYmd: string,
+): { series: (bigint | null)[]; parseInvalid: boolean } {
+  const isToday = dayYmd === utcTodayYmd();
+  const hNow = new Date().getUTCHours();
+  let s = 0n;
+  let parseInvalid = false;
+  const out: (bigint | null)[] = [];
+  for (let i = 0; i < 24; i++) {
+    const raw = incr[i] ?? "0";
+    const step = amountMinorToBigInt(raw);
+    if (step == null) {
+      parseInvalid = true;
+      out.push(null);
+      continue;
+    }
+    s += step;
+    if (isToday && i > hNow) out.push(null);
+    else out.push(s);
   }
-  if (cur.length === 0) {
-    return (
-      <div
-        className="flex items-center justify-center rounded-md border border-dashed border-slate-200 bg-slate-50 text-sm text-slate-500"
-        style={{ minHeight: emptyMinH }}
-        role="img"
-        aria-label={props.emptyLabel ?? "Sin datos"}
-      >
-        {props.emptyLabel ?? "No hay datos"}
-      </div>
-    );
+  return { series: out, parseInvalid };
+}
+
+function incrementalToCumulativeCompare(incr: string[]): {
+  series: (bigint | null)[];
+  parseInvalid: boolean;
+} {
+  let s = 0n;
+  let parseInvalid = false;
+  const out: (bigint | null)[] = [];
+  for (let i = 0; i < 24; i++) {
+    const raw = incr[i] ?? "0";
+    const step = amountMinorToBigInt(raw);
+    if (step == null) {
+      parseInvalid = true;
+      out.push(null);
+      continue;
+    }
+    s += step;
+    out.push(s);
   }
-  const all = showCompare ? [...cur, ...cmp] : [...cur];
-  const hasAny = all.some((v) => v !== 0);
-  if (!hasAny && cur.length > 0) {
-    return (
-      <div
-        className="flex items-center justify-center rounded-md border border-dashed border-slate-200 bg-slate-50 text-sm text-slate-500"
-        style={{ minHeight: emptyMinH }}
-        role="img"
-        aria-label={props.emptyLabel ?? "Sin datos en el intervalo"}
-      >
-        {props.emptyLabel ?? "No hay datos"}
-      </div>
-    );
-  }
-  const minV = Math.min(...all, 0);
-  const maxV = Math.max(...all, 0);
-  const span = maxV - minV || 1;
-  const innerW = CHART_W - PAD.l - PAD.r;
-  const innerH = CHART_H - PAD.t - PAD.b;
-  const toPts = (values: number[]) =>
-    values
-      .map((v, i) => {
-        const x =
-          values.length === 1 ? PAD.l + innerW / 2 : PAD.l + (i / (values.length - 1)) * innerW;
-        const y = PAD.t + innerH - ((v - minV) / span) * innerH;
-        return `${x},${y}`;
-      })
-      .join(" ");
-
-  const dCur = toPts(cur);
-  const dCmp = showCompare ? toPts(cmp) : "";
-
-  const yAt = (v: number) => PAD.t + innerH - ((v - minV) / span) * innerH;
-  const xMid = PAD.l + innerW / 2;
-
-  const ariaSeries = isHour ? "Serie horaria UTC" : "Serie diaria";
-
-  if (cur.length === 1 && hasAny) {
-    return (
-      <svg
-        viewBox={`0 0 ${CHART_W} ${CHART_H}`}
-        className="h-auto w-full max-w-full text-slate-400"
-        role="img"
-        aria-label={showCompare ? `${ariaSeries}: actual y comparación` : ariaSeries}
-      >
-        <rect width={CHART_W} height={CHART_H} fill="white" rx={8} stroke="#e2e8f0" strokeWidth={1} />
-        {showCompare && cmp.length >= 1 ? (
-          <circle
-            cx={xMid}
-            cy={yAt(cmp[0]!)}
-            r={4}
-            fill="white"
-            stroke="#94a3b8"
-            strokeWidth={2}
-            strokeDasharray="3 2"
-          />
-        ) : null}
-        <circle cx={xMid} cy={yAt(cur[0]!)} r={5} fill="var(--primary)" />
-      </svg>
-    );
-  }
-
-  return (
-    <svg
-      viewBox={`0 0 ${CHART_W} ${CHART_H}`}
-      className="h-auto w-full max-w-full text-slate-400"
-      role="img"
-      aria-label={showCompare ? `${ariaSeries}: periodo actual y comparación` : ariaSeries}
-    >
-      <rect width={CHART_W} height={CHART_H} fill="white" rx={8} stroke="#e2e8f0" strokeWidth={1} />
-      {showCompare && dCmp ? (
-        <polyline
-          fill="none"
-          stroke="#94a3b8"
-          strokeWidth={2}
-          strokeLinejoin="round"
-          strokeLinecap="round"
-          strokeDasharray="5 4"
-          points={dCmp}
-        />
-      ) : null}
-      {dCur ? (
-        <polyline
-          fill="none"
-          stroke="var(--primary)"
-          strokeWidth={2.5}
-          strokeLinejoin="round"
-          strokeLinecap="round"
-          points={dCur}
-        />
-      ) : null}
-    </svg>
-  );
+  return { series: out, parseInvalid };
 }
 
 function GraphMetricCard(props: {
   title: string;
   kpiDisplay: string;
-  currentSeries: string[];
-  compareSeries: string[];
-  dayLabels: string[];
   showCompare: boolean;
-  xAxisMode?: "day" | "hour";
-  utcHourDayCurrent?: string;
   compareTotalDisplay: string;
   deltaPct: number | null;
   invertDelta?: boolean;
-  emptyHint?: string;
+  chart?: ReactNode;
 }) {
   const pct = props.deltaPct;
   const pctText = formatDeltaPct(pct);
@@ -287,7 +169,7 @@ function GraphMetricCard(props: {
           : "text-slate-600";
 
   return (
-    <Card className="overflow-hidden shadow-sm">
+    <Card className="min-w-0 overflow-hidden shadow-sm">
       <CardHeader className="space-y-1.5 pb-3 pt-5">
         <CardDescription className="text-xs font-medium uppercase tracking-wide text-slate-500">
           {props.title}
@@ -296,16 +178,8 @@ function GraphMetricCard(props: {
           {props.kpiDisplay}
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-3 px-6 pb-5 pt-0">
-        <SummarySparkline
-          current={props.currentSeries}
-          compare={props.compareSeries}
-          labels={props.dayLabels}
-          showCompare={props.showCompare}
-          xAxisMode={props.xAxisMode}
-          utcHourDayCurrent={props.utcHourDayCurrent}
-          emptyLabel={props.emptyHint}
-        />
+      <CardContent className="min-w-0 space-y-3 px-4 sm:px-6 pb-5 pt-0">
+        {props.chart ? <div className="min-w-0">{props.chart}</div> : null}
         {props.showCompare ? (
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2 text-xs text-slate-500">
             <span className={pctClass}>vs comparación: {pctText}</span>
@@ -451,7 +325,7 @@ export function AdminHomeResumen() {
 
   const cur = chartQuery.data?.current;
   const cmp = chartQuery.data?.compare;
-  const chartXAxisMode = chartQuery.data?.granularity === "hourly" ? "hour" : "day";
+  const isHourlyChart = chartQuery.data?.granularity === "hourly";
 
   const paymentsTotalCur = cur ? sumSeriesStrings(cur.paymentsTotal) : null;
   const paymentsTotalCmp = cmp ? sumSeriesStrings(cmp.paymentsTotal) : null;
@@ -464,6 +338,8 @@ export function AdminHomeResumen() {
 
   const updatedLabel =
     chartQuery.dataUpdatedAt > 0 ? formatRelativeUpdated(chartQuery.dataUpdatedAt) : "—";
+
+  const compareSingleYmd = compareYmd.fromYmd;
 
   return (
     <section className="space-y-5">
@@ -602,63 +478,91 @@ export function AdminHomeResumen() {
           <p className="text-xs text-slate-500">
             Última actualización: <span className="font-medium text-slate-700">{updatedLabel}</span>
           </p>
-          <div className="grid items-stretch gap-5 sm:grid-cols-2 xl:grid-cols-3">
+          {!isHourlyChart ? (
+            <p className="text-xs text-slate-500">
+              El gráfico horario (mismo estilo que el volumen en el panel principal) está disponible con el intervalo
+              «Hoy» y comparación en un solo día UTC, o sin comparación.
+            </p>
+          ) : null}
+          <div className="grid min-w-0 grid-cols-1 items-stretch gap-5 sm:grid-cols-2 xl:grid-cols-3">
             {(() => {
               const n = Math.min(cur.paymentsTotal.length, cmp.paymentsTotal.length, cur.labels.length);
-              const dayLabels = cur.labels.slice(0, n);
               const take = (arr: string[]) => arr.slice(0, n);
+
+              const payCur = take(cur.paymentsTotal);
+              const payCmp = take(cmp.paymentsTotal);
+              const grossCurS = take(cur.grossVolumeMinor);
+              const grossCmpS = take(cmp.grossVolumeMinor);
+              const netCurS = take(cur.netVolumeMinor);
+              const netCmpS = take(cmp.netVolumeMinor);
+              const errCurS = take(cur.paymentErrorsTotal);
+              const errCmpS = take(cmp.paymentErrorsTotal);
+
+              const payToday = incrementalToCumulativeToday(payCur, currentFromYmd);
+              const payCompare = incrementalToCumulativeCompare(payCmp);
+              const grossToday = incrementalToCumulativeToday(grossCurS, currentFromYmd);
+              const grossCompare = incrementalToCumulativeCompare(grossCmpS);
+              const netToday = incrementalToCumulativeToday(netCurS, currentFromYmd);
+              const netCompare = incrementalToCumulativeCompare(netCmpS);
+              const errToday = incrementalToCumulativeToday(errCurS, currentFromYmd);
+              const errCompare = incrementalToCumulativeCompare(errCmpS);
+
+              const currency = chartQuery.data?.currency ?? SUMMARY_CURRENCY;
+
+              const mkChart = (
+                today: { series: (bigint | null)[]; parseInvalid: boolean },
+                compare: { series: (bigint | null)[]; parseInvalid: boolean },
+                valueUnit: "count" | "currency_minor",
+                metricLabel: string,
+              ) =>
+                isHourlyChart && n >= 24 ? (
+                  <OpsCumulativeHourlyChart
+                    todayCumulative={today.series}
+                    compareCumulative={compare.series}
+                    valueUnit={valueUnit}
+                    currency={currency}
+                    metricLabel={metricLabel}
+                    todayUtcYmd={currentFromYmd}
+                    compareUtcYmd={compareSingleYmd}
+                    showCompare={compareEnabled}
+                    seriesParseInvalid={today.parseInvalid || compare.parseInvalid}
+                  />
+                ) : undefined;
+
               return (
                 <>
                   <GraphMetricCard
                     title="Payments"
                     kpiDisplay={formatBigIntCount(paymentsTotalCur ?? 0n)}
-                    currentSeries={take(cur.paymentsTotal)}
-                    compareSeries={take(cmp.paymentsTotal)}
-                    dayLabels={dayLabels}
                     showCompare={compareEnabled}
-                    xAxisMode={chartXAxisMode}
-                    utcHourDayCurrent={currentFromYmd}
                     compareTotalDisplay={formatBigIntCount(paymentsTotalCmp ?? 0n)}
                     deltaPct={deltaPct(paymentsTotalCur ?? 0n, paymentsTotalCmp ?? 0n)}
-                    emptyHint="No hay datos"
+                    chart={mkChart(payToday, payCompare, "count", "Payments")}
                   />
                   <GraphMetricCard
                     title="Volumen bruto"
                     kpiDisplay={formatAmountMinor(grossCur ?? 0n, SUMMARY_CURRENCY)}
-                    currentSeries={take(cur.grossVolumeMinor)}
-                    compareSeries={take(cmp.grossVolumeMinor)}
-                    dayLabels={dayLabels}
                     showCompare={compareEnabled}
-                    xAxisMode={chartXAxisMode}
-                    utcHourDayCurrent={currentFromYmd}
                     compareTotalDisplay={formatAmountMinor(grossCmp ?? 0n, SUMMARY_CURRENCY)}
                     deltaPct={deltaPct(grossCur ?? 0n, grossCmp ?? 0n)}
+                    chart={mkChart(grossToday, grossCompare, "currency_minor", "Volumen bruto")}
                   />
                   <GraphMetricCard
                     title="Volumen neto"
                     kpiDisplay={formatAmountMinor(netCur ?? 0n, SUMMARY_CURRENCY)}
-                    currentSeries={take(cur.netVolumeMinor)}
-                    compareSeries={take(cmp.netVolumeMinor)}
-                    dayLabels={dayLabels}
                     showCompare={compareEnabled}
-                    xAxisMode={chartXAxisMode}
-                    utcHourDayCurrent={currentFromYmd}
                     compareTotalDisplay={formatAmountMinor(netCmp ?? 0n, SUMMARY_CURRENCY)}
                     deltaPct={deltaPct(netCur ?? 0n, netCmp ?? 0n)}
+                    chart={mkChart(netToday, netCompare, "currency_minor", "Volumen neto")}
                   />
                   <GraphMetricCard
                     title="Errores en los pagos"
                     kpiDisplay={formatBigIntCount(errCur ?? 0n)}
-                    currentSeries={take(cur.paymentErrorsTotal)}
-                    compareSeries={take(cmp.paymentErrorsTotal)}
-                    dayLabels={dayLabels}
                     showCompare={compareEnabled}
-                    xAxisMode={chartXAxisMode}
-                    utcHourDayCurrent={currentFromYmd}
                     compareTotalDisplay={formatBigIntCount(errCmp ?? 0n)}
                     deltaPct={deltaPct(errCur ?? 0n, errCmp ?? 0n)}
                     invertDelta
-                    emptyHint="No hay datos"
+                    chart={mkChart(errToday, errCompare, "count", "Errores en los pagos")}
                   />
                 </>
               );
