@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { OpsVolumeHourlyResponse } from "@/lib/api/contracts";
 import { amountMinorToBigInt, formatAmountMinor } from "@/lib/ops-transaction-display";
 import { parseUtcYmdParts } from "./utc-compare-date";
@@ -194,6 +194,7 @@ export function OpsCumulativeHourlyChart({
   className,
 }: OpsCumulativeHourlyChartProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
   const [chartW, setChartW] = useState(OPS_CHART_MIN_W);
 
   useLayoutEffect(() => {
@@ -264,57 +265,99 @@ export function OpsCumulativeHourlyChart({
   const compareParts = parseUtcYmdParts(compareUtcYmd) ?? todayParts;
 
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const [pointerXSvg, setPointerXSvg] = useState<number | null>(null);
   const [tooltipOffset, setTooltipOffset] = useState<{ left: number; top: number } | null>(null);
   const chartInteractRef = useRef<HTMLDivElement>(null);
+  const pointerRafRef = useRef<number | null>(null);
+  const pendingClientXRef = useRef(0);
+  const lastHoverHourRef = useRef<number | null>(null);
+  const lastTooltipOffsetRef = useRef<{ left: number; top: number } | null>(null);
 
   const toHourFromClientX = useCallback(
     (clientX: number): number | null => {
-      const svg = wrapRef.current?.querySelector("[data-chart-svg]") as SVGSVGElement | null;
+      const svg = svgRef.current;
       if (!svg?.viewBox?.baseVal) return null;
       const rect = svg.getBoundingClientRect();
+      if (rect.width <= 0) return null;
       const vb = svg.viewBox.baseVal;
       const xSvg = ((clientX - rect.left) / rect.width) * vb.width;
-      if (xSvg < pad.l || xSvg > chartW - pad.r) return null;
+      if (!Number.isFinite(xSvg) || xSvg < pad.l || xSvg > chartW - pad.r) return null;
+      if (innerW <= 0) return null;
       const t = (xSvg - pad.l) / innerW;
+      if (!Number.isFinite(t)) return null;
       const raw = Math.round(t * 23);
+      if (!Number.isFinite(raw)) return null;
       return Math.max(0, Math.min(23, raw));
     },
     [chartW, innerW, pad.l, pad.r],
   );
 
+  const flushPointerFrame = useCallback(() => {
+    pointerRafRef.current = null;
+    const clientX = pendingClientXRef.current;
+
+    const h = toHourFromClientX(clientX);
+    if (h == null) {
+      if (lastHoverHourRef.current !== null || lastTooltipOffsetRef.current !== null) {
+        lastHoverHourRef.current = null;
+        lastTooltipOffsetRef.current = null;
+        setHoverHour(null);
+        setTooltipOffset(null);
+      }
+      return;
+    }
+
+    const clamped = maxTodayHour >= 0 ? Math.min(h, maxTodayHour) : h;
+    if (lastHoverHourRef.current !== clamped) {
+      lastHoverHourRef.current = clamped;
+      setHoverHour(clamped);
+    }
+
+    const box = chartInteractRef.current?.getBoundingClientRect();
+    if (box) {
+      const x = clientX - box.left;
+      const tipW = 220;
+      const p = 8;
+      const flip = x > box.width * 0.52;
+      const left = flip ? Math.max(p, x - tipW - p) : Math.min(x + p, box.width - tipW - p);
+      const next = { left, top: p };
+      const prev = lastTooltipOffsetRef.current;
+      if (!prev || prev.left !== next.left || prev.top !== next.top) {
+        lastTooltipOffsetRef.current = next;
+        setTooltipOffset(next);
+      }
+    }
+  }, [toHourFromClientX, maxTodayHour]);
+
   const onPointerMove = useCallback(
     (e: React.PointerEvent) => {
-      const h = toHourFromClientX(e.clientX);
-      if (h == null) {
-        setHoverHour(null);
-        setPointerXSvg(null);
-        setTooltipOffset(null);
-        return;
-      }
-      const clamped = maxTodayHour >= 0 ? Math.min(h, maxTodayHour) : h;
-      setHoverHour(clamped);
-      const xSvg = pad.l + (clamped / 23) * innerW;
-      setPointerXSvg(xSvg);
-
-      const box = chartInteractRef.current?.getBoundingClientRect();
-      if (box) {
-        const x = e.clientX - box.left;
-        const tipW = 220;
-        const p = 8;
-        const flip = x > box.width * 0.52;
-        const left = flip ? Math.max(p, x - tipW - p) : Math.min(x + p, box.width - tipW - p);
-        setTooltipOffset({ left, top: p });
-      }
+      pendingClientXRef.current = e.clientX;
+      if (pointerRafRef.current != null) return;
+      pointerRafRef.current = requestAnimationFrame(flushPointerFrame);
     },
-    [toHourFromClientX, maxTodayHour, innerW, pad.l],
+    [flushPointerFrame],
   );
 
   const onPointerLeave = useCallback(() => {
+    if (pointerRafRef.current != null) {
+      cancelAnimationFrame(pointerRafRef.current);
+      pointerRafRef.current = null;
+    }
+    lastHoverHourRef.current = null;
+    lastTooltipOffsetRef.current = null;
     setHoverHour(null);
-    setPointerXSvg(null);
     setTooltipOffset(null);
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (pointerRafRef.current != null) {
+        cancelAnimationFrame(pointerRafRef.current);
+      }
+    };
+  }, []);
+
+  const pointerXSvg =
+    hoverHour != null ? pad.l + (hoverHour / 23) * innerW : null;
 
   const toY = (v: bigint) =>
     pad.t + innerH - (yMax <= 0n ? 0 : bigintRatioToNumber(v, yMax) * innerH);
@@ -347,6 +390,7 @@ export function OpsCumulativeHourlyChart({
 
       <div ref={chartInteractRef} className="relative">
         <svg
+          ref={svgRef}
           data-chart-svg
           viewBox={`0 0 ${chartW} ${chartH}`}
           className="h-auto w-full touch-none select-none text-slate-600"
