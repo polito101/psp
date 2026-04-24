@@ -30,6 +30,11 @@ const RELEASE_PENDING_MAX_BATCHES_PER_PAYOUT = 100;
  * Protege de OOM y de transacciones enormes bajo backlog grande.
  */
 const PAYOUT_MAX_SETTLEMENTS_PER_RUN = 1000;
+/**
+ * Tope defensivo de invocaciones consecutivas a `createPayout` en un solo `approve`
+ * (cada invocación puede ser parcial por límite de filas / int32).
+ */
+export const APPROVE_MAX_CREATE_PAYOUT_ITERATIONS = 50_000;
 /** Batch defensivo para `createMany` / `updateMany` cuando hay muchos ids. */
 const PAYOUT_WRITE_BATCH_SIZE = 500;
 
@@ -178,6 +183,11 @@ export class SettlementService {
     return total;
   }
 
+  /**
+   * Crea un payout agrupando settlements AVAILABLE (una tanda; puede ser parcial si hay mucho volumen).
+   * La finalización de la solicitud (`SettlementRequest` → PAID) la hace `SettlementRequestsService`
+   * tras repetir esta llamada hasta agotar el saldo elegible.
+   */
   async createPayout(params: { merchantId: string; currency: string; now?: Date }) {
     const now = params.now ?? new Date();
 

@@ -160,6 +160,10 @@ export type SettlementRequestRow = {
   requestedNetMinor: number;
   status: SettlementRequestStatus | string;
   payoutId: string | null;
+  /** Suma net minor liquidada en la aprobación (varios payouts si hubo tandas). */
+  paidNetMinor?: number | null;
+  /** false si quedó saldo AVAILABLE tras aprobar. */
+  settledAllAvailable?: boolean;
   notes: string | null;
   requestedByRole: string;
   reviewedNotes: string | null;

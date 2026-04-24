@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { FxProviderClient } from './fx-provider.client';
+import { getIso4217MinorExponent, USD_MINOR_EXPONENT } from './iso4217-minor-exponent';
 
 export type FxConversionResult =
   | { ok: true; usdMinor: number; snapshotId: string; rateDecimal: string }
@@ -122,7 +123,11 @@ export class FxRatesService {
     if (!Number.isFinite(rate) || rate <= 0) {
       return { ok: false, conversionUnavailable: true, reason: 'Invalid rate in snapshot' };
     }
-    const usdMinor = Math.round(params.amountMinor * rate);
+    const baseExp = getIso4217MinorExponent(params.baseCurrency);
+    const usdExp = USD_MINOR_EXPONENT;
+    const baseMajor = params.amountMinor / 10 ** baseExp;
+    const usdMajor = baseMajor * rate;
+    const usdMinor = Math.round(usdMajor * 10 ** usdExp);
     return {
       ok: true,
       usdMinor,

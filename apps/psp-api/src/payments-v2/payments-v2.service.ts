@@ -164,6 +164,15 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   private readonly persistAttemptPayload: boolean;
   private readonly tolerateAttemptPersistFailure: boolean;
   private readonly paymentsV2EnabledMerchantsRaw: string;
+  /** Entradas de `PAYMENTS_V2_ENABLED_MERCHANTS` (trim), parseadas en arranque. */
+  private readonly paymentsV2EnabledMerchantEntries: string[];
+  /**
+   * Caché en memoria (por instancia) `merchantId -> isActive` con TTL corto: reduce carga a BD
+   * sin otro round-trip a Redis; coherencia eventual si `isActive` cambia (poco frecuente).
+   */
+  private readonly merchantActiveCacheTtlMs: number;
+  private readonly merchantIsActiveCache = new Map<string, { value: boolean; expiresAt: number }>();
+  private static readonly MERCHANT_ACTIVE_CACHE_MAX_ENTRIES = 5_000;
 
   constructor(
     private readonly config: ConfigService,
@@ -206,6 +215,17 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     this.tolerateAttemptPersistFailure =
       (this.config.get<string>('PAYMENTS_V2_TOLERATE_ATTEMPT_PERSIST_FAILURE') ?? 'true').toLowerCase() === 'true';
     this.paymentsV2EnabledMerchantsRaw = this.config.get<string>('PAYMENTS_V2_ENABLED_MERCHANTS') ?? '';
+    this.paymentsV2EnabledMerchantEntries = this.paymentsV2EnabledMerchantsRaw
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+    let merchantActiveTtlSec = this.getNumber('PAYMENTS_V2_MERCHANT_ACTIVE_CACHE_TTL_SEC', 60);
+    if (merchantActiveTtlSec < 30) {
+      merchantActiveTtlSec = 30;
+    } else if (merchantActiveTtlSec > 120) {
+      merchantActiveTtlSec = 120;
+    }
+    this.merchantActiveCacheTtlMs = merchantActiveTtlSec * 1000;
 
     const raw = this.config.get<string>('PAYMENTS_V2_OPERATION_LOCK_STALE_MS');
     const parsed = raw === undefined || raw.trim() === '' ? 30_000 : Number(raw);
@@ -310,8 +330,9 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     idempotencyKey?: string | string[],
   ): Promise<OperationResult> {
     idempotencyKey = this.parseOptionalIdempotencyKey(idempotencyKey);
-    await this.assertMerchantEnabled(merchantId);
+    this.assertPaymentsV2ConfigAllowlist(merchantId);
     await this.assertPaymentLinkConsistency(merchantId, dto.paymentLinkId, dto.amountMinor, dto.currency);
+    await this.assertMerchantIsActiveCached(merchantId);
 
     if (idempotencyKey) {
       const existing = await this.resolveIdempotentPayment(merchantId, idempotencyKey, dto);
@@ -2902,24 +2923,66 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     }
   }
 
-  private async assertMerchantEnabled(merchantId: string) {
-    const merchant = await this.prisma.merchant.findUnique({
-      where: { id: merchantId },
-      select: { isActive: true },
-    });
-    if (!merchant?.isActive) {
-      throw new ForbiddenException('Merchant account is inactive or missing');
-    }
-    const entries = this.paymentsV2EnabledMerchantsRaw
-      .split(',')
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0);
+  /**
+   * Comprueba lista CSV y glob `*` (sin I/O): permite fallar sin consultar `Merchant` en
+   * requests con merchant no habilitado para v2.
+   */
+  private assertPaymentsV2ConfigAllowlist(merchantId: string): void {
+    const entries = this.paymentsV2EnabledMerchantEntries;
     if (entries.length === 0) {
       throw new ForbiddenException('Payments v2 is disabled');
     }
     if (!entries.includes('*') && !entries.includes(merchantId)) {
       throw new ForbiddenException('Merchant is not enabled for payments v2');
     }
+  }
+
+  private getMerchantIsActiveFromCache(merchantId: string): boolean | undefined {
+    const e = this.merchantIsActiveCache.get(merchantId);
+    if (e === undefined) return undefined;
+    if (e.expiresAt <= Date.now()) {
+      this.merchantIsActiveCache.delete(merchantId);
+      return undefined;
+    }
+    return e.value;
+  }
+
+  private setMerchantIsActiveInCache(merchantId: string, isActive: boolean) {
+    if (this.merchantIsActiveCache.size >= PaymentsV2Service.MERCHANT_ACTIVE_CACHE_MAX_ENTRIES) {
+      const { value, done } = this.merchantIsActiveCache.keys().next();
+      if (!done && value !== undefined) {
+        this.merchantIsActiveCache.delete(value);
+      }
+    }
+    this.merchantIsActiveCache.set(merchantId, {
+      value: isActive,
+      expiresAt: Date.now() + this.merchantActiveCacheTtlMs,
+    });
+  }
+
+  /**
+   * Lee `Merchant.isActive` con caché en memoria TTL; evita un `findUnique` en cada operación de payments v2.
+   */
+  private async assertMerchantIsActiveCached(merchantId: string) {
+    const cached = this.getMerchantIsActiveFromCache(merchantId);
+    if (cached === true) return;
+    if (cached === false) {
+      throw new ForbiddenException('Merchant account is inactive or missing');
+    }
+    const merchant = await this.prisma.merchant.findUnique({
+      where: { id: merchantId },
+      select: { isActive: true },
+    });
+    const isActive = Boolean(merchant?.isActive);
+    this.setMerchantIsActiveInCache(merchantId, isActive);
+    if (!isActive) {
+      throw new ForbiddenException('Merchant account is inactive or missing');
+    }
+  }
+
+  private async assertMerchantEnabled(merchantId: string) {
+    this.assertPaymentsV2ConfigAllowlist(merchantId);
+    await this.assertMerchantIsActiveCached(merchantId);
   }
 
   private async findMerchantPayment(merchantId: string, paymentId: string): Promise<OperationResult['payment']> {

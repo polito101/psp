@@ -293,6 +293,7 @@ describe('PaymentsV2Service', () => {
   it('rechaza merchant no habilitado para rollout v2', async () => {
     process.env.PAYMENTS_V2_ENABLED_MERCHANTS = 'm_enabled';
     service = buildService();
+    prisma.merchant.findUnique.mockClear();
     await expect(
       service.createIntent(
         'm_other',
@@ -300,6 +301,38 @@ describe('PaymentsV2Service', () => {
         'idem_1',
       ),
     ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.merchant.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('cachea isActive: dos getPayment del mismo merchant solo consultan Merchant una vez', async () => {
+    prisma.merchant.findUnique.mockClear();
+    prisma.paymentAttempt.findMany.mockResolvedValue([]);
+    prisma.payment.findFirst
+      .mockResolvedValueOnce({
+        id: 'p_a',
+        merchantId: 'm_1',
+        status: PAYMENT_V2_STATUS.SUCCEEDED,
+        amountMinor: 1,
+        currency: 'EUR',
+        selectedProvider: 'mock',
+        providerRef: null,
+        statusReason: null,
+        paymentLinkId: null,
+      })
+      .mockResolvedValueOnce({
+        id: 'p_b',
+        merchantId: 'm_1',
+        status: PAYMENT_V2_STATUS.SUCCEEDED,
+        amountMinor: 1,
+        currency: 'EUR',
+        selectedProvider: 'mock',
+        providerRef: null,
+        statusReason: null,
+        paymentLinkId: null,
+      });
+    await service.getPayment('m_1', 'p_a');
+    await service.getPayment('m_1', 'p_b');
+    expect(prisma.merchant.findUnique).toHaveBeenCalledTimes(1);
   });
 
   it('crea intent y aplica estado autorizado con proveedor mock', async () => {

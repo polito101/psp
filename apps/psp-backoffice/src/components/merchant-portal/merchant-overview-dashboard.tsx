@@ -131,9 +131,17 @@ export function MerchantOverviewDashboard({ merchantId }: { merchantId: string }
           <CardContent className="space-y-2 text-sm">
             {(detailQuery.data?.settlementRequests ?? []).map((r) => (
               <div key={r.id} className="flex justify-between gap-2 border-b border-slate-100 py-2 last:border-0">
-                <span className="font-medium">{r.status}</span>
+                <span className="font-medium">
+                  {r.status}
+                  {r.settledAllAvailable === false ? (
+                    <span className="ml-1 text-amber-700" title="Quedó saldo AVAILABLE tras esta solicitud">
+                      (parcial)
+                    </span>
+                  ) : null}
+                </span>
                 <span className="text-xs text-slate-500">
                   {r.currency} · {r.requestedNetMinor} minor
+                  {typeof r.paidNetMinor === 'number' ? ` · pagado ${r.paidNetMinor}` : ''}
                 </span>
               </div>
             ))}

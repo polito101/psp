@@ -16,6 +16,11 @@ export type FrankfurterLatestResponse = {
 export class FxProviderClient {
   constructor(private readonly config: ConfigService) {}
 
+  /**
+   * Obtiene el último tipo Frankfurter: 1 unidad **mayor** `base` = `rate` unidades **mayor** `quote`
+   * (p. ej. 1 EUR = 1.08 USD). No incorpora exponentes de minor units; quien convierte `amountMinor`
+   * debe escalar por ISO 4217 (p. ej. `FxRatesService`, `iso4217-minor-exponent`).
+   */
   async fetchLatestRate(params: { base: string; quote: string }): Promise<{
     rate: number;
     externalRef: string;
