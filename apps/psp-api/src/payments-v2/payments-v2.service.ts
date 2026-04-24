@@ -28,6 +28,7 @@ import { OpsMerchantFinanceTransactionsQueryDto } from './dto/ops-merchant-finan
 import { OpsTransactionCountsQueryDto } from './dto/ops-transaction-counts-query.dto';
 import { OpsVolumeHourlyQueryDto } from './dto/ops-volume-hourly-query.dto';
 import { OpsDashboardVolumeUsdQueryDto } from './dto/ops-dashboard-volume-usd-query.dto';
+import { OpsPaymentsSummaryQueryDto } from './dto/ops-payments-summary-query.dto';
 import {
   LEGACY_STRIPE_DB_PROVIDER,
   PAYMENT_V2_STATUS,
@@ -168,11 +169,14 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   private readonly paymentsV2EnabledMerchantEntries: string[];
   /**
    * Caché en memoria (por instancia) `merchantId -> isActive` con TTL corto: reduce carga a BD
-   * sin otro round-trip a Redis; coherencia eventual si `isActive` cambia (poco frecuente).
+   * sin otro round-trip a Redis. TTL `0` desactiva la caché (siempre BD en rutas que la usan).
+   * `createIntent` no confía en aciertos cacheados “activo”: siempre consulta BD (kill-switch).
    */
   private readonly merchantActiveCacheTtlMs: number;
   private readonly merchantIsActiveCache = new Map<string, { value: boolean; expiresAt: number }>();
   private static readonly MERCHANT_ACTIVE_CACHE_MAX_ENTRIES = 5_000;
+  /** Umbral (ms) de la consulta fresca `isActive` para log `warn` en el hot path (observabilidad de cola/pool). */
+  private static readonly MERCHANT_IS_ACTIVE_FRESH_SLOW_MS = 200;
 
   constructor(
     private readonly config: ConfigService,
@@ -220,8 +224,8 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       .map((entry) => entry.trim())
       .filter((entry) => entry.length > 0);
     let merchantActiveTtlSec = this.getNumber('PAYMENTS_V2_MERCHANT_ACTIVE_CACHE_TTL_SEC', 60);
-    if (merchantActiveTtlSec < 30) {
-      merchantActiveTtlSec = 30;
+    if (merchantActiveTtlSec < 0) {
+      merchantActiveTtlSec = 0;
     } else if (merchantActiveTtlSec > 120) {
       merchantActiveTtlSec = 120;
     }
@@ -331,8 +335,15 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   ): Promise<OperationResult> {
     idempotencyKey = this.parseOptionalIdempotencyKey(idempotencyKey);
     this.assertPaymentsV2ConfigAllowlist(merchantId);
-    await this.assertPaymentLinkConsistency(merchantId, dto.paymentLinkId, dto.amountMinor, dto.currency);
-    await this.assertMerchantIsActiveCached(merchantId);
+    const merchantCheckedInPaymentLinkRead = await this.assertPaymentLinkConsistency(
+      merchantId,
+      dto.paymentLinkId,
+      dto.amountMinor,
+      dto.currency,
+    );
+    if (!merchantCheckedInPaymentLinkRead) {
+      await this.assertMerchantIsActiveFresh(merchantId);
+    }
 
     if (idempotencyKey) {
       const existing = await this.resolveIdempotentPayment(merchantId, idempotencyKey, dto);
@@ -669,6 +680,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   async getMetricsSnapshot() {
     return {
       payments: this.observability.snapshot(),
+      merchantIsActiveFresh: this.observability.merchantIsActiveFreshSnapshot(),
       circuitBreakers: await this.getCircuitBreakerSnapshot(),
       webhooks: await this.webhooks.getQueueSnapshot(),
     };
@@ -1359,22 +1371,50 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   }
 
   /**
-   * Volumen acumulado por hora (UTC) de pagos `succeeded` para hoy y ayer, para comparar en un mismo eje 0–23h.
-   * Agrupa y filtra por `succeeded_at` (momento de captura/éxito), no por `created_at`, para alinear el volumen
-   * con el día UTC en que el pago pasó a `succeeded` (índice `@@index([status, currency, succeededAt])` en `Payment`).
-   * En JSON, acumulados por hora y totales se serializan como **strings** (enteros en `amount_minor`) para no perder
-   * precisión fuera de `Number.MAX_SAFE_INTEGER`.
+   * Serie acumulada por hora (UTC) de pagos `succeeded` hoy vs un día calendario UTC anterior.
+   * Agrupa por `succeeded_at` (captura/éxito). Métricas: bruto (`amount_minor`), neto (`PaymentFeeQuote.net_minor`,
+   * fallback `amount_minor`) o recuento de pagos. Valores en JSON como **strings** (bigint) para no perder precisión.
    */
   async getOpsVolumeHourlySeries(query: OpsVolumeHourlyQueryDto) {
     const currency = (query.currency ?? 'EUR').toUpperCase();
+    const metric = query.metric ?? 'volume_gross';
     const now = new Date();
     const y = now.getUTCFullYear();
     const mo = now.getUTCMonth();
     const day = now.getUTCDate();
     const todayStart = new Date(Date.UTC(y, mo, day, 0, 0, 0, 0));
     const tomorrowStart = new Date(Date.UTC(y, mo, day + 1, 0, 0, 0, 0));
-    const yesterdayStart = new Date(Date.UTC(y, mo, day - 1, 0, 0, 0, 0));
     const utcHourNow = now.getUTCHours();
+
+    const defaultCompare = new Date(Date.UTC(y, mo, day - 1, 0, 0, 0, 0));
+    const defaultCompareYmd = `${defaultCompare.getUTCFullYear()}-${String(defaultCompare.getUTCMonth() + 1).padStart(2, '0')}-${String(defaultCompare.getUTCDate()).padStart(2, '0')}`;
+    const compareYmd = query.compareUtcDate?.trim() || defaultCompareYmd;
+    const mCompare = /^(\d{4})-(\d{2})-(\d{2})$/.exec(compareYmd);
+    if (!mCompare) {
+      throw new BadRequestException('compareUtcDate must be YYYY-MM-DD');
+    }
+    const cy = Number(mCompare[1]);
+    const cmo = Number(mCompare[2]) - 1;
+    const cd = Number(mCompare[3]);
+    if (!Number.isFinite(cy) || !Number.isFinite(cmo) || !Number.isFinite(cd)) {
+      throw new BadRequestException('compareUtcDate is invalid');
+    }
+    const compareStart = new Date(Date.UTC(cy, cmo, cd, 0, 0, 0, 0));
+    if (
+      compareStart.getUTCFullYear() !== cy ||
+      compareStart.getUTCMonth() !== cmo ||
+      compareStart.getUTCDate() !== cd
+    ) {
+      throw new BadRequestException('compareUtcDate is not a valid calendar date');
+    }
+    const compareEnd = new Date(Date.UTC(cy, cmo, cd + 1, 0, 0, 0, 0));
+    if (compareStart.getTime() >= todayStart.getTime()) {
+      throw new BadRequestException('compareUtcDate must be strictly before today (UTC)');
+    }
+    const oldest = new Date(Date.UTC(y, mo, day - 730, 0, 0, 0, 0));
+    if (compareStart.getTime() < oldest.getTime()) {
+      throw new BadRequestException('compareUtcDate is too far in the past (max 730 days)');
+    }
 
     const merchantSql =
       query.merchantId && query.merchantId.trim() !== ''
@@ -1386,8 +1426,28 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
 
     const queryHourly = async (rangeStart: Date, rangeEnd: Date): Promise<bigint[]> => {
       const hourly = new Array<bigint>(24).fill(0n);
-      const rows = await this.prisma.$queryRaw<Array<{ hour: number; vol: bigint }>>(
-        Prisma.sql`
+      const rows =
+        metric === 'succeeded_count'
+          ? await this.prisma.$queryRaw<Array<{ hour: number; vol: bigint }>>(
+              Prisma.sql`
+          SELECT
+            (EXTRACT(HOUR FROM (p.succeeded_at AT TIME ZONE 'UTC')))::int AS hour,
+            COUNT(*)::bigint AS vol
+          FROM "Payment" p
+          WHERE p.status = ${PAYMENT_V2_STATUS.SUCCEEDED}
+            AND p.currency = ${currency}
+            AND p.succeeded_at IS NOT NULL
+            AND p.succeeded_at >= ${rangeStart}
+            AND p.succeeded_at < ${rangeEnd}
+            ${merchantSql}
+            ${providerSql}
+          GROUP BY 1
+          ORDER BY 1
+        `,
+            )
+          : metric === 'volume_gross'
+            ? await this.prisma.$queryRaw<Array<{ hour: number; vol: bigint }>>(
+                Prisma.sql`
           SELECT
             (EXTRACT(HOUR FROM (p.succeeded_at AT TIME ZONE 'UTC')))::int AS hour,
             COALESCE(SUM(p.amount_minor), 0)::bigint AS vol
@@ -1402,7 +1462,28 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
           GROUP BY 1
           ORDER BY 1
         `,
-      );
+              )
+            : await this.prisma.$queryRaw<Array<{ hour: number; vol: bigint }>>(
+                Prisma.sql`
+          SELECT
+            (EXTRACT(HOUR FROM (p.succeeded_at AT TIME ZONE 'UTC')))::int AS hour,
+            COALESCE(
+              SUM(COALESCE(fq.net_minor::bigint, p.amount_minor::bigint)),
+              0::bigint
+            ) AS vol
+          FROM "Payment" p
+          LEFT JOIN "PaymentFeeQuote" fq ON fq.payment_id = p.id
+          WHERE p.status = ${PAYMENT_V2_STATUS.SUCCEEDED}
+            AND p.currency = ${currency}
+            AND p.succeeded_at IS NOT NULL
+            AND p.succeeded_at >= ${rangeStart}
+            AND p.succeeded_at < ${rangeEnd}
+            ${merchantSql}
+            ${providerSql}
+          GROUP BY 1
+          ORDER BY 1
+        `,
+              );
       for (const row of rows) {
         const h = row.hour;
         if (h >= 0 && h < 24) {
@@ -1412,9 +1493,9 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       return hourly;
     };
 
-    const [todayHourly, yesterdayHourly] = await Promise.all([
+    const [todayHourly, compareDayHourly] = await Promise.all([
       queryHourly(todayStart, tomorrowStart),
-      queryHourly(yesterdayStart, todayStart),
+      queryHourly(compareStart, compareEnd),
     ]);
 
     const toCumulative = (hourly: bigint[]): string[] => {
@@ -1427,31 +1508,281 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       return out;
     };
 
-    const yesterdayCumulative = toCumulative(yesterdayHourly);
+    const compareCumulative = toCumulative(compareDayHourly);
     const todayCumulativeFull = toCumulative(todayHourly);
     const todayCumulative: (string | null)[] = todayCumulativeFull.map((v, h) =>
       h > utcHourNow ? null : v,
     );
 
-    let todayVolumeMinor = 0n;
+    let todayTotal = 0n;
     for (let i = 0; i <= utcHourNow; i++) {
-      todayVolumeMinor += todayHourly[i] ?? 0n;
+      todayTotal += todayHourly[i] ?? 0n;
     }
-    const yesterdayVolumeMinor = yesterdayHourly.reduce((a, b) => a + b, 0n);
+    const compareDayTotal = compareDayHourly.reduce((a, b) => a + b, 0n);
 
     const labels = Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2, '0')}:00`);
+    const compareUtcDateStr = `${compareStart.getUTCFullYear()}-${String(compareStart.getUTCMonth() + 1).padStart(2, '0')}-${String(compareStart.getUTCDate()).padStart(2, '0')}`;
 
     return {
       dayBoundary: 'UTC' as const,
       currency,
+      metric,
+      valueUnit: metric === 'succeeded_count' ? ('count' as const) : ('currency_minor' as const),
+      compareUtcDate: compareUtcDateStr,
       status: PAYMENT_V2_STATUS.SUCCEEDED,
       labels,
       todayCumulativeVolumeMinor: todayCumulative,
-      yesterdayCumulativeVolumeMinor: yesterdayCumulative,
+      compareCumulativeVolumeMinor: compareCumulative,
       totals: {
-        todayVolumeMinor: todayVolumeMinor.toString(),
-        yesterdayVolumeMinor: yesterdayVolumeMinor.toString(),
+        todayVolumeMinor: todayTotal.toString(),
+        compareDayVolumeMinor: compareDayTotal.toString(),
       },
+    };
+  }
+
+  /**
+   * Agregados ops para dos ventanas sobre `Payment.created_at`: total pagos, suma bruta, suma neta
+   * (`PaymentFeeQuote.net_minor` con fallback a `amount_minor`), y conteo `failed`+`canceled`.
+   * Ventanas half-open: `created_at >= from AND created_at < to`.
+   */
+  async getOpsPaymentsSummary(query: OpsPaymentsSummaryQueryDto) {
+    const curFrom = new Date(query.currentFrom);
+    const curTo = new Date(query.currentTo);
+    const cmpFrom = new Date(query.compareFrom);
+    const cmpTo = new Date(query.compareTo);
+    if (Number.isNaN(curFrom.valueOf()) || Number.isNaN(curTo.valueOf())) {
+      throw new BadRequestException('Invalid current date range');
+    }
+    if (Number.isNaN(cmpFrom.valueOf()) || Number.isNaN(cmpTo.valueOf())) {
+      throw new BadRequestException('Invalid compare date range');
+    }
+    if (curFrom.getTime() >= curTo.getTime()) {
+      throw new BadRequestException('currentFrom must be before currentTo (half-open range [from, to))');
+    }
+    if (cmpFrom.getTime() >= cmpTo.getTime()) {
+      throw new BadRequestException('compareFrom must be before compareTo (half-open range [from, to))');
+    }
+    if (this.utcHalfOpenRangeDayCount(curFrom, curTo) > PaymentsV2Service.OPS_PAYMENTS_SUMMARY_MAX_DAYS) {
+      throw new BadRequestException(
+        `Current range exceeds ${PaymentsV2Service.OPS_PAYMENTS_SUMMARY_MAX_DAYS} days (UTC)`,
+      );
+    }
+    if (this.utcHalfOpenRangeDayCount(cmpFrom, cmpTo) > PaymentsV2Service.OPS_PAYMENTS_SUMMARY_MAX_DAYS) {
+      throw new BadRequestException(
+        `Compare range exceeds ${PaymentsV2Service.OPS_PAYMENTS_SUMMARY_MAX_DAYS} days (UTC)`,
+      );
+    }
+
+    const currency = query.currency?.trim().toUpperCase();
+    const merchantSql =
+      query.merchantId && query.merchantId.trim() !== ''
+        ? Prisma.sql`AND p.merchant_id = ${query.merchantId.trim()}`
+        : Prisma.empty;
+    const providerSql = query.provider
+      ? Prisma.sql`AND p.selected_provider = ${query.provider}`
+      : Prisma.empty;
+    const currencySql = currency ? Prisma.sql`AND p.currency = ${currency}` : Prisma.empty;
+
+    const aggregateWindow = async (from: Date, to: Date) => {
+      const rows = await this.prisma.$queryRaw<
+        Array<{
+          payments_total: bigint;
+          gross_minor: bigint;
+          net_minor: bigint;
+          errors_total: bigint;
+        }>
+      >(
+        Prisma.sql`
+        SELECT
+          COUNT(*)::bigint AS payments_total,
+          COALESCE(SUM(p.amount_minor::bigint), 0::bigint) AS gross_minor,
+          COALESCE(SUM(COALESCE(fq.net_minor::bigint, p.amount_minor::bigint)), 0::bigint) AS net_minor,
+          COALESCE(
+            SUM(
+              CASE
+                WHEN p.status IN (${PAYMENT_V2_STATUS.FAILED}, ${PAYMENT_V2_STATUS.CANCELED}) THEN 1
+                ELSE 0
+              END
+            )::bigint,
+            0::bigint
+          ) AS errors_total
+        FROM "Payment" p
+        LEFT JOIN "PaymentFeeQuote" fq ON fq.payment_id = p.id
+        WHERE p.created_at >= ${from}
+          AND p.created_at < ${to}
+          ${merchantSql}
+          ${providerSql}
+          ${currencySql}
+        `,
+      );
+      const r = rows[0];
+      return {
+        paymentsTotal: (r?.payments_total ?? 0n).toString(),
+        grossVolumeMinor: (r?.gross_minor ?? 0n).toString(),
+        netVolumeMinor: (r?.net_minor ?? 0n).toString(),
+        paymentErrorsTotal: (r?.errors_total ?? 0n).toString(),
+      };
+    };
+
+    const [current, compare] = await Promise.all([
+      aggregateWindow(curFrom, curTo),
+      aggregateWindow(cmpFrom, cmpTo),
+    ]);
+
+    return {
+      currency: currency ?? null,
+      current,
+      compare,
+    };
+  }
+
+  /** Límite de días calendario UTC por ventana half-open para `getOpsPaymentsSummary` y `getOpsPaymentsSummaryDaily`. */
+  private static readonly OPS_PAYMENTS_SUMMARY_MAX_DAYS = 124;
+
+  /** Días UTC cubiertos por `[from, toExclusive)` cuando ambos límites son instantes ISO (p. ej. medianoche UTC). */
+  private utcHalfOpenRangeDayCount(from: Date, toExclusive: Date): number {
+    const spanMs = toExclusive.getTime() - from.getTime();
+    if (spanMs <= 0) return 0;
+    return Math.floor(spanMs / 86_400_000);
+  }
+
+  /** Etiquetas YYYY-MM-DD (UTC) para cada día calendario en `[from, toExclusive)`. */
+  private utcDayYmdListHalfOpen(from: Date, toExclusive: Date): string[] {
+    const out: string[] = [];
+    let t = Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate());
+    const endExclusive = Date.UTC(
+      toExclusive.getUTCFullYear(),
+      toExclusive.getUTCMonth(),
+      toExclusive.getUTCDate(),
+    );
+    while (t < endExclusive) {
+      const d = new Date(t);
+      out.push(
+        `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`,
+      );
+      t += 86_400_000;
+    }
+    return out;
+  }
+
+  private pgDateToUtcYmd(d: unknown): string {
+    if (d instanceof Date) {
+      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+    }
+    if (typeof d === 'string') {
+      return d.slice(0, 10);
+    }
+    return String(d).slice(0, 10);
+  }
+
+  /**
+   * Series diarias (UTC) para gráficos del resumen: mismas ventanas half-open y filtros que `getOpsPaymentsSummary`.
+   * Máximo ~124 días por ventana.
+   */
+  async getOpsPaymentsSummaryDaily(query: OpsPaymentsSummaryQueryDto) {
+    const curFrom = new Date(query.currentFrom);
+    const curTo = new Date(query.currentTo);
+    const cmpFrom = new Date(query.compareFrom);
+    const cmpTo = new Date(query.compareTo);
+    if (Number.isNaN(curFrom.valueOf()) || Number.isNaN(curTo.valueOf())) {
+      throw new BadRequestException('Invalid current date range');
+    }
+    if (Number.isNaN(cmpFrom.valueOf()) || Number.isNaN(cmpTo.valueOf())) {
+      throw new BadRequestException('Invalid compare date range');
+    }
+    if (curFrom.getTime() >= curTo.getTime()) {
+      throw new BadRequestException('currentFrom must be before currentTo (half-open range [from, to))');
+    }
+    if (cmpFrom.getTime() >= cmpTo.getTime()) {
+      throw new BadRequestException('compareFrom must be before compareTo (half-open range [from, to))');
+    }
+    if (this.utcHalfOpenRangeDayCount(curFrom, curTo) > PaymentsV2Service.OPS_PAYMENTS_SUMMARY_MAX_DAYS) {
+      throw new BadRequestException(
+        `Current range exceeds ${PaymentsV2Service.OPS_PAYMENTS_SUMMARY_MAX_DAYS} days (UTC)`,
+      );
+    }
+    if (this.utcHalfOpenRangeDayCount(cmpFrom, cmpTo) > PaymentsV2Service.OPS_PAYMENTS_SUMMARY_MAX_DAYS) {
+      throw new BadRequestException(
+        `Compare range exceeds ${PaymentsV2Service.OPS_PAYMENTS_SUMMARY_MAX_DAYS} days (UTC)`,
+      );
+    }
+
+    const currency = query.currency?.trim().toUpperCase();
+    const merchantSql =
+      query.merchantId && query.merchantId.trim() !== ''
+        ? Prisma.sql`AND p.merchant_id = ${query.merchantId.trim()}`
+        : Prisma.empty;
+    const providerSql = query.provider
+      ? Prisma.sql`AND p.selected_provider = ${query.provider}`
+      : Prisma.empty;
+    const currencySql = currency ? Prisma.sql`AND p.currency = ${currency}` : Prisma.empty;
+
+    const dailyForWindow = async (from: Date, toExclusive: Date) => {
+      const labels = this.utcDayYmdListHalfOpen(from, toExclusive);
+      const rows = await this.prisma.$queryRaw<
+        Array<{
+          d: Date;
+          pay: bigint;
+          gross: bigint;
+          net: bigint;
+          errs: bigint;
+        }>
+      >(
+        Prisma.sql`
+        SELECT
+          (DATE_TRUNC('day', p.created_at AT TIME ZONE 'UTC'))::date AS d,
+          COUNT(*)::bigint AS pay,
+          COALESCE(SUM(p.amount_minor::bigint), 0::bigint) AS gross,
+          COALESCE(SUM(COALESCE(fq.net_minor::bigint, p.amount_minor::bigint)), 0::bigint) AS net,
+          COALESCE(
+            SUM(
+              CASE
+                WHEN p.status IN (${PAYMENT_V2_STATUS.FAILED}, ${PAYMENT_V2_STATUS.CANCELED}) THEN 1
+                ELSE 0
+              END
+            )::bigint,
+            0::bigint
+          ) AS errs
+        FROM "Payment" p
+        LEFT JOIN "PaymentFeeQuote" fq ON fq.payment_id = p.id
+        WHERE p.created_at >= ${from}
+          AND p.created_at < ${toExclusive}
+          ${merchantSql}
+          ${providerSql}
+          ${currencySql}
+        GROUP BY 1
+        ORDER BY 1
+        `,
+      );
+      const map = new Map<string, { pay: bigint; gross: bigint; net: bigint; errs: bigint }>();
+      for (const row of rows) {
+        const key = this.pgDateToUtcYmd(row.d);
+        map.set(key, { pay: row.pay, gross: row.gross, net: row.net, errs: row.errs });
+      }
+      const paymentsTotal: string[] = [];
+      const grossVolumeMinor: string[] = [];
+      const netVolumeMinor: string[] = [];
+      const paymentErrorsTotal: string[] = [];
+      for (const lab of labels) {
+        const v = map.get(lab);
+        paymentsTotal.push((v?.pay ?? 0n).toString());
+        grossVolumeMinor.push((v?.gross ?? 0n).toString());
+        netVolumeMinor.push((v?.net ?? 0n).toString());
+        paymentErrorsTotal.push((v?.errs ?? 0n).toString());
+      }
+      return { labels, paymentsTotal, grossVolumeMinor, netVolumeMinor, paymentErrorsTotal };
+    };
+
+    const [current, compare] = await Promise.all([
+      dailyForWindow(curFrom, curTo),
+      dailyForWindow(cmpFrom, cmpTo),
+    ]);
+
+    return {
+      granularity: 'daily' as const,
+      currency: currency ?? null,
+      current,
+      compare,
     };
   }
 
@@ -2912,15 +3243,47 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     paymentLinkId: string | undefined,
     amountMinor: number,
     currency: string,
-  ) {
-    if (!paymentLinkId) return;
-    const link = await this.links.findForMerchant(merchantId, paymentLinkId, { requireUsable: true });
+  ): Promise<boolean> {
+    if (!paymentLinkId) return false;
+
+    // Fusiona validación de link + lectura fresca de merchant para evitar round-trip adicional.
+    const started = Date.now();
+    const link = await this.prisma.paymentLink.findFirst({
+      where: { id: paymentLinkId, merchantId },
+      select: {
+        amountMinor: true,
+        currency: true,
+        status: true,
+        expiresAt: true,
+        merchant: { select: { isActive: true } },
+      },
+    });
+    const latencyMs = Date.now() - started;
     if (!link) {
       throw new BadRequestException('Payment link not found');
+    }
+    if (link.status !== 'active') {
+      throw new BadRequestException('Payment link is not active');
+    }
+    if (link.expiresAt && link.expiresAt <= new Date()) {
+      throw new BadRequestException('Payment link has expired');
     }
     if (link.amountMinor !== amountMinor || link.currency !== currency.toUpperCase()) {
       throw new BadRequestException('Amount/currency must match payment link');
     }
+
+    const isActive = Boolean(link.merchant?.isActive);
+    this.recordMerchantIsActiveFreshObservation({
+      merchantId,
+      isActive,
+      latencyMs,
+      source: 'payment_link_join',
+    });
+    if (!isActive) {
+      throw new ForbiddenException('Merchant account is inactive or missing');
+    }
+
+    return true;
   }
 
   /**
@@ -2938,6 +3301,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   }
 
   private getMerchantIsActiveFromCache(merchantId: string): boolean | undefined {
+    if (this.merchantActiveCacheTtlMs <= 0) return undefined;
     const e = this.merchantIsActiveCache.get(merchantId);
     if (e === undefined) return undefined;
     if (e.expiresAt <= Date.now()) {
@@ -2948,6 +3312,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   }
 
   private setMerchantIsActiveInCache(merchantId: string, isActive: boolean) {
+    if (this.merchantActiveCacheTtlMs <= 0) return;
     if (this.merchantIsActiveCache.size >= PaymentsV2Service.MERCHANT_ACTIVE_CACHE_MAX_ENTRIES) {
       const { value, done } = this.merchantIsActiveCache.keys().next();
       if (!done && value !== undefined) {
@@ -2958,6 +3323,59 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       value: isActive,
       expiresAt: Date.now() + this.merchantActiveCacheTtlMs,
     });
+  }
+
+  /**
+   * Lee `Merchant.isActive` siempre en BD y actualiza la caché en memoria si está habilitada.
+   * Obligatorio en rutas críticas (p. ej. creación de intent) para que `isActive` actúe como kill-switch sin ventana por caché “activo”.
+   */
+  private async assertMerchantIsActiveFresh(merchantId: string) {
+    const started = Date.now();
+    const merchant = await this.prisma.merchant.findUnique({
+      where: { id: merchantId },
+      select: { isActive: true },
+    });
+    const latencyMs = Date.now() - started;
+    const isActive = Boolean(merchant?.isActive);
+    this.recordMerchantIsActiveFreshObservation({ merchantId, isActive, latencyMs, source: 'merchant' });
+    if (!isActive) {
+      throw new ForbiddenException('Merchant account is inactive or missing');
+    }
+  }
+
+  private recordMerchantIsActiveFreshObservation(params: {
+    merchantId: string;
+    isActive: boolean;
+    latencyMs: number;
+    source: 'merchant' | 'payment_link_join';
+  }): void {
+    this.observability.recordMerchantIsActiveFreshAssertion({
+      latencyMs: params.latencyMs,
+      passed: params.isActive,
+    });
+    this.setMerchantIsActiveInCache(params.merchantId, params.isActive);
+    if (!params.isActive) {
+      this.log.debug(
+        this.correlationLogJson({
+          event: 'payments_v2.merchant_is_active_fresh',
+          merchantId: params.merchantId,
+          latencyMs: params.latencyMs,
+          passed: false,
+          source: params.source,
+        }),
+      );
+    }
+    if (params.latencyMs >= PaymentsV2Service.MERCHANT_IS_ACTIVE_FRESH_SLOW_MS) {
+      this.log.warn(
+        this.correlationLogJson({
+          event: 'payments_v2.merchant_is_active_fresh_slow',
+          merchantId: params.merchantId,
+          latencyMs: params.latencyMs,
+          thresholdMs: PaymentsV2Service.MERCHANT_IS_ACTIVE_FRESH_SLOW_MS,
+          source: params.source,
+        }),
+      );
+    }
   }
 
   /**

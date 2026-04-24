@@ -12,9 +12,12 @@ import type {
   OpsDashboardVolumeUsdFilters,
   OpsDashboardVolumeUsdResponse,
   OpsPaymentDetailResponse,
+  OpsPaymentsSummaryDailyResponse,
+  OpsPaymentsSummaryResponse,
   OpsTransactionCountsFilters,
   OpsTransactionCountsResponse,
   OpsTransactionsResponse,
+  OpsVolumeHourlyMetric,
   OpsVolumeHourlyResponse,
   ProviderHealthResponse,
   SettlementAvailableBalanceResponse,
@@ -104,7 +107,58 @@ export type OpsVolumeHourlyFilters = {
   merchantId?: string;
   provider?: OpsPaymentProvider;
   currency?: string;
+  metric?: OpsVolumeHourlyMetric;
+  /** YYYY-MM-DD (día UTC de comparación, estrictamente anterior a hoy UTC). */
+  compareUtcDate?: string;
 };
+
+export type OpsPaymentsSummaryFilters = {
+  currentFrom: string;
+  currentTo: string;
+  compareFrom: string;
+  compareTo: string;
+  merchantId?: string;
+  provider?: OpsPaymentProvider;
+  currency?: string;
+};
+
+export async function fetchOpsPaymentsSummary(
+  filters: OpsPaymentsSummaryFilters,
+): Promise<OpsPaymentsSummaryResponse> {
+  const params = new URLSearchParams();
+  params.set("currentFrom", filters.currentFrom);
+  params.set("currentTo", filters.currentTo);
+  params.set("compareFrom", filters.compareFrom);
+  params.set("compareTo", filters.compareTo);
+  if (filters.merchantId) params.set("merchantId", filters.merchantId);
+  if (filters.provider) params.set("provider", filters.provider);
+  if (filters.currency) params.set("currency", filters.currency);
+  const qs = params.toString();
+  const response = await fetch(`/api/internal/transactions/summary?${qs}`, {
+    ...internalBffInit,
+    method: "GET",
+  });
+  return parseResponse<OpsPaymentsSummaryResponse>(response);
+}
+
+export async function fetchOpsPaymentsSummaryDaily(
+  filters: OpsPaymentsSummaryFilters,
+): Promise<OpsPaymentsSummaryDailyResponse> {
+  const params = new URLSearchParams();
+  params.set("currentFrom", filters.currentFrom);
+  params.set("currentTo", filters.currentTo);
+  params.set("compareFrom", filters.compareFrom);
+  params.set("compareTo", filters.compareTo);
+  if (filters.merchantId) params.set("merchantId", filters.merchantId);
+  if (filters.provider) params.set("provider", filters.provider);
+  if (filters.currency) params.set("currency", filters.currency);
+  const qs = params.toString();
+  const response = await fetch(`/api/internal/transactions/summary-daily?${qs}`, {
+    ...internalBffInit,
+    method: "GET",
+  });
+  return parseResponse<OpsPaymentsSummaryDailyResponse>(response);
+}
 
 function opsDashboardVolumeUsdParams(filters: OpsDashboardVolumeUsdFilters): URLSearchParams {
   const params = new URLSearchParams();
@@ -140,6 +194,8 @@ export async function fetchOpsVolumeHourly(
   if (filters.merchantId) params.set("merchantId", filters.merchantId);
   if (filters.provider) params.set("provider", filters.provider);
   if (filters.currency) params.set("currency", filters.currency);
+  if (filters.metric) params.set("metric", filters.metric);
+  if (filters.compareUtcDate) params.set("compareUtcDate", filters.compareUtcDate);
   const qs = params.toString();
   const response = await fetch(`/api/internal/transactions/volume-hourly${qs ? `?${qs}` : ""}`, {
     ...internalBffInit,

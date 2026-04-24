@@ -42,6 +42,7 @@ describe('internal/webhooks integration', () => {
       .expect(200);
 
     expect(response.body.payments).toBeDefined();
+    expect(response.body.merchantIsActiveFresh).toBeDefined();
     expect(response.body.webhooks).toBeDefined();
     expect(response.body.circuitBreakers).toBeDefined();
   });

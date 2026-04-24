@@ -27,6 +27,7 @@ describe('PaymentsV2Service', () => {
       findUniqueOrThrow: jest.fn(),
     },
     paymentLink: {
+      findFirst: jest.fn(),
       updateMany: jest.fn(),
     },
     paymentOperation: {
@@ -98,6 +99,16 @@ describe('PaymentsV2Service', () => {
     registerAttemptPersistFailure: jest.fn(),
     logProviderEvent: jest.fn(),
     snapshot: jest.fn(),
+    recordMerchantIsActiveFreshAssertion: jest.fn(),
+    merchantIsActiveFreshSnapshot: jest.fn().mockReturnValue({
+      total: 0,
+      passed: 0,
+      blocked: 0,
+      passRate: 0,
+      blockRate: 0,
+      p95LatencyMs: 0,
+      p99LatencyMs: 0,
+    }),
   };
 
   const stripeAdapter = {
@@ -494,6 +505,13 @@ describe('PaymentsV2Service', () => {
     links.findForMerchant.mockResolvedValue({
       amountMinor: 1000,
       currency: 'EUR',
+    } as never);
+    prisma.paymentLink.findFirst.mockResolvedValue({
+      amountMinor: 1000,
+      currency: 'EUR',
+      status: 'active',
+      expiresAt: null,
+      merchant: { isActive: true },
     } as never);
     const firstPayload = { amountMinor: 1000, currency: 'EUR', paymentLinkId: 'plink_a' };
     prisma.payment.findUnique.mockResolvedValue({

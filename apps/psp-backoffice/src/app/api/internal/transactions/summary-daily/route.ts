@@ -1,13 +1,17 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import type { OpsVolumeHourlyResponse } from "@/lib/api/contracts";
+import type { OpsPaymentsSummaryDailyResponse } from "@/lib/api/contracts";
 import { OPS_PAYMENT_PROVIDERS } from "@/lib/api/payment-providers";
 import { mapProxyError, proxyInternalGet } from "@/lib/server/backoffice-api";
 import { enforceInternalRouteAuth } from "@/lib/server/internal-route-auth";
 import { forbiddenScopeResponse } from "@/lib/server/internal-route-scope";
 
 const querySchema = z.object({
+  currentFrom: z.string().datetime(),
+  currentTo: z.string().datetime(),
+  compareFrom: z.string().datetime(),
+  compareTo: z.string().datetime(),
   merchantId: z.string().trim().min(1).max(64).optional(),
   provider: z.enum(OPS_PAYMENT_PROVIDERS).optional(),
   currency: z
@@ -16,8 +20,6 @@ const querySchema = z.object({
     .transform((s) => s.toUpperCase())
     .pipe(z.string().regex(/^[A-Z]{3}$/))
     .optional(),
-  metric: z.enum(["volume_gross", "volume_net", "succeeded_count"]).optional(),
-  compareUtcDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
 
 export async function GET(request: NextRequest) {
@@ -54,8 +56,8 @@ export async function GET(request: NextRequest) {
       }
     });
 
-    const data = await proxyInternalGet<OpsVolumeHourlyResponse>({
-      path: "/api/v2/payments/ops/transactions/volume-hourly",
+    const data = await proxyInternalGet<OpsPaymentsSummaryDailyResponse>({
+      path: "/api/v2/payments/ops/transactions/summary-daily",
       searchParams: params,
       backofficeScope: claims,
     });

@@ -35,6 +35,15 @@ type MetricsSnapshot = {
       p95LatencyMs: number;
     }
   >;
+  merchantIsActiveFresh: {
+    total: number;
+    passed: number;
+    blocked: number;
+    passRate: number;
+    blockRate: number;
+    p95LatencyMs: number;
+    p99LatencyMs: number;
+  };
   webhooks: {
     workerEnabled: boolean;
     intervalMs: number;

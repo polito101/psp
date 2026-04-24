@@ -239,22 +239,59 @@ export type MerchantsOpsDetailResponse = {
   paymentMethods: MerchantPaymentMethodRow[];
 };
 
+export type OpsVolumeHourlyMetric = "volume_gross" | "volume_net" | "succeeded_count";
+
 /** Respuesta de `GET .../ops/transactions/volume-hourly` (límites de día en UTC). */
 export type OpsVolumeHourlyResponse = {
   dayBoundary: "UTC";
   currency: string;
+  metric: OpsVolumeHourlyMetric;
+  /** `currency_minor`: importe en unidades menores; `count`: número de pagos succeeded. */
+  valueUnit: "currency_minor" | "count";
+  /** Día calendario UTC de la serie discontinua (comparación con hoy). */
+  compareUtcDate: string;
   status: string;
   labels: string[];
   /**
-   * Acumulado por hora en unidades menores (entero); `null` en horas futuras del día actual (UTC).
-   * Se serializa como string decimal para evitar pérdida de precisión fuera de `MAX_SAFE_INTEGER`.
+   * Acumulado por hora; `null` en horas futuras del día actual (UTC).
+   * Se serializa como string decimal (bigint) para evitar pérdida de precisión fuera de `MAX_SAFE_INTEGER`.
    */
   todayCumulativeVolumeMinor: (string | null)[];
-  yesterdayCumulativeVolumeMinor: string[];
+  compareCumulativeVolumeMinor: string[];
   totals: {
     todayVolumeMinor: string;
-    yesterdayVolumeMinor: string;
+    compareDayVolumeMinor: string;
   };
+};
+
+export type OpsPaymentsSummaryBucket = {
+  paymentsTotal: string;
+  grossVolumeMinor: string;
+  netVolumeMinor: string;
+  paymentErrorsTotal: string;
+};
+
+/** Respuesta de `GET .../ops/transactions/summary` (agregados por ventana `created_at`). */
+export type OpsPaymentsSummaryResponse = {
+  currency: string | null;
+  current: OpsPaymentsSummaryBucket;
+  compare: OpsPaymentsSummaryBucket;
+};
+
+export type OpsPaymentsSummaryDailySeries = {
+  labels: string[];
+  paymentsTotal: string[];
+  grossVolumeMinor: string[];
+  netVolumeMinor: string[];
+  paymentErrorsTotal: string[];
+};
+
+/** Respuesta de `GET .../ops/transactions/summary-daily` (bucket diario UTC). */
+export type OpsPaymentsSummaryDailyResponse = {
+  granularity: "daily";
+  currency: string | null;
+  current: OpsPaymentsSummaryDailySeries;
+  compare: OpsPaymentsSummaryDailySeries;
 };
 
 export type OpsPaymentAttemptDetail = {
