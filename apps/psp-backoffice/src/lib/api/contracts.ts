@@ -239,7 +239,7 @@ export type MerchantsOpsDetailResponse = {
   paymentMethods: MerchantPaymentMethodRow[];
 };
 
-export type OpsVolumeHourlyMetric = "volume_net" | "succeeded_count";
+export type OpsVolumeHourlyMetric = "volume_gross" | "volume_net" | "succeeded_count";
 
 /** Respuesta de `GET .../ops/transactions/volume-hourly` (límites de día en UTC). */
 export type OpsVolumeHourlyResponse = {
@@ -262,6 +262,20 @@ export type OpsVolumeHourlyResponse = {
     todayVolumeMinor: string;
     compareDayVolumeMinor: string;
   };
+};
+
+export type OpsPaymentsSummaryBucket = {
+  paymentsTotal: string;
+  grossVolumeMinor: string;
+  netVolumeMinor: string;
+  paymentErrorsTotal: string;
+};
+
+/** Respuesta de `GET .../ops/transactions/summary` (agregados por ventana `created_at`). */
+export type OpsPaymentsSummaryResponse = {
+  currency: string | null;
+  current: OpsPaymentsSummaryBucket;
+  compare: OpsPaymentsSummaryBucket;
 };
 
 export type OpsPaymentAttemptDetail = {

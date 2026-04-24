@@ -18,6 +18,7 @@ import { OpsMerchantFinancePayoutsQueryDto } from './dto/ops-merchant-finance-pa
 import { OpsMerchantFinanceSummaryQueryDto } from './dto/ops-merchant-finance-summary-query.dto';
 import { OpsMerchantFinanceTransactionsQueryDto } from './dto/ops-merchant-finance-transactions-query.dto';
 import { OpsPaymentDetailQueryDto } from './dto/ops-payment-detail-query.dto';
+import { OpsPaymentsSummaryQueryDto } from './dto/ops-payments-summary-query.dto';
 import { OpsTransactionCountsQueryDto } from './dto/ops-transaction-counts-query.dto';
 import { OpsVolumeHourlyQueryDto } from './dto/ops-volume-hourly-query.dto';
 import { OpsDashboardVolumeUsdQueryDto } from './dto/ops-dashboard-volume-usd-query.dto';
@@ -47,10 +48,41 @@ export class PaymentsV2InternalController {
     return this.payments.getOpsTransactionCounts(query);
   }
 
+  @Get('ops/transactions/summary')
+  @ApiOperation({
+    summary:
+      'Agregados ops para dos ventanas (created_at): total pagos, volumen bruto, volumen neto (quote), errores failed+canceled',
+  })
+  async paymentsSummary(@Query() query: OpsPaymentsSummaryQueryDto) {
+    return this.payments.getOpsPaymentsSummary(query);
+  }
+
   @Get('ops/transactions/volume-hourly')
   @ApiOperation({
     summary:
-      'Serie horaria UTC de volumen acumulado (amount_minor) de pagos succeeded: hoy vs ayer, por hora 0–23',
+      'Serie horaria UTC acumulada de pagos succeeded: día actual (UTC) frente al calendario `compareUtcDate` (YYYY-MM-DD; por defecto ayer UTC), horas 0–23. Métricas: `volume_gross`, `volume_net`, `succeeded_count` (ver query `metric`). Valores de serie como strings en JSON.',
+  })
+  @ApiQuery({
+    name: 'metric',
+    required: false,
+    description:
+      'Métrica por hora. `volume_gross` (default): suma `amount_minor`. `volume_net`: suma `PaymentFeeQuote.net_minor` con fallback a `amount_minor`. `succeeded_count`: recuento de pagos succeeded.',
+    schema: {
+      type: 'string',
+      enum: ['volume_gross', 'volume_net', 'succeeded_count'],
+      default: 'volume_gross',
+    },
+  })
+  @ApiQuery({
+    name: 'compareUtcDate',
+    required: false,
+    description:
+      'Día calendario UTC de comparación (YYYY-MM-DD). Debe ser una fecha válida, estrictamente anterior al día actual en UTC, y no anterior a hoy UTC menos 730 días. Si se omite, ayer UTC.',
+    schema: {
+      type: 'string',
+      pattern: '^\\d{4}-\\d{2}-\\d{2}$',
+      example: '2026-04-23',
+    },
   })
   async volumeHourly(@Query() query: OpsVolumeHourlyQueryDto) {
     return this.payments.getOpsVolumeHourlySeries(query);

@@ -242,6 +242,55 @@ describe('payments-v2 integration', () => {
     expect(vol.body.compareCumulativeVolumeMinor).toHaveLength(24);
   });
 
+  it('returns ops payments summary for current vs compare windows (internal)', async () => {
+    const internalSecret = process.env.INTERNAL_API_SECRET ?? 'integration-internal-secret';
+    const merchant = await createMerchantViaHttp(app);
+    await request(app.getHttpServer())
+      .post('/api/v2/payments')
+      .set('X-API-Key', merchant.apiKey)
+      .send({ amountMinor: 2400, currency: 'EUR' })
+      .expect(201);
+
+    const now = new Date();
+    const currentFrom = new Date(now.getTime() - 86_400_000).toISOString();
+    const currentTo = new Date(now.getTime() + 86_400_000).toISOString();
+    const compareFrom = new Date(now.getTime() - 400 * 86_400_000).toISOString();
+    const compareTo = new Date(now.getTime() - 350 * 86_400_000).toISOString();
+
+    const qs = new URLSearchParams({
+      currentFrom,
+      currentTo,
+      compareFrom,
+      compareTo,
+      currency: 'EUR',
+    });
+
+    const res = await request(app.getHttpServer())
+      .get(`/api/v2/payments/ops/transactions/summary?${qs.toString()}`)
+      .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'admin')
+      .expect(200);
+
+    expect(res.body.currency).toBe('EUR');
+    expect(BigInt(res.body.current.paymentsTotal)).toBeGreaterThanOrEqual(1n);
+    expect(res.body.compare.paymentsTotal).toBe('0');
+    expect(BigInt(res.body.current.grossVolumeMinor)).toBeGreaterThanOrEqual(2400n);
+    expect(res.body.compare.grossVolumeMinor).toBe('0');
+
+    await request(app.getHttpServer())
+      .get(
+        `/api/v2/payments/ops/transactions/summary?${new URLSearchParams({
+          currentFrom: currentTo,
+          currentTo: currentFrom,
+          compareFrom,
+          compareTo,
+        }).toString()}`,
+      )
+      .set('X-Internal-Secret', internalSecret)
+      .set('X-Backoffice-Role', 'admin')
+      .expect(400);
+  });
+
   it('runs create -> cancel and keeps canceled state', async () => {
     const merchant = await createMerchantViaHttp(app);
     const created = await request(app.getHttpServer())

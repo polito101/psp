@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { OpsVolumeHourlyMetric, OpsVolumeHourlyResponse } from "@/lib/api/contracts";
 import { amountMinorToBigInt, formatAmountMinor } from "@/lib/ops-transaction-display";
 import { Select } from "@/components/ui/select";
-import { formatUtcYmdLong, parseUtcYmdParts } from "./utc-compare-date";
+import { addUtcCalendarDaysFromYmd, formatUtcYmdLong, parseUtcYmdParts, utcYmd } from "./utc-compare-date";
 
 const PAD = { t: 16, r: 12, b: 40, l: 48 };
 const MIN_CHART_W = 280;
@@ -363,7 +363,9 @@ export function VolumeComparisonChart({
 
   const utcTimeLabel = formatUtcClock();
 
-  const compareDayTitle = formatUtcYmdLong(data.compareUtcDate);
+  const yesterdayUtcYmd = addUtcCalendarDaysFromYmd(utcYmd(new Date()), -1);
+  const compareDayTitle =
+    data.compareUtcDate === yesterdayUtcYmd ? "Ayer" : formatUtcYmdLong(data.compareUtcDate);
 
   return (
     <div ref={wrapRef} className="w-full">
@@ -378,6 +380,7 @@ export function VolumeComparisonChart({
               value={metric}
               onChange={(e) => onMetricChange(e.target.value as OpsVolumeHourlyMetric)}
             >
+              <option value="volume_gross">Volumen bruto</option>
               <option value="volume_net">Volumen neto</option>
               <option value="succeeded_count">Pagos satisfactorios</option>
             </Select>
@@ -385,19 +388,14 @@ export function VolumeComparisonChart({
           <p className="text-3xl font-semibold tabular-nums tracking-tight text-slate-900 sm:text-4xl">
             {formatSeriesValue(data.valueUnit, data.totals.todayVolumeMinor, data.currency)}
           </p>
-          <p className="text-xs text-slate-500">
-            {utcTimeLabel} UTC · Hoy (acum.) · moneda filtro:{" "}
-            <span className="font-medium">{data.currency}</span>
-          </p>
+          <p className="text-xs text-slate-500">{utcTimeLabel} UTC</p>
         </div>
         <div className="flex shrink-0 flex-col gap-2 sm:min-w-[200px] sm:items-end sm:text-right">
           <div className="w-full sm:w-auto sm:max-w-[200px]">
-            <label htmlFor="home-volume-chart-compare" className="mb-1 block text-xs font-medium text-slate-600">
-              Comparación (día UTC)
-            </label>
             <input
               id="home-volume-chart-compare"
               type="date"
+              aria-label="Fecha de comparación en calendario UTC"
               className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-400 sm:text-right"
               min={compareDateMin}
               max={compareDateMax}
@@ -562,7 +560,11 @@ export function VolumeComparisonChart({
           >
             <div className="flex items-start justify-between gap-2 border-b border-slate-100 pb-2">
               <span className="text-xs font-medium text-slate-800">
-                {data.metric === "succeeded_count" ? "Pagos satisfactorios" : "Volumen neto"}
+                {data.metric === "succeeded_count"
+                  ? "Pagos satisfactorios"
+                  : data.metric === "volume_net"
+                    ? "Volumen neto"
+                    : "Volumen bruto"}
               </span>
               <span
                 className={
@@ -603,19 +605,6 @@ export function VolumeComparisonChart({
             </div>
           </div>
         ) : null}
-      </div>
-
-      <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-slate-600">
-        <span className="inline-flex items-center gap-2">
-          <span className="inline-block size-2.5 rounded-full bg-[var(--primary)]" aria-hidden />
-          Hoy (UTC)
-        </span>
-        <span className="inline-flex items-center gap-2">
-          <svg width={18} height={3} className="shrink-0 text-slate-400" aria-hidden>
-            <line x1="0" y1="1.5" x2="18" y2="1.5" stroke="currentColor" strokeWidth="2" strokeDasharray="4 3" />
-          </svg>
-          Comparación: {compareDayTitle} (UTC)
-        </span>
       </div>
     </div>
   );

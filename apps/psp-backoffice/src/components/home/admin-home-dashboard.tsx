@@ -1,12 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { ArrowRight, Building2, CreditCard, TrendingUp } from "lucide-react";
 import type { OpsVolumeHourlyMetric } from "@/lib/api/contracts";
 import { fetchOpsDashboardVolumeUsd, fetchOpsTransactionCounts, fetchOpsVolumeHourly } from "@/lib/api/client";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { AdminHomeResumen } from "./admin-home-resumen";
 import { VolumeComparisonChart } from "./volume-comparison-chart";
 import { addUtcCalendarDaysFromYmd, utcYmd } from "./utc-compare-date";
 
@@ -19,13 +20,9 @@ function utcDayIsoRange(d: Date): { createdFrom: string; createdTo: string } {
   return { createdFrom: start.toISOString(), createdTo: end.toISOString() };
 }
 
-function yesterdayDate(d: Date): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - 1, 12, 0, 0, 0));
-}
-
 /** Home admin: resumen global + volumen USD (FX) + accesos operativos. */
 export function AdminHomeDashboard() {
-  const [volumeMetric, setVolumeMetric] = useState<OpsVolumeHourlyMetric>("volume_net");
+  const [volumeMetric, setVolumeMetric] = useState<OpsVolumeHourlyMetric>("volume_gross");
   const [compareUtcDate, setCompareUtcDate] = useState<string>(() =>
     addUtcCalendarDaysFromYmd(utcYmd(new Date()), -1),
   );
@@ -53,17 +50,6 @@ export function AdminHomeDashboard() {
     refetchInterval: 60_000,
   });
 
-  const countsYesterdayQuery = useQuery({
-    queryKey: ["home-ops-counts-yesterday"],
-    queryFn: () => {
-      const yd = yesterdayDate(new Date());
-      const { createdFrom, createdTo } = utcDayIsoRange(yd);
-      return fetchOpsTransactionCounts({ createdFrom, createdTo });
-    },
-    staleTime: 60_000,
-    refetchInterval: 120_000,
-  });
-
   const volumeUsdQuery = useQuery({
     queryKey: ["home-ops-dashboard-volume-usd"],
     queryFn: () => fetchOpsDashboardVolumeUsd({}),
@@ -72,21 +58,13 @@ export function AdminHomeDashboard() {
   });
 
   const succeededToday = countsTodayQuery.data?.byStatus?.succeeded ?? null;
-  const succeededYesterday = countsYesterdayQuery.data?.byStatus?.succeeded ?? null;
   const totalToday = countsTodayQuery.data?.total ?? null;
-
-  const deltaPct = useMemo(() => {
-    if (succeededToday == null || succeededYesterday == null || succeededYesterday === 0) {
-      return null;
-    }
-    return Math.round(((succeededToday - succeededYesterday) / succeededYesterday) * 1000) / 10;
-  }, [succeededToday, succeededYesterday]);
 
   const vol = volumeQuery.data;
   const usd = volumeUsdQuery.data;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Inicio (admin)</h1>
@@ -103,18 +81,19 @@ export function AdminHomeDashboard() {
         </Link>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <AdminHomeResumen />
+
+      <div className="grid items-start gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
-          <CardHeader className="pb-2">
+          <CardHeader className="border-b-0 pb-4">
             <CardDescription>Pagos hoy (UTC)</CardDescription>
             <CardTitle className="text-2xl font-semibold tabular-nums">
               {totalToday != null ? totalToday : countsTodayQuery.isLoading ? "…" : "—"}
             </CardTitle>
           </CardHeader>
-          <CardContent className="text-xs text-slate-500">Todos los estados · 00:00–24:00 UTC</CardContent>
         </Card>
         <Card>
-          <CardHeader className="pb-2">
+          <CardHeader className="border-b-0 pb-4">
             <CardDescription className="flex items-center gap-1.5">
               <TrendingUp className="size-3.5" aria-hidden />
               Succeeded hoy
@@ -123,19 +102,9 @@ export function AdminHomeDashboard() {
               {succeededToday != null ? succeededToday : countsTodayQuery.isLoading ? "…" : "—"}
             </CardTitle>
           </CardHeader>
-          <CardContent className="text-xs text-slate-500">
-            {deltaPct != null ? (
-              <span className={deltaPct >= 0 ? "text-emerald-700" : "text-rose-700"}>
-                {deltaPct >= 0 ? "+" : ""}
-                {deltaPct}% vs ayer
-              </span>
-            ) : (
-              "Sin baseline ayer"
-            )}
-          </CardContent>
         </Card>
         <Card>
-          <CardHeader className="pb-2">
+          <CardHeader className="border-b-0 pb-4">
             <CardDescription>Volumen (USD minor, FX)</CardDescription>
             <CardTitle className="text-sm font-medium leading-snug text-slate-800">
               {volumeUsdQuery.isLoading
@@ -145,9 +114,6 @@ export function AdminHomeDashboard() {
                   : "—"}
             </CardTitle>
           </CardHeader>
-          <CardContent className="text-xs text-slate-500">
-            {usd?.conversionUnavailable ? "Conversión parcialmente no disponible (FX)" : "Snapshot FX según rango"}
-          </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
@@ -166,13 +132,6 @@ export function AdminHomeDashboard() {
       </div>
 
       <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-lg">Serie horaria (hoy UTC vs comparación)</CardTitle>
-          <CardDescription>
-            Acumulado por hora según <span className="font-medium">succeeded_at</span> (UTC). Neto ={" "}
-            <span className="font-medium">PaymentFeeQuote.net_minor</span> si existe; si no, importe del pago.
-          </CardDescription>
-        </CardHeader>
         <CardContent>
           {volumeQuery.isError ? (
             <p className="text-sm text-rose-700">{(volumeQuery.error as Error).message}</p>

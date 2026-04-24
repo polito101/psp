@@ -28,6 +28,7 @@ import { OpsMerchantFinanceTransactionsQueryDto } from './dto/ops-merchant-finan
 import { OpsTransactionCountsQueryDto } from './dto/ops-transaction-counts-query.dto';
 import { OpsVolumeHourlyQueryDto } from './dto/ops-volume-hourly-query.dto';
 import { OpsDashboardVolumeUsdQueryDto } from './dto/ops-dashboard-volume-usd-query.dto';
+import { OpsPaymentsSummaryQueryDto } from './dto/ops-payments-summary-query.dto';
 import {
   LEGACY_STRIPE_DB_PROVIDER,
   PAYMENT_V2_STATUS,
@@ -174,6 +175,8 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   private readonly merchantActiveCacheTtlMs: number;
   private readonly merchantIsActiveCache = new Map<string, { value: boolean; expiresAt: number }>();
   private static readonly MERCHANT_ACTIVE_CACHE_MAX_ENTRIES = 5_000;
+  /** Umbral (ms) de la consulta fresca `isActive` para log `warn` en el hot path (observabilidad de cola/pool). */
+  private static readonly MERCHANT_IS_ACTIVE_FRESH_SLOW_MS = 200;
 
   constructor(
     private readonly config: ConfigService,
@@ -670,6 +673,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   async getMetricsSnapshot() {
     return {
       payments: this.observability.snapshot(),
+      merchantIsActiveFresh: this.observability.merchantIsActiveFreshSnapshot(),
       circuitBreakers: await this.getCircuitBreakerSnapshot(),
       webhooks: await this.webhooks.getQueueSnapshot(),
     };
@@ -1361,12 +1365,12 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
 
   /**
    * Serie acumulada por hora (UTC) de pagos `succeeded` hoy vs un día calendario UTC anterior.
-   * Agrupa por `succeeded_at` (captura/éxito). Métricas: neto liquidable (`PaymentFeeQuote.net_minor`, fallback
-   * `amount_minor`) o recuento de pagos. Valores en JSON como **strings** (bigint) para no perder precisión.
+   * Agrupa por `succeeded_at` (captura/éxito). Métricas: bruto (`amount_minor`), neto (`PaymentFeeQuote.net_minor`,
+   * fallback `amount_minor`) o recuento de pagos. Valores en JSON como **strings** (bigint) para no perder precisión.
    */
   async getOpsVolumeHourlySeries(query: OpsVolumeHourlyQueryDto) {
     const currency = (query.currency ?? 'EUR').toUpperCase();
-    const metric = query.metric ?? 'volume_net';
+    const metric = query.metric ?? 'volume_gross';
     const now = new Date();
     const y = now.getUTCFullYear();
     const mo = now.getUTCMonth();
@@ -1389,6 +1393,13 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       throw new BadRequestException('compareUtcDate is invalid');
     }
     const compareStart = new Date(Date.UTC(cy, cmo, cd, 0, 0, 0, 0));
+    if (
+      compareStart.getUTCFullYear() !== cy ||
+      compareStart.getUTCMonth() !== cmo ||
+      compareStart.getUTCDate() !== cd
+    ) {
+      throw new BadRequestException('compareUtcDate is not a valid calendar date');
+    }
     const compareEnd = new Date(Date.UTC(cy, cmo, cd + 1, 0, 0, 0, 0));
     if (compareStart.getTime() >= todayStart.getTime()) {
       throw new BadRequestException('compareUtcDate must be strictly before today (UTC)');
@@ -1427,8 +1438,26 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
           ORDER BY 1
         `,
             )
-          : await this.prisma.$queryRaw<Array<{ hour: number; vol: bigint }>>(
-              Prisma.sql`
+          : metric === 'volume_gross'
+            ? await this.prisma.$queryRaw<Array<{ hour: number; vol: bigint }>>(
+                Prisma.sql`
+          SELECT
+            (EXTRACT(HOUR FROM (p.succeeded_at AT TIME ZONE 'UTC')))::int AS hour,
+            COALESCE(SUM(p.amount_minor), 0)::bigint AS vol
+          FROM "Payment" p
+          WHERE p.status = ${PAYMENT_V2_STATUS.SUCCEEDED}
+            AND p.currency = ${currency}
+            AND p.succeeded_at IS NOT NULL
+            AND p.succeeded_at >= ${rangeStart}
+            AND p.succeeded_at < ${rangeEnd}
+            ${merchantSql}
+            ${providerSql}
+          GROUP BY 1
+          ORDER BY 1
+        `,
+              )
+            : await this.prisma.$queryRaw<Array<{ hour: number; vol: bigint }>>(
+                Prisma.sql`
           SELECT
             (EXTRACT(HOUR FROM (p.succeeded_at AT TIME ZONE 'UTC')))::int AS hour,
             COALESCE(
@@ -1447,7 +1476,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
           GROUP BY 1
           ORDER BY 1
         `,
-            );
+              );
       for (const row of rows) {
         const h = row.hour;
         if (h >= 0 && h < 24) {
@@ -1501,6 +1530,91 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
         todayVolumeMinor: todayTotal.toString(),
         compareDayVolumeMinor: compareDayTotal.toString(),
       },
+    };
+  }
+
+  /**
+   * Agregados ops para dos ventanas sobre `Payment.created_at`: total pagos, suma bruta, suma neta
+   * (`PaymentFeeQuote.net_minor` con fallback a `amount_minor`), y conteo `failed`+`canceled`.
+   */
+  async getOpsPaymentsSummary(query: OpsPaymentsSummaryQueryDto) {
+    const curFrom = new Date(query.currentFrom);
+    const curTo = new Date(query.currentTo);
+    const cmpFrom = new Date(query.compareFrom);
+    const cmpTo = new Date(query.compareTo);
+    if (Number.isNaN(curFrom.valueOf()) || Number.isNaN(curTo.valueOf())) {
+      throw new BadRequestException('Invalid current date range');
+    }
+    if (Number.isNaN(cmpFrom.valueOf()) || Number.isNaN(cmpTo.valueOf())) {
+      throw new BadRequestException('Invalid compare date range');
+    }
+    if (curFrom.getTime() > curTo.getTime()) {
+      throw new BadRequestException('currentFrom must be before or equal to currentTo');
+    }
+    if (cmpFrom.getTime() > cmpTo.getTime()) {
+      throw new BadRequestException('compareFrom must be before or equal to compareTo');
+    }
+
+    const currency = query.currency?.trim().toUpperCase();
+    const merchantSql =
+      query.merchantId && query.merchantId.trim() !== ''
+        ? Prisma.sql`AND p.merchant_id = ${query.merchantId.trim()}`
+        : Prisma.empty;
+    const providerSql = query.provider
+      ? Prisma.sql`AND p.selected_provider = ${query.provider}`
+      : Prisma.empty;
+    const currencySql = currency ? Prisma.sql`AND p.currency = ${currency}` : Prisma.empty;
+
+    const aggregateWindow = async (from: Date, to: Date) => {
+      const rows = await this.prisma.$queryRaw<
+        Array<{
+          payments_total: bigint;
+          gross_minor: bigint;
+          net_minor: bigint;
+          errors_total: bigint;
+        }>
+      >(
+        Prisma.sql`
+        SELECT
+          COUNT(*)::bigint AS payments_total,
+          COALESCE(SUM(p.amount_minor::bigint), 0::bigint) AS gross_minor,
+          COALESCE(SUM(COALESCE(fq.net_minor::bigint, p.amount_minor::bigint)), 0::bigint) AS net_minor,
+          COALESCE(
+            SUM(
+              CASE
+                WHEN p.status IN (${PAYMENT_V2_STATUS.FAILED}, ${PAYMENT_V2_STATUS.CANCELED}) THEN 1
+                ELSE 0
+              END
+            )::bigint,
+            0::bigint
+          ) AS errors_total
+        FROM "Payment" p
+        LEFT JOIN "PaymentFeeQuote" fq ON fq.payment_id = p.id
+        WHERE p.created_at >= ${from}
+          AND p.created_at <= ${to}
+          ${merchantSql}
+          ${providerSql}
+          ${currencySql}
+        `,
+      );
+      const r = rows[0];
+      return {
+        paymentsTotal: (r?.payments_total ?? 0n).toString(),
+        grossVolumeMinor: (r?.gross_minor ?? 0n).toString(),
+        netVolumeMinor: (r?.net_minor ?? 0n).toString(),
+        paymentErrorsTotal: (r?.errors_total ?? 0n).toString(),
+      };
+    };
+
+    const [current, compare] = await Promise.all([
+      aggregateWindow(curFrom, curTo),
+      aggregateWindow(cmpFrom, cmpTo),
+    ]);
+
+    return {
+      currency: currency ?? null,
+      current,
+      compare,
     };
   }
 
@@ -3016,12 +3130,33 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
    * Obligatorio en rutas críticas (p. ej. creación de intent) para que `isActive` actúe como kill-switch sin ventana por caché “activo”.
    */
   private async assertMerchantIsActiveFresh(merchantId: string) {
+    const started = Date.now();
     const merchant = await this.prisma.merchant.findUnique({
       where: { id: merchantId },
       select: { isActive: true },
     });
+    const latencyMs = Date.now() - started;
     const isActive = Boolean(merchant?.isActive);
+    this.observability.recordMerchantIsActiveFreshAssertion({ latencyMs, passed: isActive });
     this.setMerchantIsActiveInCache(merchantId, isActive);
+    this.log.debug(
+      this.correlationLogJson({
+        event: 'payments_v2.merchant_is_active_fresh',
+        merchantId,
+        latencyMs,
+        passed: isActive,
+      }),
+    );
+    if (latencyMs >= PaymentsV2Service.MERCHANT_IS_ACTIVE_FRESH_SLOW_MS) {
+      this.log.warn(
+        this.correlationLogJson({
+          event: 'payments_v2.merchant_is_active_fresh_slow',
+          merchantId,
+          latencyMs,
+          thresholdMs: PaymentsV2Service.MERCHANT_IS_ACTIVE_FRESH_SLOW_MS,
+        }),
+      );
+    }
     if (!isActive) {
       throw new ForbiddenException('Merchant account is inactive or missing');
     }

@@ -10,10 +10,24 @@ type MetricsBucket = {
   latencies: number[];
 };
 
+/** Contador aparte de `provider:operation`: el gate de readiness no debe tratarlo como tasa de fallo de proveedor. */
+type MerchantIsActiveFreshBucket = {
+  total: number;
+  passed: number;
+  blocked: number;
+  latencies: number[];
+};
+
 @Injectable()
 export class PaymentsV2ObservabilityService {
   private readonly log = new Logger(PaymentsV2ObservabilityService.name);
   private readonly metrics = new Map<string, MetricsBucket>();
+  private readonly merchantIsActiveFresh: MerchantIsActiveFreshBucket = {
+    total: 0,
+    passed: 0,
+    blocked: 0,
+    latencies: [],
+  };
 
   registerAttempt(params: {
     provider: PaymentProviderName;
@@ -59,6 +73,36 @@ export class PaymentsV2ObservabilityService {
     this.metrics.set(key, current);
   }
 
+  /**
+   * `createIntent` y otras rutas que exigen lectura fresca de `Merchant.isActive` (kill-switch sin ventana de caché “activo”).
+   */
+  recordMerchantIsActiveFreshAssertion(params: { latencyMs: number; passed: boolean }): void {
+    const b = this.merchantIsActiveFresh;
+    b.total += 1;
+    if (params.passed) {
+      b.passed += 1;
+    } else {
+      b.blocked += 1;
+    }
+    b.latencies.push(params.latencyMs);
+    if (b.latencies.length > 200) {
+      b.latencies.shift();
+    }
+  }
+
+  merchantIsActiveFreshSnapshot(): Record<string, number> {
+    const b = this.merchantIsActiveFresh;
+    return {
+      total: b.total,
+      passed: b.passed,
+      blocked: b.blocked,
+      passRate: b.total > 0 ? Number((b.passed / b.total).toFixed(4)) : 0,
+      blockRate: b.total > 0 ? Number((b.blocked / b.total).toFixed(4)) : 0,
+      p95LatencyMs: this.p95(b.latencies),
+      p99LatencyMs: this.pQuantile(b.latencies, 0.99),
+    };
+  }
+
   snapshot(): Record<string, unknown> {
     const out: Record<string, unknown> = {};
     for (const [key, metric] of this.metrics) {
@@ -78,9 +122,13 @@ export class PaymentsV2ObservabilityService {
   }
 
   private p95(values: number[]): number {
+    return this.pQuantile(values, 0.95);
+  }
+
+  private pQuantile(values: number[], q: number): number {
     if (values.length === 0) return 0;
     const sorted = [...values].sort((a, b) => a - b);
-    const idx = Math.ceil(sorted.length * 0.95) - 1;
+    const idx = Math.ceil(sorted.length * q) - 1;
     return sorted[Math.max(0, idx)];
   }
 }

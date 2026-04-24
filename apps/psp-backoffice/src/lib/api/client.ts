@@ -12,6 +12,7 @@ import type {
   OpsDashboardVolumeUsdFilters,
   OpsDashboardVolumeUsdResponse,
   OpsPaymentDetailResponse,
+  OpsPaymentsSummaryResponse,
   OpsTransactionCountsFilters,
   OpsTransactionCountsResponse,
   OpsTransactionsResponse,
@@ -109,6 +110,35 @@ export type OpsVolumeHourlyFilters = {
   /** YYYY-MM-DD (día UTC de comparación, estrictamente anterior a hoy UTC). */
   compareUtcDate?: string;
 };
+
+export type OpsPaymentsSummaryFilters = {
+  currentFrom: string;
+  currentTo: string;
+  compareFrom: string;
+  compareTo: string;
+  merchantId?: string;
+  provider?: OpsPaymentProvider;
+  currency?: string;
+};
+
+export async function fetchOpsPaymentsSummary(
+  filters: OpsPaymentsSummaryFilters,
+): Promise<OpsPaymentsSummaryResponse> {
+  const params = new URLSearchParams();
+  params.set("currentFrom", filters.currentFrom);
+  params.set("currentTo", filters.currentTo);
+  params.set("compareFrom", filters.compareFrom);
+  params.set("compareTo", filters.compareTo);
+  if (filters.merchantId) params.set("merchantId", filters.merchantId);
+  if (filters.provider) params.set("provider", filters.provider);
+  if (filters.currency) params.set("currency", filters.currency);
+  const qs = params.toString();
+  const response = await fetch(`/api/internal/transactions/summary?${qs}`, {
+    ...internalBffInit,
+    method: "GET",
+  });
+  return parseResponse<OpsPaymentsSummaryResponse>(response);
+}
 
 function opsDashboardVolumeUsdParams(filters: OpsDashboardVolumeUsdFilters): URLSearchParams {
   const params = new URLSearchParams();
