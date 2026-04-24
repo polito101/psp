@@ -12,6 +12,14 @@ const querySchema = z.object({
   provider: z.enum(OPS_PAYMENT_PROVIDERS).optional(),
   createdFrom: z.string().datetime().optional(),
   createdTo: z.string().datetime().optional(),
+  payerCountry: z.string().trim().length(2).optional(),
+  paymentMethodCode: z.string().trim().min(1).max(64).optional(),
+  paymentMethodFamily: z.string().trim().min(1).max(32).optional(),
+  weekday: z.coerce.number().int().min(0).max(6).optional(),
+  merchantActive: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => (v === "false" ? false : v === "true" ? true : undefined)),
 });
 
 export async function GET(request: NextRequest) {

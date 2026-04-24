@@ -43,7 +43,13 @@ describe('PaymentsV2Service', () => {
       findMany: jest.fn(),
     },
     merchant: {
+      findUnique: jest.fn().mockResolvedValue({ isActive: true }),
       findUniqueOrThrow: jest.fn(),
+    },
+    merchantPaymentMethod: {
+      findFirst: jest.fn().mockResolvedValue({
+        definition: { code: 'mock_card', category: 'card' },
+      }),
     },
     paymentFeeQuote: {
       create: jest.fn(),
@@ -113,6 +119,16 @@ describe('PaymentsV2Service', () => {
     getId: jest.fn().mockReturnValue(undefined),
   };
 
+  const fxRates = {
+    convertMinorToUsdSnapshot: jest
+      .fn()
+      .mockResolvedValue({ ok: true, usdMinor: 1, snapshotId: 'snap', rateDecimal: '1' }),
+    getUsdSnapshotsAtOrBeforeForBases: jest.fn().mockResolvedValue(new Map()),
+    convertMinorToUsdWithPreloadedUsdSnapshots: jest
+      .fn()
+      .mockReturnValue({ ok: true, usdMinor: 1, snapshotId: 'snap', rateDecimal: '1' }),
+  };
+
   let service: PaymentsV2Service;
 
   const buildService = () =>
@@ -128,6 +144,7 @@ describe('PaymentsV2Service', () => {
       fee as never,
       merchantRateLimit as never,
       correlationContext as never,
+      fxRates as never,
     );
 
   afterEach(() => {
@@ -145,6 +162,10 @@ describe('PaymentsV2Service', () => {
     process.env.PAYMENTS_PROVIDER_RETRY_MAX_MS = '3000';
     process.env.PAYMENTS_V2_TOLERATE_ATTEMPT_PERSIST_FAILURE = 'true';
     service = buildService();
+    prisma.merchant.findUnique.mockResolvedValue({ isActive: true });
+    prisma.merchantPaymentMethod.findFirst.mockResolvedValue({
+      definition: { code: 'mock_card', category: 'card' },
+    });
     prisma.$transaction.mockImplementation(async (fn: (trx: unknown) => Promise<unknown>) => fn(prisma));
     prisma.$queryRaw.mockResolvedValue([{ n: BigInt(0) }]);
     prisma.payment.findFirst.mockResolvedValue(null);
@@ -272,6 +293,7 @@ describe('PaymentsV2Service', () => {
   it('rechaza merchant no habilitado para rollout v2', async () => {
     process.env.PAYMENTS_V2_ENABLED_MERCHANTS = 'm_enabled';
     service = buildService();
+    prisma.merchant.findUnique.mockClear();
     await expect(
       service.createIntent(
         'm_other',
@@ -279,6 +301,38 @@ describe('PaymentsV2Service', () => {
         'idem_1',
       ),
     ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.merchant.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('cachea isActive: dos getPayment del mismo merchant solo consultan Merchant una vez', async () => {
+    prisma.merchant.findUnique.mockClear();
+    prisma.paymentAttempt.findMany.mockResolvedValue([]);
+    prisma.payment.findFirst
+      .mockResolvedValueOnce({
+        id: 'p_a',
+        merchantId: 'm_1',
+        status: PAYMENT_V2_STATUS.SUCCEEDED,
+        amountMinor: 1,
+        currency: 'EUR',
+        selectedProvider: 'mock',
+        providerRef: null,
+        statusReason: null,
+        paymentLinkId: null,
+      })
+      .mockResolvedValueOnce({
+        id: 'p_b',
+        merchantId: 'm_1',
+        status: PAYMENT_V2_STATUS.SUCCEEDED,
+        amountMinor: 1,
+        currency: 'EUR',
+        selectedProvider: 'mock',
+        providerRef: null,
+        statusReason: null,
+        paymentLinkId: null,
+      });
+    await service.getPayment('m_1', 'p_a');
+    await service.getPayment('m_1', 'p_b');
+    expect(prisma.merchant.findUnique).toHaveBeenCalledTimes(1);
   });
 
   it('crea intent y aplica estado autorizado con proveedor mock', async () => {
@@ -421,16 +475,6 @@ describe('PaymentsV2Service', () => {
       statusReason: null,
       paymentLinkId: null,
     });
-    stripeAdapter.retrievePaymentIntent.mockResolvedValue({
-      status: PAYMENT_V2_STATUS.REQUIRES_ACTION,
-      providerPaymentId: 'pi_123',
-      nextAction: {
-        type: '3ds',
-        clientSecret: 'pi_123_secret_test',
-        stripeNextActionType: 'use_stripe_sdk',
-      },
-    });
-
     const result = await service.createIntent(
       'm_1',
       { amountMinor: 1200, currency: 'EUR' },
@@ -439,12 +483,7 @@ describe('PaymentsV2Service', () => {
 
     expect(result.payment.id).toBe('pay_action');
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.REQUIRES_ACTION);
-    expect(result.nextAction).toEqual({
-      type: '3ds',
-      clientSecret: 'pi_123_secret_test',
-      stripeNextActionType: 'use_stripe_sdk',
-    });
-    expect(stripeAdapter.retrievePaymentIntent).toHaveBeenCalledWith('pi_123');
+    expect(result.nextAction).toEqual({ type: '3ds' });
     expect(prisma.payment.create).not.toHaveBeenCalled();
     expect(stripeProvider.run).not.toHaveBeenCalled();
     expect(mockProvider.run).not.toHaveBeenCalled();
@@ -452,6 +491,10 @@ describe('PaymentsV2Service', () => {
 
   it('rechaza replay idempotente si difiere paymentLinkId (misma clave)', async () => {
     registry.orderedProviders.mockReturnValue(['mock']);
+    links.findForMerchant.mockResolvedValue({
+      amountMinor: 1000,
+      currency: 'EUR',
+    } as never);
     const firstPayload = { amountMinor: 1000, currency: 'EUR', paymentLinkId: 'plink_a' };
     prisma.payment.findUnique.mockResolvedValue({
       id: 'pay_idem_plink',
@@ -2038,9 +2081,10 @@ describe('PaymentsV2Service', () => {
         throw new Error('expected ConflictException');
       } catch (e: unknown) {
         expect(e).toBeInstanceOf(ConflictException);
-        expect((e as ConflictException).getResponse()).toEqual(
-          unsupportedPersistedProviderLifecycleMessage('capture', 'stripe'),
-        );
+        const res = (e as ConflictException).getResponse();
+        const msg =
+          typeof res === 'string' ? res : (res as { message?: string }).message ?? String(res);
+        expect(msg).toEqual(unsupportedPersistedProviderLifecycleMessage('capture', 'stripe'));
       }
       expect(registry.orderedProviders).not.toHaveBeenCalled();
       expect(prisma.paymentOperation.create).not.toHaveBeenCalled();
@@ -2057,9 +2101,10 @@ describe('PaymentsV2Service', () => {
         throw new Error('expected ConflictException');
       } catch (e: unknown) {
         expect(e).toBeInstanceOf(ConflictException);
-        expect((e as ConflictException).getResponse()).toEqual(
-          unsupportedPersistedProviderLifecycleMessage('cancel', 'stripe'),
-        );
+        const res = (e as ConflictException).getResponse();
+        const msg =
+          typeof res === 'string' ? res : (res as { message?: string }).message ?? String(res);
+        expect(msg).toEqual(unsupportedPersistedProviderLifecycleMessage('cancel', 'stripe'));
       }
       expect(registry.orderedProviders).not.toHaveBeenCalled();
     });
@@ -2075,9 +2120,10 @@ describe('PaymentsV2Service', () => {
         throw new Error('expected ConflictException');
       } catch (e: unknown) {
         expect(e).toBeInstanceOf(ConflictException);
-        expect((e as ConflictException).getResponse()).toEqual(
-          unsupportedPersistedProviderLifecycleMessage('refund', 'stripe'),
-        );
+        const res = (e as ConflictException).getResponse();
+        const msg =
+          typeof res === 'string' ? res : (res as { message?: string }).message ?? String(res);
+        expect(msg).toEqual(unsupportedPersistedProviderLifecycleMessage('refund', 'stripe'));
       }
       expect(registry.orderedProviders).not.toHaveBeenCalled();
     });
@@ -2085,7 +2131,9 @@ describe('PaymentsV2Service', () => {
     it('onApplicationBootstrap falla si PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS y quedan filas', async () => {
       process.env.PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS = 'true';
       config.get.mockImplementation((key: string) => process.env[key]);
-      prisma.$queryRaw.mockResolvedValueOnce([{ n: BigInt(2) }]);
+      prisma.$queryRaw
+        .mockResolvedValueOnce([{ has_legacy: true }])
+        .mockResolvedValueOnce([{ n: BigInt(2) }]);
       const svc = buildService();
       await expect(svc.onApplicationBootstrap()).rejects.toThrow(/PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS/);
     });

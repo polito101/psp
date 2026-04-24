@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsInt, IsOptional, IsPositive, IsString, Length } from 'class-validator';
+import { IsInt, IsOptional, IsPositive, IsString, Length, Matches, MaxLength } from 'class-validator';
 
 export class CreatePaymentIntentDto {
   @ApiProperty({ example: 1999 })
@@ -10,7 +10,7 @@ export class CreatePaymentIntentDto {
   @ApiProperty({
     default: 'EUR',
     description:
-      'ISO 4217 (3 letras). Debe existir una MerchantRateTable activa para esta divisa y al menos un proveedor del orden de ruteo; si no, create intent responde 409.',
+      'ISO 4217 (3 letras). `amountMinor` usa las unidades menores estándar de la divisa (p. ej. céntimos para EUR/USD, yen entero para JPY, fils para KWD). Debe existir una MerchantRateTable activa para esta divisa y al menos un proveedor del orden de ruteo; si no, create intent responde 409.',
   })
   @IsString()
   @Length(3, 3)
@@ -23,4 +23,24 @@ export class CreatePaymentIntentDto {
   @IsOptional()
   @IsString()
   paymentLinkId?: string;
+
+  @ApiPropertyOptional({
+    description: 'ISO 3166-1 alpha-2 del país del pagador (opcional, reporting).',
+    example: 'ES',
+  })
+  @IsOptional()
+  @IsString()
+  @Length(2, 2)
+  @Matches(/^[A-Za-z]{2}$/)
+  payerCountry?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Código de método de pago del catálogo (`mock_card`, `mock_transfer`, …). Por defecto `mock_card`.',
+    example: 'mock_card',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  paymentMethodCode?: string;
 }

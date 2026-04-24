@@ -17,9 +17,23 @@ type ProxyRequestOptions = {
   backofficeScope?: SessionClaims;
 };
 
+type ProxyWriteOptions = ProxyRequestOptions & {
+  /** Cuerpo JSON (se serializa con `JSON.stringify` salvo que sea `string`). */
+  body?: unknown;
+};
+
 /** Rutas internas de payments v2 ops: la API exige cabeceras RBAC fail-closed. */
 export function isPaymentsV2OpsPath(path: string): boolean {
   return path.includes("/payments/ops/");
+}
+
+/** Incluye payments ops, settlements y merchants ops: el upstream exige cabeceras RBAC fail-closed. */
+export function requiresBackofficeScopePath(path: string): boolean {
+  return (
+    path.includes("/payments/ops/") ||
+    path.includes("/settlements/") ||
+    path.includes("/merchants/ops/")
+  );
 }
 
 function validateAndNormalizeApiOrigin(rawBaseUrl: string): string {
@@ -166,8 +180,8 @@ export async function proxyInternalGet<T>(options: ProxyRequestOptions): Promise
     });
   }
 
-  if (isPaymentsV2OpsPath(options.path) && !options.backofficeScope) {
-    throw new Error("Missing backofficeScope for payments ops proxy");
+  if (requiresBackofficeScopePath(options.path) && !options.backofficeScope) {
+    throw new Error("Missing backofficeScope for internal RBAC proxy");
   }
 
   const controller = new AbortController();
@@ -190,6 +204,140 @@ export async function proxyInternalGet<T>(options: ProxyRequestOptions): Promise
       method: "GET",
       redirect: "manual",
       headers,
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get("location") ?? "<missing>";
+    throw new Error(
+      `PSP API returned redirect (${response.status}) to "${location}". Redirects are not allowed when sending internal secrets.`,
+    );
+  }
+
+  if (!response.ok) {
+    const { text, truncated, measuredBodyBytes } = await readResponseTextWithByteLimit(
+      response,
+      PROXY_UPSTREAM_BODY_READ_MAX_BYTES,
+    );
+    throw new ProxyUpstreamError(response.status, text, truncated, measuredBodyBytes);
+  }
+
+  return (await response.json()) as T;
+}
+
+export async function proxyInternalPost<T>(options: ProxyWriteOptions): Promise<T> {
+  const { apiBaseOrigin, internalSecret } = getServerConfig();
+  const url = new URL(options.path, apiBaseOrigin);
+  if (options.searchParams) {
+    options.searchParams.forEach((value, key) => {
+      url.searchParams.set(key, value);
+    });
+  }
+
+  if (requiresBackofficeScopePath(options.path) && !options.backofficeScope) {
+    throw new Error("Missing backofficeScope for internal RBAC proxy");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DEFAULT_PROXY_TIMEOUT_MS);
+
+  const headers: Record<string, string> = {
+    "X-Internal-Secret": internalSecret,
+    "Content-Type": "application/json",
+  };
+  const scope = options.backofficeScope;
+  if (scope?.role === "admin") {
+    headers["X-Backoffice-Role"] = "admin";
+  } else if (scope?.role === "merchant") {
+    headers["X-Backoffice-Role"] = "merchant";
+    headers["X-Backoffice-Merchant-Id"] = scope.merchantId;
+  }
+
+  const bodyPayload =
+    options.body === undefined
+      ? undefined
+      : typeof options.body === "string"
+        ? options.body
+        : JSON.stringify(options.body);
+
+  let response: Response;
+  try {
+    response = await fetch(url.toString(), {
+      method: "POST",
+      redirect: "manual",
+      headers,
+      body: bodyPayload,
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get("location") ?? "<missing>";
+    throw new Error(
+      `PSP API returned redirect (${response.status}) to "${location}". Redirects are not allowed when sending internal secrets.`,
+    );
+  }
+
+  if (!response.ok) {
+    const { text, truncated, measuredBodyBytes } = await readResponseTextWithByteLimit(
+      response,
+      PROXY_UPSTREAM_BODY_READ_MAX_BYTES,
+    );
+    throw new ProxyUpstreamError(response.status, text, truncated, measuredBodyBytes);
+  }
+
+  return (await response.json()) as T;
+}
+
+export async function proxyInternalPatch<T>(options: ProxyWriteOptions): Promise<T> {
+  const { apiBaseOrigin, internalSecret } = getServerConfig();
+  const url = new URL(options.path, apiBaseOrigin);
+  if (options.searchParams) {
+    options.searchParams.forEach((value, key) => {
+      url.searchParams.set(key, value);
+    });
+  }
+
+  if (requiresBackofficeScopePath(options.path) && !options.backofficeScope) {
+    throw new Error("Missing backofficeScope for internal RBAC proxy");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DEFAULT_PROXY_TIMEOUT_MS);
+
+  const headers: Record<string, string> = {
+    "X-Internal-Secret": internalSecret,
+    "Content-Type": "application/json",
+  };
+  const scope = options.backofficeScope;
+  if (scope?.role === "admin") {
+    headers["X-Backoffice-Role"] = "admin";
+  } else if (scope?.role === "merchant") {
+    headers["X-Backoffice-Role"] = "merchant";
+    headers["X-Backoffice-Merchant-Id"] = scope.merchantId;
+  }
+
+  const bodyPayload =
+    options.body === undefined
+      ? undefined
+      : typeof options.body === "string"
+        ? options.body
+        : JSON.stringify(options.body);
+
+  let response: Response;
+  try {
+    response = await fetch(url.toString(), {
+      method: "PATCH",
+      redirect: "manual",
+      headers,
+      body: bodyPayload,
       cache: "no-store",
       signal: controller.signal,
     });

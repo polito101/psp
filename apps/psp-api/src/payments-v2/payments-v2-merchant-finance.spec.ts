@@ -22,6 +22,9 @@ describe('PaymentsV2 merchant finance', () => {
       findFirst: jest.fn(),
     },
     payment: {},
+    merchant: {
+      findUnique: jest.fn().mockResolvedValue({ isActive: true }),
+    },
     payout: {
       findMany: jest.fn(),
       count: jest.fn(),
@@ -76,6 +79,17 @@ describe('PaymentsV2 merchant finance', () => {
     getId: jest.fn().mockReturnValue(undefined),
   };
 
+  const fxRates = {
+    convertMinorToUsdSnapshot: jest.fn(),
+    getUsdSnapshotsAtOrBeforeForBases: jest.fn().mockResolvedValue(new Map()),
+    convertMinorToUsdWithPreloadedUsdSnapshots: jest.fn().mockReturnValue({
+      ok: true,
+      usdMinor: 0,
+      snapshotId: 'snap',
+      rateDecimal: '1',
+    }),
+  };
+
   const buildService = () =>
     new PaymentsV2Service(
       config as never,
@@ -89,6 +103,7 @@ describe('PaymentsV2 merchant finance', () => {
       fee as never,
       merchantRateLimit as never,
       correlationContext as never,
+      fxRates as never,
     );
 
   beforeEach(() => {

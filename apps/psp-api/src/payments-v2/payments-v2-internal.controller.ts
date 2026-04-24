@@ -20,6 +20,7 @@ import { OpsMerchantFinanceTransactionsQueryDto } from './dto/ops-merchant-finan
 import { OpsPaymentDetailQueryDto } from './dto/ops-payment-detail-query.dto';
 import { OpsTransactionCountsQueryDto } from './dto/ops-transaction-counts-query.dto';
 import { OpsVolumeHourlyQueryDto } from './dto/ops-volume-hourly-query.dto';
+import { OpsDashboardVolumeUsdQueryDto } from './dto/ops-dashboard-volume-usd-query.dto';
 import { PaymentsV2Service } from './payments-v2.service';
 
 @ApiTags('payments-v2')
@@ -53,6 +54,15 @@ export class PaymentsV2InternalController {
   })
   async volumeHourly(@Query() query: OpsVolumeHourlyQueryDto) {
     return this.payments.getOpsVolumeHourlySeries(query);
+  }
+
+  @Get('ops/dashboard/volume-usd')
+  @ApiOperation({
+    summary:
+      'Volumen agregado (paid/pending/failed) convertido a USD minor con snapshots FX; mismos filtros base que listado ops',
+  })
+  async dashboardVolumeUsd(@Query() query: OpsDashboardVolumeUsdQueryDto) {
+    return this.payments.getOpsDashboardVolumeUsd(query);
   }
 
   @Get('ops/transactions')

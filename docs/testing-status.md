@@ -1,6 +1,6 @@
 # Estado de tests
 
-Ultima actualizacion: 2026-04-20
+Ultima actualizacion: 2026-04-23
 
 ## Objetivo
 
@@ -20,15 +20,17 @@ La CI del monorepo incluye `api-ci` (lint/test/build API) y `backoffice-ci` (lin
 
 | Dominio | Unit | Integration local | Smoke | Estado | Notas |
 | --- | --- | --- | --- | --- | --- |
-| `payments-v2` | Si | Si | Si | Cubierto | Create v2 sin `provider` en body: ruteo vía `PAYMENTS_PROVIDER_ORDER` + registry inyectable (`PAYMENT_PROVIDERS`); integration setup con `mock`. Flujos create/get/capture/cancel/refund + idempotencia + `paymentLink` + ops. Unit: `ProviderRegistryService`, adapter Acme stub, CB v2 (Redis/fallback, half-open NX con validación env solo si `PAYMENTS_PROVIDER_CB_HALF_OPEN` + `REDIS_URL`, snapshot `circuitState`/`halfOpen`, backoff), cuota merchant (`payments-v2-merchant-rate-limit*.spec.ts`, `PaymentsV2MerchantRateLimitService`; incluye deduplicación heap/indice por bucket), correlación HTTP (`src/common/correlation/correlation-id.spec.ts`, cabeceras `X-Request-Id`/`X-Correlation-Id`). Integration `jest.integration.setup` fuerza `PAYMENTS_PROVIDER_RETRY_BASE_MS=0`. Integration `volume-hourly`: totales/serie como string. Integration dedicada `payments-v2-merchant-rate-limit.integration.spec.ts` (429 + idempotencia sin consumo extra; incluida en `test:integration:critical`). Integration `payments-v2.integration.spec.ts`: aserciones de cabecera `X-Request-Id` en create. |
+| `payments-v2` | Si | Si | Si | Cubierto | Unit `payments-v2.service.spec`: mocks `merchant.findUnique` + `merchantPaymentMethod` tras `clearAllMocks`; idempotencia 3DS espera `nextAction` mínimo `{ type: '3ds' }`; asserts `ConflictException.getResponse()` toleran cuerpo objeto Nest; `onApplicationBootstrap` legacy stripe usa doble `$queryRaw`. Create v2 sin `provider` en body: ruteo vía `PAYMENTS_PROVIDER_ORDER` + registry inyectable (`PAYMENT_PROVIDERS`); integration setup con `mock`. Flujos create/get/capture/cancel/refund + idempotencia + `paymentLink` + ops. Unit: `ProviderRegistryService`, adapter Acme stub, CB v2 (Redis/fallback, half-open NX con validación env solo si `PAYMENTS_PROVIDER_CB_HALF_OPEN` + `REDIS_URL`, snapshot `circuitState`/`halfOpen`, backoff), cuota merchant (`payments-v2-merchant-rate-limit*.spec.ts`, `PaymentsV2MerchantRateLimitService`; incluye deduplicación heap/indice por bucket), correlación HTTP (`src/common/correlation/correlation-id.spec.ts`, cabeceras `X-Request-Id`/`X-Correlation-Id`). Integration `jest.integration.setup` fuerza `PAYMENTS_PROVIDER_RETRY_BASE_MS=0`. Integration `volume-hourly`: totales/serie como string. Integration dedicada `payments-v2-merchant-rate-limit.integration.spec.ts` (429 + idempotencia sin consumo extra; incluida en `test:integration:critical`). Integration `payments-v2.integration.spec.ts`: aserciones de cabecera `X-Request-Id` en create. |
 | `merchants` | No | Si | Parcial | Parcial | Integration cubre create+guard y ciclo revoke/rotate via servicio. Falta spec unitario del controller/service. |
 | `payment-links` | No | Si | No | Parcial | Sin endpoint HTTP activo; cobertura via `PaymentLinksService.findForMerchant`. |
 | `ledger` | Si | Si | Si | Cubierto | Unit de servicio + integration/smoke de `/api/v1/balance`, incluyendo transición `pending/available` y compatibilidad con asientos legacy `available`. |
 | `fees` | Si | Si | No | Cubierto | Unit `FeeService` (fixed/percentage/minimum + resolve active rate table) e integración de endpoints internos para rate tables por merchant/currency/provider. |
-| `settlements` | Si | Si | No | Parcial | Unit `SettlementService` (ventanas T+N/WEEKLY, agrupación e idempotencia de payout) e integración `settlements.integration.spec.ts`. Falta cobertura de chargeback/refund post-payout y estados `SENT/FAILED` del payout. |
+| `settlements` | Si | Si | No | Parcial | Unit `SettlementService` (ventanas T+N/WEEKLY, agrupación e idempotencia de payout) e integración `settlements.integration.spec.ts`. Workflow **SettlementRequest** (controller + BFF approve/reject) sin suite dedicada aún. Falta cobertura de chargeback/refund post-payout y estados `SENT/FAILED` del payout. |
+| `fx` | Si | Parcial | No | Parcial | Unit `fx-rates.service.spec.ts`; integration `fx.integration.spec.ts` (salta si falta migración/tabla). |
+| `backoffice BFF` | Si (proxy) | No | No | Parcial | Vitest `backoffice-api.spec.ts` (incl. `requiresBackofficeScopePath`, POST settlements sin scope). Sin e2e browser. |
 | `health` | Si | Si | Si | Cubierto | Unit + integration `/health` + smoke readiness. |
 | `webhooks` | Si | Si | Si | Cubierto | Unit worker/outbox + integration retry interno + smoke backlog/métricas. |
-| `internal endpoints` | Si (guards) | Si | Si | Cubierto | Ops `GET /api/v2/payments/ops/*`: con `X-Internal-Secret` válido exige también `X-Backoffice-Role` (`admin` o `merchant`); rol `merchant` exige `X-Backoffice-Merchant-Id` alineado con path/query. Script CI `scripts/ci/check-ops-metrics.mjs` envía `X-Backoffice-Role: admin`. Detalle pago scoped: `404` cross-merchant. Backoffice: proxy fail-closed (`backoffice-api.spec.ts`), middleware por rol, token merchant con `exp`. |
+| `internal endpoints` | Si (guards) | Si | Si | Cubierto | Ops `GET/POST/PATCH` en `/api/v2/payments/ops/*`, `/api/v1/settlements/*`, `/api/v1/merchants/ops/*`: con `X-Internal-Secret` válido exige también `X-Backoffice-Role` (`admin` o `merchant`); rol `merchant` exige `X-Backoffice-Merchant-Id` alineado con path/query (incl. inbox/approve solo admin). Script CI `scripts/ci/check-ops-metrics.mjs` envía `X-Backoffice-Role: admin`. Detalle pago scoped: `404` cross-merchant. Backoffice: proxy fail-closed (`backoffice-api.spec.ts`), middleware por rol, token merchant con `exp`. |
 
 ## Inventario actual de archivos
 
@@ -43,6 +45,7 @@ La CI del monorepo incluye `api-ci` (lint/test/build API) y `backoffice-ci` (lin
 - `test/integration/payment-links.integration.spec.ts`
 - `test/integration/rate-tables.integration.spec.ts`
 - `test/integration/settlements.integration.spec.ts`
+- `test/integration/fx.integration.spec.ts`
 - `test/integration/helpers/integration-app.ts`
 - `test/integration/jest.integration.setup.ts`
 

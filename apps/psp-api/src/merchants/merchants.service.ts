@@ -6,6 +6,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { PaymentProviderName } from '../payments-v2/domain/payment-provider-names';
 import { PAYMENT_PROVIDER_NAMES } from '../payments-v2/domain/payment-provider-names';
 import { PayoutScheduleType, SettlementMode } from '../generated/prisma/enums';
+import type { Prisma } from '../generated/prisma/client';
 
 type CreateRateTableInput = {
   provider: PaymentProviderName;
@@ -69,6 +70,8 @@ export class MerchantsService {
           payoutScheduleParam: 1,
         })),
       });
+
+      await this.ensureMockPaymentMethodsForMerchant(tx, merchant.id);
 
       return { merchant, apiKeyPlain };
     });
@@ -186,5 +189,183 @@ export class MerchantsService {
       where: { merchantId },
       orderBy: { activeFrom: 'desc' },
     });
+  }
+
+  async listOpsDirectory() {
+    return this.prisma.merchant.findMany({
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+        deactivatedAt: true,
+        apiKeyExpiresAt: true,
+        apiKeyRevokedAt: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 500,
+    });
+  }
+
+  async setMerchantActive(merchantId: string, isActive: boolean) {
+    const merchant = await this.prisma.merchant.findUnique({
+      where: { id: merchantId },
+      select: { id: true },
+    });
+    if (!merchant) {
+      throw new NotFoundException('Merchant not found');
+    }
+    return this.prisma.merchant.update({
+      where: { id: merchantId },
+      data: {
+        isActive,
+        deactivatedAt: isActive ? null : new Date(),
+      },
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+        deactivatedAt: true,
+      },
+    });
+  }
+
+  async getOpsDetail(merchantId: string) {
+    const merchant = await this.prisma.merchant.findUnique({
+      where: { id: merchantId },
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+        deactivatedAt: true,
+        apiKeyExpiresAt: true,
+        apiKeyRevokedAt: true,
+        createdAt: true,
+      },
+    });
+    if (!merchant) {
+      throw new NotFoundException('Merchant not found');
+    }
+    const [recentPayments, settlementRequests, paymentMethods] = await Promise.all([
+      this.prisma.payment.findMany({
+        where: { merchantId },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+        select: {
+          id: true,
+          status: true,
+          amountMinor: true,
+          currency: true,
+          createdAt: true,
+        },
+      }),
+      this.prisma.settlementRequest.findMany({
+        where: { merchantId },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+      }),
+      this.prisma.merchantPaymentMethod.findMany({
+        where: { merchantId },
+        include: { definition: true },
+      }),
+    ]);
+    return { merchant, recentPayments, settlementRequests, paymentMethods };
+  }
+
+  async listMerchantPaymentMethods(merchantId: string) {
+    return this.prisma.merchantPaymentMethod.findMany({
+      where: { merchantId },
+      include: { definition: true },
+    });
+  }
+
+  async patchMerchantPaymentMethod(
+    merchantId: string,
+    mpmId: string,
+    patch: {
+      merchantEnabled?: boolean;
+      adminEnabled?: boolean;
+      minAmountMinor?: number | null;
+      maxAmountMinor?: number | null;
+      visibleToMerchant?: boolean;
+      lastChangedBy?: string;
+    },
+  ) {
+    const row = await this.prisma.merchantPaymentMethod.findFirst({
+      where: { id: mpmId, merchantId },
+    });
+    if (!row) {
+      throw new NotFoundException('Merchant payment method not found');
+    }
+    return this.prisma.merchantPaymentMethod.update({
+      where: { id: mpmId },
+      data: {
+        ...(patch.merchantEnabled !== undefined ? { merchantEnabled: patch.merchantEnabled } : {}),
+        ...(patch.adminEnabled !== undefined ? { adminEnabled: patch.adminEnabled } : {}),
+        ...(patch.minAmountMinor !== undefined ? { minAmountMinor: patch.minAmountMinor } : {}),
+        ...(patch.maxAmountMinor !== undefined ? { maxAmountMinor: patch.maxAmountMinor } : {}),
+        ...(patch.visibleToMerchant !== undefined ? { visibleToMerchant: patch.visibleToMerchant } : {}),
+        ...(patch.lastChangedBy !== undefined ? { lastChangedBy: patch.lastChangedBy } : {}),
+      },
+      include: { definition: true },
+    });
+  }
+
+  private async ensureMockPaymentMethodsForMerchant(tx: Prisma.TransactionClient, merchantId: string) {
+    const seeds: Array<{
+      id: string;
+      code: string;
+      label: string;
+      provider: string;
+      category: string;
+    }> = [
+      {
+        id: 'pmdef_mock_card',
+        code: 'mock_card',
+        label: 'Mock Tarjeta',
+        provider: 'mock',
+        category: 'card',
+      },
+      {
+        id: 'pmdef_mock_transfer',
+        code: 'mock_transfer',
+        label: 'Mock Transferencia',
+        provider: 'mock',
+        category: 'transfer',
+      },
+    ];
+    for (const d of seeds) {
+      await tx.paymentMethodDefinition.upsert({
+        where: { code: d.code },
+        create: {
+          id: d.id,
+          code: d.code,
+          label: d.label,
+          provider: d.provider,
+          category: d.category,
+          active: true,
+        },
+        update: { label: d.label, active: true, provider: d.provider, category: d.category },
+      });
+    }
+    const defs = await tx.paymentMethodDefinition.findMany({
+      where: { code: { in: seeds.map((s) => s.code) } },
+      select: { id: true },
+    });
+    for (const def of defs) {
+      await tx.merchantPaymentMethod.upsert({
+        where: {
+          merchantId_definitionId: { merchantId, definitionId: def.id },
+        },
+        create: {
+          merchantId,
+          definitionId: def.id,
+          merchantEnabled: true,
+          adminEnabled: true,
+          visibleToMerchant: true,
+        },
+        update: {},
+      });
+    }
   }
 }

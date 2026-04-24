@@ -1,6 +1,7 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { FeesModule } from '../fees/fees.module';
+import { FxModule } from '../fx/fx.module';
 import { LedgerModule } from '../ledger/ledger.module';
 import { PaymentLinksModule } from '../payment-links/payment-links.module';
 import { WebhooksModule } from '../webhooks/webhooks.module';
@@ -18,7 +19,7 @@ import { PAYMENT_PROVIDERS } from './providers/payment-providers.token';
 import { ProviderRegistryService } from './providers/provider-registry.service';
 
 @Module({
-  imports: [LedgerModule, WebhooksModule, PaymentLinksModule, FeesModule],
+  imports: [LedgerModule, WebhooksModule, PaymentLinksModule, FeesModule, FxModule],
   controllers: [PaymentsV2Controller, PaymentsV2InternalController],
   providers: [
     CorrelationContextService,

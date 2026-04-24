@@ -2,6 +2,8 @@ import { INestApplication } from '@nestjs/common/interfaces';
 import request from 'supertest';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { SettlementMode, SettlementStatus } from '../../src/generated/prisma/enums';
+import { SettlementRequestStatus } from '../../src/generated/prisma/enums';
+import { SettlementRequestsService } from '../../src/settlements/settlement-requests.service';
 import { SettlementService } from '../../src/settlements/settlement.service';
 import { createIntegrationApp, createMerchantViaHttp, resetIntegrationDb } from './helpers/integration-app';
 
@@ -156,5 +158,71 @@ describe('settlements integration', () => {
       },
     });
     expect(paidCount).toBe(total);
+  });
+
+  it('approve de solicitud settlement repite createPayout hasta vaciar AVAILABLE masivo', async () => {
+    const settlementRequests = app.get(SettlementRequestsService);
+    const merchant = await createMerchantViaHttp(app);
+
+    const currency = 'EUR';
+    const capturedAt = new Date('2026-04-21T10:00:00.000Z');
+    const availableAt = new Date('2026-04-22T11:00:00.000Z');
+
+    const total = 1500;
+    const perNet = 950;
+    const payments = Array.from({ length: total }, (_, idx) => ({
+      id: `pay_sr_multi_${idx + 1}`,
+      merchantId: merchant.id,
+      amountMinor: 1_000,
+      currency,
+      status: 'captured',
+    }));
+    await prisma.payment.createMany({ data: payments });
+
+    const settlementsData = Array.from({ length: total }, (_, idx) => ({
+      paymentId: payments[idx].id,
+      merchantId: merchant.id,
+      currency,
+      provider: 'mock',
+      settlementMode: SettlementMode.NET,
+      status: SettlementStatus.AVAILABLE,
+      grossMinor: 1_000,
+      feeMinor: 50,
+      netMinor: perNet,
+      capturedAt,
+      availableAt,
+    }));
+    await prisma.paymentSettlement.createMany({ data: settlementsData });
+
+    const createdReq = await settlementRequests.createRequest({
+      merchantId: merchant.id,
+      currency,
+      requestedByRole: 'ops',
+    });
+
+    expect(createdReq.requestedNetMinor).toBe(total * perNet);
+
+    const finalized = await settlementRequests.approve(createdReq.id, 'aprobado test');
+
+    expect(finalized.status).toBe(SettlementRequestStatus.PAID);
+    expect(finalized.settledAllAvailable).toBe(true);
+    expect(finalized.paidNetMinor).toBe(total * perNet);
+    expect(finalized.payoutId).not.toBeNull();
+
+    const linkedPayouts = await prisma.payout.findMany({
+      where: { settlementRequestId: createdReq.id },
+      orderBy: { createdAt: 'asc' },
+    });
+    expect(linkedPayouts.length).toBe(2);
+
+    const leftover = await prisma.paymentSettlement.count({
+      where: {
+        merchantId: merchant.id,
+        currency,
+        status: { in: [SettlementStatus.PENDING, SettlementStatus.AVAILABLE] },
+        payoutId: null,
+      },
+    });
+    expect(leftover).toBe(0);
   });
 });

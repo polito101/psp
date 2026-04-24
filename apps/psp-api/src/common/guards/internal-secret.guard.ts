@@ -61,11 +61,19 @@ export class InternalSecretGuard implements CanActivate {
 
   private assertBackofficeScopeForRequest(req: Request): void {
     const path = req.path ?? '';
-    if (this.isPaymentsV2OpsPath(path)) {
+    if (this.isPaymentsV2OpsPath(path) || this.isSettlementsOpsPath(path) || this.isMerchantsOpsPath(path)) {
       this.assertPaymentsOpsFailClosed(req);
     } else {
       this.assertLegacyOptionalMerchantScope(req);
     }
+  }
+
+  private isSettlementsOpsPath(path: string): boolean {
+    return path.includes('/settlements/');
+  }
+
+  private isMerchantsOpsPath(path: string): boolean {
+    return path.includes('/merchants/ops/');
   }
 
   /**
@@ -112,7 +120,47 @@ export class InternalSecretGuard implements CanActivate {
       }
     }
 
-    if (this.isOpsTransactionsAggregatePath(path)) {
+    const settlementMerchantMatch = path.match(/\/settlements\/merchants\/([^/]+)\//);
+    if (settlementMerchantMatch) {
+      let pathMerchant: string;
+      try {
+        pathMerchant = decodeURIComponent(settlementMerchantMatch[1]!);
+      } catch {
+        throw new BadRequestException('Invalid merchant segment in path');
+      }
+      if (pathMerchant !== scoped) {
+        throw new ForbiddenException('Cross-merchant access denied');
+      }
+    }
+
+    if (path.includes('/settlements/requests/inbox')) {
+      throw new ForbiddenException('Merchant scope cannot access settlement request inbox');
+    }
+    if (/\/settlements\/requests\/[^/]+\/(approve|reject)/.test(path)) {
+      throw new ForbiddenException('Merchant scope cannot approve or reject settlement requests');
+    }
+
+    const merchantsOps = path.match(/\/merchants\/ops\/([^/?#]+)/);
+    if (merchantsOps) {
+      const segment = merchantsOps[1];
+      if (!segment) {
+        return;
+      }
+      if (segment === 'directory') {
+        throw new ForbiddenException('Merchant scope cannot access merchants directory');
+      }
+      let pathMerchant: string;
+      try {
+        pathMerchant = decodeURIComponent(segment);
+      } catch {
+        throw new BadRequestException('Invalid merchant segment in path');
+      }
+      if (pathMerchant !== scoped) {
+        throw new ForbiddenException('Cross-merchant access denied');
+      }
+    }
+
+    if (this.isOpsTransactionsAggregatePath(path) || this.isOpsDashboardMerchantScopedPath(path)) {
       const qm = this.getSingleQueryParam(req.query, 'merchantId');
       if (!qm || qm !== scoped) {
         throw new ForbiddenException('merchantId query must match merchant scope');
@@ -145,6 +193,10 @@ export class InternalSecretGuard implements CanActivate {
       path.includes('/ops/transactions/volume-hourly') ||
       /\/ops\/transactions$/.test(path)
     );
+  }
+
+  private isOpsDashboardMerchantScopedPath(path: string): boolean {
+    return path.includes('/ops/dashboard/volume-usd');
   }
 
   private getHeader(req: Request, name: string): string | undefined {

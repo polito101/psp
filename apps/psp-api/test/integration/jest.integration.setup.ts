@@ -24,3 +24,5 @@ process.env.PAYMENTS_PROVIDER_ORDER ??= 'mock';
 process.env.PAYMENTS_ALLOW_MOCK ??= 'true';
 process.env.PAYMENTS_PROVIDER_RETRY_BASE_MS ??= '0';
 process.env.WEBHOOK_WORKER_ENABLED ??= 'false';
+/** No llamar a Frankfurter al levantar AppModule (tests de integración deben ser deterministas). */
+process.env.FX_AUTO_REFRESH_ENABLED ??= 'false';
