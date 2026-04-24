@@ -1,12 +1,14 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { ArrowRight, Building2, CreditCard, TrendingUp } from "lucide-react";
+import type { OpsVolumeHourlyMetric } from "@/lib/api/contracts";
 import { fetchOpsDashboardVolumeUsd, fetchOpsTransactionCounts, fetchOpsVolumeHourly } from "@/lib/api/client";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { VolumeComparisonChart } from "./volume-comparison-chart";
+import { addUtcCalendarDaysFromYmd, utcYmd } from "./utc-compare-date";
 
 function utcDayIsoRange(d: Date): { createdFrom: string; createdTo: string } {
   const y = d.getUTCFullYear();
@@ -23,9 +25,19 @@ function yesterdayDate(d: Date): Date {
 
 /** Home admin: resumen global + volumen USD (FX) + accesos operativos. */
 export function AdminHomeDashboard() {
+  const [volumeMetric, setVolumeMetric] = useState<OpsVolumeHourlyMetric>("volume_net");
+  const [compareUtcDate, setCompareUtcDate] = useState<string>(() =>
+    addUtcCalendarDaysFromYmd(utcYmd(new Date()), -1),
+  );
+
   const volumeQuery = useQuery({
-    queryKey: ["home-ops-volume-hourly"],
-    queryFn: () => fetchOpsVolumeHourly({ currency: "EUR" }),
+    queryKey: ["home-ops-volume-hourly", volumeMetric, compareUtcDate],
+    queryFn: () =>
+      fetchOpsVolumeHourly({
+        currency: "EUR",
+        metric: volumeMetric,
+        compareUtcDate,
+      }),
     staleTime: 30_000,
     refetchInterval: 60_000,
   });
@@ -155,17 +167,25 @@ export function AdminHomeDashboard() {
 
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-lg">Volumen bruto (hoy vs ayer)</CardTitle>
+          <CardTitle className="text-lg">Serie horaria (hoy UTC vs comparación)</CardTitle>
           <CardDescription>
-            Serie por hora UTC (succeeded), moneda de gráfico:{" "}
-            <span className="font-medium">{vol?.currency ?? "EUR"}</span>.
+            Acumulado por hora según <span className="font-medium">succeeded_at</span> (UTC). Neto ={" "}
+            <span className="font-medium">PaymentFeeQuote.net_minor</span> si existe; si no, importe del pago.
           </CardDescription>
         </CardHeader>
         <CardContent>
           {volumeQuery.isError ? (
             <p className="text-sm text-rose-700">{(volumeQuery.error as Error).message}</p>
           ) : vol ? (
-            <VolumeComparisonChart data={vol} />
+            <VolumeComparisonChart
+              data={vol}
+              metric={volumeMetric}
+              onMetricChange={setVolumeMetric}
+              compareUtcDate={compareUtcDate}
+              onCompareUtcDateChange={setCompareUtcDate}
+              compareDateMin={addUtcCalendarDaysFromYmd(utcYmd(new Date()), -730)}
+              compareDateMax={addUtcCalendarDaysFromYmd(utcYmd(new Date()), -1)}
+            />
           ) : (
             <p className="text-sm text-slate-500">{volumeQuery.isLoading ? "Cargando serie…" : "Sin datos"}</p>
           )}

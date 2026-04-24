@@ -16,6 +16,8 @@ const querySchema = z.object({
     .transform((s) => s.toUpperCase())
     .pipe(z.string().regex(/^[A-Z]{3}$/))
     .optional(),
+  metric: z.enum(["volume_net", "succeeded_count"]).optional(),
+  compareUtcDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
 
 export async function GET(request: NextRequest) {

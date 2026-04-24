@@ -15,6 +15,7 @@ import type {
   OpsTransactionCountsFilters,
   OpsTransactionCountsResponse,
   OpsTransactionsResponse,
+  OpsVolumeHourlyMetric,
   OpsVolumeHourlyResponse,
   ProviderHealthResponse,
   SettlementAvailableBalanceResponse,
@@ -104,6 +105,9 @@ export type OpsVolumeHourlyFilters = {
   merchantId?: string;
   provider?: OpsPaymentProvider;
   currency?: string;
+  metric?: OpsVolumeHourlyMetric;
+  /** YYYY-MM-DD (día UTC de comparación, estrictamente anterior a hoy UTC). */
+  compareUtcDate?: string;
 };
 
 function opsDashboardVolumeUsdParams(filters: OpsDashboardVolumeUsdFilters): URLSearchParams {
@@ -140,6 +144,8 @@ export async function fetchOpsVolumeHourly(
   if (filters.merchantId) params.set("merchantId", filters.merchantId);
   if (filters.provider) params.set("provider", filters.provider);
   if (filters.currency) params.set("currency", filters.currency);
+  if (filters.metric) params.set("metric", filters.metric);
+  if (filters.compareUtcDate) params.set("compareUtcDate", filters.compareUtcDate);
   const qs = params.toString();
   const response = await fetch(`/api/internal/transactions/volume-hourly${qs ? `?${qs}` : ""}`, {
     ...internalBffInit,

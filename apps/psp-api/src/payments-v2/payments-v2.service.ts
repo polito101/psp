@@ -168,7 +168,8 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   private readonly paymentsV2EnabledMerchantEntries: string[];
   /**
    * Caché en memoria (por instancia) `merchantId -> isActive` con TTL corto: reduce carga a BD
-   * sin otro round-trip a Redis; coherencia eventual si `isActive` cambia (poco frecuente).
+   * sin otro round-trip a Redis. TTL `0` desactiva la caché (siempre BD en rutas que la usan).
+   * `createIntent` no confía en aciertos cacheados “activo”: siempre consulta BD (kill-switch).
    */
   private readonly merchantActiveCacheTtlMs: number;
   private readonly merchantIsActiveCache = new Map<string, { value: boolean; expiresAt: number }>();
@@ -220,8 +221,8 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       .map((entry) => entry.trim())
       .filter((entry) => entry.length > 0);
     let merchantActiveTtlSec = this.getNumber('PAYMENTS_V2_MERCHANT_ACTIVE_CACHE_TTL_SEC', 60);
-    if (merchantActiveTtlSec < 30) {
-      merchantActiveTtlSec = 30;
+    if (merchantActiveTtlSec < 0) {
+      merchantActiveTtlSec = 0;
     } else if (merchantActiveTtlSec > 120) {
       merchantActiveTtlSec = 120;
     }
@@ -332,7 +333,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     idempotencyKey = this.parseOptionalIdempotencyKey(idempotencyKey);
     this.assertPaymentsV2ConfigAllowlist(merchantId);
     await this.assertPaymentLinkConsistency(merchantId, dto.paymentLinkId, dto.amountMinor, dto.currency);
-    await this.assertMerchantIsActiveCached(merchantId);
+    await this.assertMerchantIsActiveFresh(merchantId);
 
     if (idempotencyKey) {
       const existing = await this.resolveIdempotentPayment(merchantId, idempotencyKey, dto);
@@ -1359,22 +1360,43 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   }
 
   /**
-   * Volumen acumulado por hora (UTC) de pagos `succeeded` para hoy y ayer, para comparar en un mismo eje 0–23h.
-   * Agrupa y filtra por `succeeded_at` (momento de captura/éxito), no por `created_at`, para alinear el volumen
-   * con el día UTC en que el pago pasó a `succeeded` (índice `@@index([status, currency, succeededAt])` en `Payment`).
-   * En JSON, acumulados por hora y totales se serializan como **strings** (enteros en `amount_minor`) para no perder
-   * precisión fuera de `Number.MAX_SAFE_INTEGER`.
+   * Serie acumulada por hora (UTC) de pagos `succeeded` hoy vs un día calendario UTC anterior.
+   * Agrupa por `succeeded_at` (captura/éxito). Métricas: neto liquidable (`PaymentFeeQuote.net_minor`, fallback
+   * `amount_minor`) o recuento de pagos. Valores en JSON como **strings** (bigint) para no perder precisión.
    */
   async getOpsVolumeHourlySeries(query: OpsVolumeHourlyQueryDto) {
     const currency = (query.currency ?? 'EUR').toUpperCase();
+    const metric = query.metric ?? 'volume_net';
     const now = new Date();
     const y = now.getUTCFullYear();
     const mo = now.getUTCMonth();
     const day = now.getUTCDate();
     const todayStart = new Date(Date.UTC(y, mo, day, 0, 0, 0, 0));
     const tomorrowStart = new Date(Date.UTC(y, mo, day + 1, 0, 0, 0, 0));
-    const yesterdayStart = new Date(Date.UTC(y, mo, day - 1, 0, 0, 0, 0));
     const utcHourNow = now.getUTCHours();
+
+    const defaultCompare = new Date(Date.UTC(y, mo, day - 1, 0, 0, 0, 0));
+    const defaultCompareYmd = `${defaultCompare.getUTCFullYear()}-${String(defaultCompare.getUTCMonth() + 1).padStart(2, '0')}-${String(defaultCompare.getUTCDate()).padStart(2, '0')}`;
+    const compareYmd = query.compareUtcDate?.trim() || defaultCompareYmd;
+    const mCompare = /^(\d{4})-(\d{2})-(\d{2})$/.exec(compareYmd);
+    if (!mCompare) {
+      throw new BadRequestException('compareUtcDate must be YYYY-MM-DD');
+    }
+    const cy = Number(mCompare[1]);
+    const cmo = Number(mCompare[2]) - 1;
+    const cd = Number(mCompare[3]);
+    if (!Number.isFinite(cy) || !Number.isFinite(cmo) || !Number.isFinite(cd)) {
+      throw new BadRequestException('compareUtcDate is invalid');
+    }
+    const compareStart = new Date(Date.UTC(cy, cmo, cd, 0, 0, 0, 0));
+    const compareEnd = new Date(Date.UTC(cy, cmo, cd + 1, 0, 0, 0, 0));
+    if (compareStart.getTime() >= todayStart.getTime()) {
+      throw new BadRequestException('compareUtcDate must be strictly before today (UTC)');
+    }
+    const oldest = new Date(Date.UTC(y, mo, day - 730, 0, 0, 0, 0));
+    if (compareStart.getTime() < oldest.getTime()) {
+      throw new BadRequestException('compareUtcDate is too far in the past (max 730 days)');
+    }
 
     const merchantSql =
       query.merchantId && query.merchantId.trim() !== ''
@@ -1386,11 +1408,13 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
 
     const queryHourly = async (rangeStart: Date, rangeEnd: Date): Promise<bigint[]> => {
       const hourly = new Array<bigint>(24).fill(0n);
-      const rows = await this.prisma.$queryRaw<Array<{ hour: number; vol: bigint }>>(
-        Prisma.sql`
+      const rows =
+        metric === 'succeeded_count'
+          ? await this.prisma.$queryRaw<Array<{ hour: number; vol: bigint }>>(
+              Prisma.sql`
           SELECT
             (EXTRACT(HOUR FROM (p.succeeded_at AT TIME ZONE 'UTC')))::int AS hour,
-            COALESCE(SUM(p.amount_minor), 0)::bigint AS vol
+            COUNT(*)::bigint AS vol
           FROM "Payment" p
           WHERE p.status = ${PAYMENT_V2_STATUS.SUCCEEDED}
             AND p.currency = ${currency}
@@ -1402,7 +1426,28 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
           GROUP BY 1
           ORDER BY 1
         `,
-      );
+            )
+          : await this.prisma.$queryRaw<Array<{ hour: number; vol: bigint }>>(
+              Prisma.sql`
+          SELECT
+            (EXTRACT(HOUR FROM (p.succeeded_at AT TIME ZONE 'UTC')))::int AS hour,
+            COALESCE(
+              SUM(COALESCE(fq.net_minor::bigint, p.amount_minor::bigint)),
+              0::bigint
+            ) AS vol
+          FROM "Payment" p
+          LEFT JOIN "PaymentFeeQuote" fq ON fq.payment_id = p.id
+          WHERE p.status = ${PAYMENT_V2_STATUS.SUCCEEDED}
+            AND p.currency = ${currency}
+            AND p.succeeded_at IS NOT NULL
+            AND p.succeeded_at >= ${rangeStart}
+            AND p.succeeded_at < ${rangeEnd}
+            ${merchantSql}
+            ${providerSql}
+          GROUP BY 1
+          ORDER BY 1
+        `,
+            );
       for (const row of rows) {
         const h = row.hour;
         if (h >= 0 && h < 24) {
@@ -1412,9 +1457,9 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       return hourly;
     };
 
-    const [todayHourly, yesterdayHourly] = await Promise.all([
+    const [todayHourly, compareDayHourly] = await Promise.all([
       queryHourly(todayStart, tomorrowStart),
-      queryHourly(yesterdayStart, todayStart),
+      queryHourly(compareStart, compareEnd),
     ]);
 
     const toCumulative = (hourly: bigint[]): string[] => {
@@ -1427,30 +1472,34 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       return out;
     };
 
-    const yesterdayCumulative = toCumulative(yesterdayHourly);
+    const compareCumulative = toCumulative(compareDayHourly);
     const todayCumulativeFull = toCumulative(todayHourly);
     const todayCumulative: (string | null)[] = todayCumulativeFull.map((v, h) =>
       h > utcHourNow ? null : v,
     );
 
-    let todayVolumeMinor = 0n;
+    let todayTotal = 0n;
     for (let i = 0; i <= utcHourNow; i++) {
-      todayVolumeMinor += todayHourly[i] ?? 0n;
+      todayTotal += todayHourly[i] ?? 0n;
     }
-    const yesterdayVolumeMinor = yesterdayHourly.reduce((a, b) => a + b, 0n);
+    const compareDayTotal = compareDayHourly.reduce((a, b) => a + b, 0n);
 
     const labels = Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2, '0')}:00`);
+    const compareUtcDateStr = `${compareStart.getUTCFullYear()}-${String(compareStart.getUTCMonth() + 1).padStart(2, '0')}-${String(compareStart.getUTCDate()).padStart(2, '0')}`;
 
     return {
       dayBoundary: 'UTC' as const,
       currency,
+      metric,
+      valueUnit: metric === 'succeeded_count' ? ('count' as const) : ('currency_minor' as const),
+      compareUtcDate: compareUtcDateStr,
       status: PAYMENT_V2_STATUS.SUCCEEDED,
       labels,
       todayCumulativeVolumeMinor: todayCumulative,
-      yesterdayCumulativeVolumeMinor: yesterdayCumulative,
+      compareCumulativeVolumeMinor: compareCumulative,
       totals: {
-        todayVolumeMinor: todayVolumeMinor.toString(),
-        yesterdayVolumeMinor: yesterdayVolumeMinor.toString(),
+        todayVolumeMinor: todayTotal.toString(),
+        compareDayVolumeMinor: compareDayTotal.toString(),
       },
     };
   }
@@ -2938,6 +2987,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   }
 
   private getMerchantIsActiveFromCache(merchantId: string): boolean | undefined {
+    if (this.merchantActiveCacheTtlMs <= 0) return undefined;
     const e = this.merchantIsActiveCache.get(merchantId);
     if (e === undefined) return undefined;
     if (e.expiresAt <= Date.now()) {
@@ -2948,6 +2998,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   }
 
   private setMerchantIsActiveInCache(merchantId: string, isActive: boolean) {
+    if (this.merchantActiveCacheTtlMs <= 0) return;
     if (this.merchantIsActiveCache.size >= PaymentsV2Service.MERCHANT_ACTIVE_CACHE_MAX_ENTRIES) {
       const { value, done } = this.merchantIsActiveCache.keys().next();
       if (!done && value !== undefined) {
@@ -2958,6 +3009,22 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       value: isActive,
       expiresAt: Date.now() + this.merchantActiveCacheTtlMs,
     });
+  }
+
+  /**
+   * Lee `Merchant.isActive` siempre en BD y actualiza la caché en memoria si está habilitada.
+   * Obligatorio en rutas críticas (p. ej. creación de intent) para que `isActive` actúe como kill-switch sin ventana por caché “activo”.
+   */
+  private async assertMerchantIsActiveFresh(merchantId: string) {
+    const merchant = await this.prisma.merchant.findUnique({
+      where: { id: merchantId },
+      select: { isActive: true },
+    });
+    const isActive = Boolean(merchant?.isActive);
+    this.setMerchantIsActiveInCache(merchantId, isActive);
+    if (!isActive) {
+      throw new ForbiddenException('Merchant account is inactive or missing');
+    }
   }
 
   /**

@@ -222,21 +222,24 @@ describe('payments-v2 integration', () => {
     });
 
     const vol = await request(app.getHttpServer())
-      .get('/api/v2/payments/ops/transactions/volume-hourly')
+      .get('/api/v2/payments/ops/transactions/volume-hourly?metric=succeeded_count')
       .set('X-Internal-Secret', internalSecret)
       .set('X-Backoffice-Role', 'admin')
       .expect(200);
 
     expect(vol.body.dayBoundary).toBe('UTC');
     expect(vol.body.currency).toBe('EUR');
-    expect(vol.body.todayCumulativeVolumeMinor[bucketH]).toBe('1500');
+    expect(vol.body.metric).toBe('succeeded_count');
+    expect(vol.body.valueUnit).toBe('count');
+    expect(typeof vol.body.compareUtcDate).toBe('string');
+    expect(vol.body.todayCumulativeVolumeMinor[bucketH]).toBe('1');
     expect(typeof vol.body.totals.todayVolumeMinor).toBe('string');
-    expect(typeof vol.body.totals.yesterdayVolumeMinor).toBe('string');
+    expect(typeof vol.body.totals.compareDayVolumeMinor).toBe('string');
     expect(
-      vol.body.yesterdayCumulativeVolumeMinor.every((x: unknown) => typeof x === 'string'),
+      vol.body.compareCumulativeVolumeMinor.every((x: unknown) => typeof x === 'string'),
     ).toBe(true);
-    expect(BigInt(vol.body.totals.todayVolumeMinor)).toBeGreaterThanOrEqual(1500n);
-    expect(vol.body.yesterdayCumulativeVolumeMinor).toHaveLength(24);
+    expect(BigInt(vol.body.totals.todayVolumeMinor)).toBeGreaterThanOrEqual(1n);
+    expect(vol.body.compareCumulativeVolumeMinor).toHaveLength(24);
   });
 
   it('runs create -> cancel and keeps canceled state', async () => {

@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { OpsVolumeHourlyResponse } from "@/lib/api/contracts";
+import type { OpsVolumeHourlyMetric, OpsVolumeHourlyResponse } from "@/lib/api/contracts";
 import { amountMinorToBigInt, formatAmountMinor } from "@/lib/ops-transaction-display";
+import { Select } from "@/components/ui/select";
+import { formatUtcYmdLong, parseUtcYmdParts } from "./utc-compare-date";
 
 const PAD = { t: 16, r: 12, b: 40, l: 48 };
 const MIN_CHART_W = 280;
@@ -155,12 +157,45 @@ function formatPct(p: number | null): { text: string; tone: "up" | "down" | "fla
   return { text, tone: "flat" };
 }
 
-type Props = { data: OpsVolumeHourlyResponse };
+function formatSeriesValue(
+  valueUnit: OpsVolumeHourlyResponse["valueUnit"],
+  raw: string | bigint | null | undefined,
+  currency: string,
+): string {
+  if (raw == null) return "—";
+  if (valueUnit === "count") {
+    const b = amountMinorToBigInt(raw);
+    if (b == null) return "—";
+    if (b > BigInt(Number.MAX_SAFE_INTEGER) || b < BigInt(Number.MIN_SAFE_INTEGER)) {
+      return b.toString();
+    }
+    return new Intl.NumberFormat("es-ES", { maximumFractionDigits: 0 }).format(Number(b));
+  }
+  return formatAmountMinor(raw, currency);
+}
+
+type Props = {
+  data: OpsVolumeHourlyResponse;
+  metric: OpsVolumeHourlyMetric;
+  onMetricChange: (m: OpsVolumeHourlyMetric) => void;
+  compareUtcDate: string;
+  onCompareUtcDateChange: (ymd: string) => void;
+  compareDateMin: string;
+  compareDateMax: string;
+};
 
 /**
- * Gráfico de líneas: volumen acumulado hoy (UTC) vs ayer, hover hora a hora con % vs mismo bucket ayer.
+ * Gráfico de líneas: acumulado hoy (UTC) vs día de comparación, hover hora a hora con % vs mismo bucket.
  */
-export function VolumeComparisonChart({ data }: Props) {
+export function VolumeComparisonChart({
+  data,
+  metric,
+  onMetricChange,
+  compareUtcDate,
+  onCompareUtcDateChange,
+  compareDateMin,
+  compareDateMax,
+}: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [chartW, setChartW] = useState(MIN_CHART_W);
   const [, setClockTick] = useState(0);
@@ -193,18 +228,18 @@ export function VolumeComparisonChart({ data }: Props) {
     [data.todayCumulativeVolumeMinor],
   );
 
-  const parsedYest = useMemo(
-    () => data.yesterdayCumulativeVolumeMinor.map((v) => amountMinorToBigInt(v)),
-    [data.yesterdayCumulativeVolumeMinor],
+  const parsedCompare = useMemo(
+    () => data.compareCumulativeVolumeMinor.map((v) => amountMinorToBigInt(v)),
+    [data.compareCumulativeVolumeMinor],
   );
 
-  const volumeMinorParseInvalid = useMemo(() => {
+  const seriesParseInvalid = useMemo(() => {
     if (data.todayCumulativeVolumeMinor.some((v, i) => v != null && parsedToday[i] == null)) return true;
-    if (parsedYest.some((v) => v == null)) return true;
+    if (parsedCompare.some((v) => v == null)) return true;
     if (amountMinorToBigInt(data.totals.todayVolumeMinor) == null) return true;
-    if (amountMinorToBigInt(data.totals.yesterdayVolumeMinor) == null) return true;
+    if (amountMinorToBigInt(data.totals.compareDayVolumeMinor) == null) return true;
     return false;
-  }, [data.totals, data.todayCumulativeVolumeMinor, parsedToday, parsedYest]);
+  }, [data.totals, data.todayCumulativeVolumeMinor, parsedToday, parsedCompare]);
 
   const maxTodayHour = useMemo(() => {
     let m = -1;
@@ -214,7 +249,7 @@ export function VolumeComparisonChart({ data }: Props) {
     return m;
   }, [data.todayCumulativeVolumeMinor]);
 
-  const yesterdayHourly = useMemo(() => hourlyFromCumulative(parsedYest), [parsedYest]);
+  const compareDayHourly = useMemo(() => hourlyFromCumulative(parsedCompare), [parsedCompare]);
 
   const todayHourly = useMemo(
     () => hourlyTodayFromCumulative(parsedToday, maxTodayHour),
@@ -222,18 +257,18 @@ export function VolumeComparisonChart({ data }: Props) {
   );
 
   const yMax = useMemo(() => {
-    const yLast = parsedYest[23] ?? 0n;
+    const cLast = parsedCompare[23] ?? 0n;
     let tMax = 0n;
     for (const v of parsedToday) {
       if (v != null && v > tMax) tMax = v;
     }
-    const m = yLast > tMax ? yLast : tMax;
+    const m = cLast > tMax ? cLast : tMax;
     return m > 0n ? m : 1n;
-  }, [parsedToday, parsedYest]);
+  }, [parsedToday, parsedCompare]);
 
-  const yesterdayPath = useMemo(
-    () => buildPath(parsedYest, yMax, chartW, chartH),
-    [parsedYest, yMax, chartW, chartH],
+  const comparePath = useMemo(
+    () => buildPath(parsedCompare, yMax, chartW, chartH),
+    [parsedCompare, yMax, chartW, chartH],
   );
 
   const todayPath = useMemo(
@@ -250,10 +285,13 @@ export function VolumeComparisonChart({ data }: Props) {
   const innerW = chartW - PAD.l - PAD.r;
 
   const { y: cy, m: cm, d: cd } = utcCalendarDates();
-  const fixYest = (() => {
-    const dt = new Date(Date.UTC(cy, cm, cd - 1));
-    return { y: dt.getUTCFullYear(), m: dt.getUTCMonth(), d: dt.getUTCDate() };
-  })();
+  const compareFallback = new Date(Date.UTC(cy, cm, cd - 1));
+  const compareParts =
+    parseUtcYmdParts(data.compareUtcDate) ?? {
+      y: compareFallback.getUTCFullYear(),
+      m: compareFallback.getUTCMonth(),
+      d: compareFallback.getUTCDate(),
+    };
 
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const [pointerXSvg, setPointerXSvg] = useState<number | null>(null);
@@ -311,39 +349,74 @@ export function VolumeComparisonChart({ data }: Props) {
   const toY = (v: bigint) =>
     PAD.t + innerH - (yMax <= 0n ? 0 : bigintRatioToNumber(v, yMax) * innerH);
 
-  const hoverYestCum = hoverHour != null ? parsedYest[hoverHour] ?? null : null;
+  const hoverCompareCum = hoverHour != null ? parsedCompare[hoverHour] ?? null : null;
   const hoverTodayCum = hoverHour != null ? parsedToday[hoverHour] ?? null : null;
 
-  const hoverYestHourly = hoverHour != null ? yesterdayHourly[hoverHour] : null;
+  const hoverCompareHourly = hoverHour != null ? compareDayHourly[hoverHour] : null;
   const hoverTodayHourly = hoverHour != null ? todayHourly[hoverHour] : null;
 
   const pct =
-    hoverTodayHourly != null && hoverYestHourly != null
-      ? hourOverHourPct(hoverTodayHourly, hoverYestHourly)
+    hoverTodayHourly != null && hoverCompareHourly != null
+      ? hourOverHourPct(hoverTodayHourly, hoverCompareHourly)
       : null;
   const pctFmt = formatPct(pct);
 
   const utcTimeLabel = formatUtcClock();
 
+  const compareDayTitle = formatUtcYmdLong(data.compareUtcDate);
+
   return (
     <div ref={wrapRef} className="w-full">
       <div className="mb-4 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-slate-700">Volumen bruto</div>
-          <p className="mt-1 text-3xl font-semibold tabular-nums tracking-tight text-slate-900 sm:text-4xl">
-            {formatAmountMinor(data.totals.todayVolumeMinor, data.currency)}
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="max-w-xs">
+            <label htmlFor="home-volume-chart-metric" className="sr-only">
+              Métrica del gráfico
+            </label>
+            <Select
+              id="home-volume-chart-metric"
+              value={metric}
+              onChange={(e) => onMetricChange(e.target.value as OpsVolumeHourlyMetric)}
+            >
+              <option value="volume_net">Volumen neto</option>
+              <option value="succeeded_count">Pagos satisfactorios</option>
+            </Select>
+          </div>
+          <p className="text-3xl font-semibold tabular-nums tracking-tight text-slate-900 sm:text-4xl">
+            {formatSeriesValue(data.valueUnit, data.totals.todayVolumeMinor, data.currency)}
           </p>
-          <p className="mt-0.5 text-xs text-slate-500">{utcTimeLabel} UTC</p>
+          <p className="text-xs text-slate-500">
+            {utcTimeLabel} UTC · Hoy (acum.) · moneda filtro:{" "}
+            <span className="font-medium">{data.currency}</span>
+          </p>
         </div>
-        <div className="shrink-0 sm:min-w-[140px] sm:text-right">
-          <div className="text-sm font-medium text-slate-700 sm:text-right">Ayer</div>
-          <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-700 sm:text-3xl">
-            {formatAmountMinor(data.totals.yesterdayVolumeMinor, data.currency)}
+        <div className="flex shrink-0 flex-col gap-2 sm:min-w-[200px] sm:items-end sm:text-right">
+          <div className="w-full sm:w-auto sm:max-w-[200px]">
+            <label htmlFor="home-volume-chart-compare" className="mb-1 block text-xs font-medium text-slate-600">
+              Comparación (día UTC)
+            </label>
+            <input
+              id="home-volume-chart-compare"
+              type="date"
+              className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-400 sm:text-right"
+              min={compareDateMin}
+              max={compareDateMax}
+              value={compareUtcDate}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (!v) return;
+                if (v >= compareDateMin && v <= compareDateMax) onCompareUtcDateChange(v);
+              }}
+            />
+          </div>
+          <div className="text-sm font-medium text-slate-700 sm:text-right">{compareDayTitle}</div>
+          <p className="text-2xl font-semibold tabular-nums text-slate-700 sm:text-3xl">
+            {formatSeriesValue(data.valueUnit, data.totals.compareDayVolumeMinor, data.currency)}
           </p>
         </div>
       </div>
 
-      {volumeMinorParseInvalid ? (
+      {seriesParseInvalid ? (
         <div
           className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950"
           role="alert"
@@ -359,7 +432,7 @@ export function VolumeComparisonChart({ data }: Props) {
           viewBox={`0 0 ${chartW} ${chartH}`}
           className="h-auto w-full touch-none select-none text-slate-600"
           role="img"
-          aria-label="Volumen acumulado hoy frente a ayer por hora UTC"
+          aria-label="Serie acumulada hoy frente al día de comparación por hora UTC"
           onPointerMove={onPointerMove}
           onPointerLeave={onPointerLeave}
           onPointerDown={onPointerMove}
@@ -403,9 +476,9 @@ export function VolumeComparisonChart({ data }: Props) {
               </text>
             );
           })}
-          {yesterdayPath.d ? (
+          {comparePath.d ? (
             <path
-              d={yesterdayPath.d}
+              d={comparePath.d}
               fill="none"
               stroke="#94a3b8"
               strokeWidth={2}
@@ -437,12 +510,12 @@ export function VolumeComparisonChart({ data }: Props) {
             />
           ) : null}
           {hoverHour != null &&
-          hoverYestCum != null &&
+          hoverCompareCum != null &&
           pointerXSvg != null &&
           maxTodayHour >= 0 ? (
             <circle
               cx={pointerXSvg}
-              cy={toY(hoverYestCum)}
+              cy={toY(hoverCompareCum)}
               r={5}
               fill="#94a3b8"
               stroke="#fff"
@@ -479,7 +552,7 @@ export function VolumeComparisonChart({ data }: Props) {
 
         {hoverHour != null &&
         hoverTodayHourly != null &&
-        hoverYestHourly != null &&
+        hoverCompareHourly != null &&
         pointerXSvg != null &&
         tooltipOffset != null &&
         maxTodayHour >= 0 ? (
@@ -488,7 +561,9 @@ export function VolumeComparisonChart({ data }: Props) {
             style={{ left: tooltipOffset.left, top: tooltipOffset.top }}
           >
             <div className="flex items-start justify-between gap-2 border-b border-slate-100 pb-2">
-              <span className="text-xs font-medium text-slate-800">Volumen bruto</span>
+              <span className="text-xs font-medium text-slate-800">
+                {data.metric === "succeeded_count" ? "Pagos satisfactorios" : "Volumen neto"}
+              </span>
               <span
                 className={
                   pctFmt.tone === "down"
@@ -510,7 +585,7 @@ export function VolumeComparisonChart({ data }: Props) {
                 <div className="min-w-0 flex-1">
                   <p className="text-slate-500">{formatUtcBucketLabel(cy, cm, cd, hoverHour)}</p>
                   <p className="font-semibold tabular-nums text-slate-900">
-                    {formatAmountMinor(hoverTodayHourly, data.currency)}
+                    {formatSeriesValue(data.valueUnit, hoverTodayHourly, data.currency)}
                   </p>
                 </div>
               </div>
@@ -518,10 +593,10 @@ export function VolumeComparisonChart({ data }: Props) {
                 <span className="mt-0.5 size-2.5 shrink-0 rounded-sm bg-slate-400" aria-hidden />
                 <div className="min-w-0 flex-1">
                   <p className="text-slate-500">
-                    {formatUtcBucketLabel(fixYest.y, fixYest.m, fixYest.d, hoverHour)}
+                    {formatUtcBucketLabel(compareParts.y, compareParts.m, compareParts.d, hoverHour)}
                   </p>
                   <p className="font-semibold tabular-nums text-slate-800">
-                    {formatAmountMinor(hoverYestHourly, data.currency)}
+                    {formatSeriesValue(data.valueUnit, hoverCompareHourly, data.currency)}
                   </p>
                 </div>
               </div>
@@ -539,7 +614,7 @@ export function VolumeComparisonChart({ data }: Props) {
           <svg width={18} height={3} className="shrink-0 text-slate-400" aria-hidden>
             <line x1="0" y1="1.5" x2="18" y2="1.5" stroke="currentColor" strokeWidth="2" strokeDasharray="4 3" />
           </svg>
-          Ayer (UTC)
+          Comparación: {compareDayTitle} (UTC)
         </span>
       </div>
     </div>
