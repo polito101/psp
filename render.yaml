@@ -73,6 +73,9 @@ services:
       # Debe coincidir con el hostname público del servicio psp-api tras el primer deploy.
       - key: PSP_API_BASE_URL
         value: https://psp-api.onrender.com
+      # Cold start en plan free suele superar el default 5s del BFF (`backoffice-api.ts`).
+      - key: PSP_API_PROXY_TIMEOUT_MS
+        value: "60000"
       - key: PSP_INTERNAL_API_SECRET
         fromService:
           name: psp-api

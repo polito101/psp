@@ -1,6 +1,6 @@
 # BACKOFFICE_CONTEXT — PSP Backoffice
 
-Ultima actualizacion: 2026-04-23
+Ultima actualizacion: 2026-04-27
 
 Documento **local** del app `apps/psp-backoffice` (nombre distinto de `PROJECT_CONTEXT.md` en la raíz para evitar confusion). El monorepo mantiene visión global y API en **`PROJECT_CONTEXT.md`** (raíz); aquí se detalla solo el panel administrativo.
 
@@ -57,6 +57,7 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 | Variable | Uso |
 |----------|-----|
 | `PSP_API_BASE_URL` | Base URL de `psp-api` (solo servidor) |
+| `PSP_API_PROXY_TIMEOUT_MS` | Opcional: timeout ms del `fetch` BFF→API (default **5000**, máx. 120000). Subir en hosting con cold start largo (p. ej. Render free). |
 | `PSP_INTERNAL_API_SECRET` | Secreto interno API; **nunca** al cliente |
 | `BACKOFFICE_ADMIN_SECRET` | Credencial de login **admin** (solo `POST /api/auth/session` modo admin); distinto de `PSP_INTERNAL_API_SECRET` |
 | `BACKOFFICE_SESSION_JWT_SECRET` | Firma del JWT en cookie `backoffice_session` (sesión admin/merchant); distinto de `PSP_INTERNAL_API_SECRET` y de `BACKOFFICE_ADMIN_SECRET` |
