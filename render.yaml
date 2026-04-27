@@ -1,9 +1,7 @@
 # Render Blueprint: psp-api (Docker) + psp-backoffice (Node) + Postgres + Key-Value (Redis/Valkey).
 # Aplicar: https://dashboard.render.com/blueprint/new
 #
-# Antes de confiar tráfico: ejecuta migraciones contra el Postgres de Render, p. ej.:
-#   cd apps/psp-api && set DATABASE_URL=...de la instancia... && npx prisma migrate deploy
-# (la imagen de producción no incluye un flujo de migrate en el entrypoint).
+# Migraciones: el Dockerfile de psp-api ejecuta `prisma migrate deploy` en el entrypoint antes de `node dist/main`.
 #
 # Ajusta las URLs https://psp-api.onrender.com y https://psp-backoffice.onrender.com si Render
 # te asigna otro dominio al crear el Blueprint (nombre de servicio ocupado globalmente).
