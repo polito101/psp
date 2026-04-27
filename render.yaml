@@ -1,0 +1,93 @@
+# Render Blueprint: psp-api (Docker) + psp-backoffice (Node) + Postgres + Key-Value (Redis/Valkey).
+# Aplicar: https://dashboard.render.com/blueprint/new
+#
+# Antes de confiar tráfico: ejecuta migraciones contra el Postgres de Render, p. ej.:
+#   cd apps/psp-api && set DATABASE_URL=...de la instancia... && npx prisma migrate deploy
+# (la imagen de producción no incluye un flujo de migrate en el entrypoint).
+#
+# Ajusta las URLs https://psp-api.onrender.com y https://psp-backoffice.onrender.com si Render
+# te asigna otro dominio al crear el Blueprint (nombre de servicio ocupado globalmente).
+
+services:
+  - type: keyvalue
+    name: psp-kv
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList:
+      - source: 0.0.0.0/0
+        description: Render Key Value requiere lista; compat Redis/Valkey para la API.
+
+  - type: web
+    name: psp-api
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./apps/psp-api/Dockerfile
+    dockerContext: ./apps/psp-api
+    healthCheckPath: /health
+    buildFilter:
+      paths:
+        - apps/psp-api/**
+    envVars:
+      # sandbox: permite mock como proveedor sin PAYMENTS_ALLOW_MOCK (alineado con NODE_ENV sandbox en env.validation).
+      - key: NODE_ENV
+        value: sandbox
+      - key: DATABASE_URL
+        fromDatabase:
+          name: psp-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: psp-kv
+          type: keyvalue
+          property: connectionString
+      - key: INTERNAL_API_SECRET
+        generateValue: true
+      - key: APP_ENCRYPTION_KEY
+        generateValue: true
+      - key: PAYMENTS_PROVIDER_ORDER
+        value: mock
+      - key: PAYMENTS_V2_ENABLED_MERCHANTS
+        value: "*"
+      - key: ENABLE_SWAGGER
+        value: "false"
+      # Origen del panel (ajústalo si tu dominio público del backoffice cambia).
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://psp-backoffice.onrender.com
+
+  - type: web
+    name: psp-backoffice
+    runtime: node
+    plan: free
+    region: oregon
+    rootDir: apps/psp-backoffice
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    buildFilter:
+      paths:
+        - apps/psp-backoffice/**
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Debe coincidir con el hostname público del servicio psp-api tras el primer deploy.
+      - key: PSP_API_BASE_URL
+        value: https://psp-api.onrender.com
+      - key: PSP_INTERNAL_API_SECRET
+        fromService:
+          name: psp-api
+          type: web
+          envVarKey: INTERNAL_API_SECRET
+      - key: BACKOFFICE_ADMIN_SECRET
+        generateValue: true
+      - key: BACKOFFICE_SESSION_JWT_SECRET
+        generateValue: true
+      - key: BACKOFFICE_MERCHANT_PORTAL_SECRET
+        generateValue: true
+      - key: NEXT_PUBLIC_TRANSACTIONS_REFRESH_MS
+        value: "15000"
+
+databases:
+  - name: psp-postgres
+    databaseName: psp
+    user: psp
+    plan: free
