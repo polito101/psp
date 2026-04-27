@@ -11,6 +11,8 @@ export function QueryProvider({ children }: { children: ReactNode }) {
           queries: {
             staleTime: 5_000,
             refetchOnWindowFocus: false,
+            /** Evita varios minutos en “Cargando…” si el BFF falla por timeout/red lenta (p. ej. Render free). */
+            retry: 1,
           },
         },
       }),
