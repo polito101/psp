@@ -63,7 +63,8 @@ services:
     region: oregon
     branch: Phase1
     rootDir: apps/psp-backoffice
-    buildCommand: npm ci && npm run build
+    # NODE_ENV=production hace que npm ci omita devDependencies; Tailwind/PostCSS viven ahí y next build las necesita.
+    buildCommand: NPM_CONFIG_PRODUCTION=false npm ci && npm run build
     startCommand: npm run start
     buildFilter:
       paths:
