@@ -22,6 +22,7 @@ services:
     runtime: docker
     plan: free
     region: oregon
+    branch: Phase1
     dockerfilePath: ./apps/psp-api/Dockerfile
     dockerContext: ./apps/psp-api
     healthCheckPath: /health
@@ -60,6 +61,7 @@ services:
     runtime: node
     plan: free
     region: oregon
+    branch: Phase1
     rootDir: apps/psp-backoffice
     buildCommand: npm ci && npm run build
     startCommand: npm run start
