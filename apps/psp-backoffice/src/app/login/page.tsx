@@ -1,6 +1,7 @@
 "use client";
 
 import { type FormEvent, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -14,7 +15,6 @@ import {
   Loader2,
   Lock,
   ShieldCheck,
-  Sparkles,
   Store,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -105,15 +105,24 @@ export default function LoginPage() {
           />
 
           {/* Header marca */}
-          <div className="relative z-10 flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-white/10 ring-1 ring-white/20 backdrop-blur">
-              <Sparkles size={20} className="text-white" aria-hidden />
+          <div className="relative z-10 flex items-center gap-4">
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white p-1.5 shadow-lg ring-1 ring-white/20">
+              <Image
+                src="/finara-logo.png"
+                alt="Finara"
+                width={56}
+                height={56}
+                className="h-full w-full object-contain"
+                priority
+              />
             </div>
-            <div>
-              <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
-                PSP
-              </p>
-              <p className="text-sm font-semibold text-white">Backoffice</p>
+            <div className="flex flex-col">
+              <span className="text-lg font-semibold tracking-tight text-white">
+                Finara
+              </span>
+              <span className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
+                Backoffice
+              </span>
             </div>
           </div>
 
@@ -183,14 +192,23 @@ export default function LoginPage() {
           <div className="w-full max-w-md">
             {/* Marca móvil */}
             <div className="mb-10 flex items-center gap-3 lg:hidden">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-900 ring-1 ring-slate-800">
-                <Sparkles size={18} className="text-white" aria-hidden />
+              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-white p-1 ring-1 ring-slate-200">
+                <Image
+                  src="/finara-logo.png"
+                  alt="Finara"
+                  width={48}
+                  height={48}
+                  className="h-full w-full object-contain"
+                  priority
+                />
               </div>
-              <div>
-                <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-slate-500">
-                  PSP
-                </p>
-                <p className="text-sm font-semibold text-slate-900">Backoffice</p>
+              <div className="flex flex-col">
+                <span className="text-base font-semibold tracking-tight text-slate-900">
+                  Finara
+                </span>
+                <span className="text-[10px] font-medium uppercase tracking-[0.22em] text-slate-500">
+                  Backoffice
+                </span>
               </div>
             </div>
 
