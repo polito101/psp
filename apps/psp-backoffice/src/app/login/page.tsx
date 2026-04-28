@@ -1,9 +1,11 @@
 "use client";
 
 import { type FormEvent, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   AlertCircle,
+  ArrowLeft,
   Building2,
   Eye,
   EyeOff,
@@ -12,6 +14,7 @@ import {
   Loader2,
   Lock,
   ShieldCheck,
+  Sparkles,
   Store,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -68,81 +71,137 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-3xl">
-      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="grid lg:grid-cols-[1.05fr_minmax(0,1fr)]">
-          {/* Panel informativo */}
-          <aside className="relative hidden overflow-hidden bg-slate-900 p-8 text-slate-100 lg:flex lg:flex-col lg:justify-between">
-            <div
-              aria-hidden
-              className="pointer-events-none absolute -right-24 -top-24 h-72 w-72 rounded-full bg-[var(--primary)] opacity-25 blur-3xl"
-            />
-            <div
-              aria-hidden
-              className="pointer-events-none absolute -bottom-32 -left-16 h-64 w-64 rounded-full bg-indigo-400 opacity-15 blur-3xl"
-            />
+    <div className="relative min-h-screen w-full bg-slate-50">
+      {/* Volver al inicio */}
+      <Link
+        href="/"
+        className="absolute left-4 top-4 z-20 inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white/80 px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm backdrop-blur transition hover:bg-white hover:text-slate-900 sm:left-6 sm:top-6"
+      >
+        <ArrowLeft size={14} aria-hidden />
+        Volver al inicio
+      </Link>
 
-            <div className="relative">
-              <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-slate-200 backdrop-blur">
-                <ShieldCheck size={12} aria-hidden />
-                Acceso seguro
-              </div>
-              <h2 className="mt-6 text-2xl font-semibold leading-tight text-white text-balance">
-                Backoffice del PSP
-              </h2>
-              <p className="mt-3 text-sm leading-relaxed text-slate-300 text-pretty">
-                Sesión emitida por el servidor mediante una cookie HttpOnly con un JWT firmado. Elige el rol con el que
-                vas a operar: administración global o portal del comercio.
-              </p>
+      <div className="grid min-h-screen lg:grid-cols-2">
+        {/* Panel marca */}
+        <aside className="relative hidden overflow-hidden bg-slate-950 lg:flex lg:flex-col lg:justify-between lg:p-12 xl:p-16">
+          {/* Halos */}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute -right-40 -top-40 h-[28rem] w-[28rem] rounded-full bg-[var(--primary)] opacity-30 blur-[120px]"
+          />
+          <div
+            aria-hidden
+            className="pointer-events-none absolute -bottom-40 -left-32 h-[26rem] w-[26rem] rounded-full bg-indigo-500 opacity-20 blur-[120px]"
+          />
+          {/* Grid de puntos */}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 opacity-[0.07]"
+            style={{
+              backgroundImage:
+                "radial-gradient(circle at 1px 1px, white 1px, transparent 0)",
+              backgroundSize: "28px 28px",
+            }}
+          />
+
+          {/* Header marca */}
+          <div className="relative z-10 flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-white/10 ring-1 ring-white/20 backdrop-blur">
+              <Sparkles size={20} className="text-white" aria-hidden />
             </div>
+            <div>
+              <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
+                PSP
+              </p>
+              <p className="text-sm font-semibold text-white">Backoffice</p>
+            </div>
+          </div>
 
-            <ul className="relative mt-8 space-y-4 text-sm text-slate-300">
+          {/* Hero */}
+          <div className="relative z-10 max-w-lg">
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-slate-200 backdrop-blur">
+              <ShieldCheck size={12} aria-hidden />
+              Acceso seguro
+            </div>
+            <h2 className="mt-6 text-balance text-4xl font-semibold leading-[1.1] tracking-tight text-white xl:text-5xl">
+              Operaciones,{" "}
+              <span className="bg-gradient-to-r from-indigo-300 to-[var(--primary)] bg-clip-text text-transparent">
+                en tiempo real
+              </span>
+            </h2>
+            <p className="mt-5 max-w-md text-pretty text-base leading-relaxed text-slate-300">
+              Monitorea pagos, conciliaciones y la salud operativa de cada
+              comercio desde una única consola unificada.
+            </p>
+
+            <ul className="mt-10 space-y-5 text-sm">
               <li className="flex items-start gap-3">
-                <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/10 text-slate-100">
-                  <Lock size={14} aria-hidden />
+                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/10 ring-1 ring-white/15">
+                  <Lock size={15} className="text-slate-100" aria-hidden />
                 </span>
                 <div>
-                  <p className="font-medium text-slate-100">Cookie HttpOnly</p>
-                  <p className="text-xs leading-relaxed text-slate-400">
-                    Token firmado, no accesible desde JavaScript del cliente.
+                  <p className="font-medium text-white">Cookie HttpOnly firmada</p>
+                  <p className="mt-0.5 text-xs leading-relaxed text-slate-400">
+                    JWT emitido por el servidor, no accesible desde JavaScript.
                   </p>
                 </div>
               </li>
               <li className="flex items-start gap-3">
-                <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/10 text-slate-100">
-                  <Fingerprint size={14} aria-hidden />
+                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/10 ring-1 ring-white/15">
+                  <Fingerprint size={15} className="text-slate-100" aria-hidden />
                 </span>
                 <div>
-                  <p className="font-medium text-slate-100">HMAC con expiración</p>
-                  <p className="text-xs leading-relaxed text-slate-400">
-                    Los tokens de merchant son temporales y verificados en backend.
+                  <p className="font-medium text-white">HMAC con expiración</p>
+                  <p className="mt-0.5 text-xs leading-relaxed text-slate-400">
+                    Tokens de merchant temporales y verificados en el backend.
                   </p>
                 </div>
               </li>
               <li className="flex items-start gap-3">
-                <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/10 text-slate-100">
-                  <Building2 size={14} aria-hidden />
+                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/10 ring-1 ring-white/15">
+                  <Building2 size={15} className="text-slate-100" aria-hidden />
                 </span>
                 <div>
-                  <p className="font-medium text-slate-100">Aislamiento por comercio</p>
-                  <p className="text-xs leading-relaxed text-slate-400">
+                  <p className="font-medium text-white">Aislamiento por comercio</p>
+                  <p className="mt-0.5 text-xs leading-relaxed text-slate-400">
                     Cada merchant accede solo a sus propios recursos y métricas.
                   </p>
                 </div>
               </li>
             </ul>
+          </div>
 
-            <p className="relative mt-8 text-[11px] uppercase tracking-[0.18em] text-slate-500">
-              PSP · Entorno operativo
-            </p>
-          </aside>
+          {/* Footer marca */}
+          <div className="relative z-10 flex items-center justify-between text-xs text-slate-500">
+            <p className="uppercase tracking-[0.18em]">Entorno operativo</p>
+            <p className="font-mono">v1.0</p>
+          </div>
+        </aside>
 
-          {/* Formulario */}
-          <section className="p-6 sm:p-8">
-            <div className="mb-6">
-              <h1 className="text-xl font-semibold text-slate-900">Iniciar sesión</h1>
-              <p className="mt-1 text-sm text-slate-600">
-                Selecciona tu tipo de acceso e introduce las credenciales correspondientes.
+        {/* Formulario */}
+        <section className="relative flex items-center justify-center px-4 py-16 sm:px-8 lg:py-12">
+          <div className="w-full max-w-md">
+            {/* Marca móvil */}
+            <div className="mb-10 flex items-center gap-3 lg:hidden">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-900 ring-1 ring-slate-800">
+                <Sparkles size={18} className="text-white" aria-hidden />
+              </div>
+              <div>
+                <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-slate-500">
+                  PSP
+                </p>
+                <p className="text-sm font-semibold text-slate-900">Backoffice</p>
+              </div>
+            </div>
+
+            {/* Header */}
+            <div className="mb-8">
+              <h1 className="text-balance text-3xl font-semibold tracking-tight text-slate-900">
+                Bienvenido de nuevo
+              </h1>
+              <p className="mt-2 text-pretty text-sm leading-relaxed text-slate-600">
+                Selecciona tu tipo de acceso e introduce las credenciales para
+                entrar al backoffice.
               </p>
             </div>
 
@@ -150,7 +209,7 @@ export default function LoginPage() {
             <div
               role="tablist"
               aria-label="Tipo de acceso"
-              className="grid grid-cols-2 gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1"
+              className="grid grid-cols-2 gap-1 rounded-xl border border-slate-200 bg-slate-100/70 p-1"
             >
               <button
                 type="button"
@@ -161,7 +220,7 @@ export default function LoginPage() {
                   setError("");
                 }}
                 className={cn(
-                  "inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition",
+                  "inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium transition",
                   mode === "admin"
                     ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200"
                     : "text-slate-600 hover:text-slate-900",
@@ -179,7 +238,7 @@ export default function LoginPage() {
                   setError("");
                 }}
                 className={cn(
-                  "inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition",
+                  "inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium transition",
                   mode === "merchant"
                     ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200"
                     : "text-slate-600 hover:text-slate-900",
@@ -190,16 +249,19 @@ export default function LoginPage() {
               </button>
             </div>
 
-            <form className="mt-6 space-y-4" onSubmit={onSubmit}>
+            <form className="mt-7 space-y-5" onSubmit={onSubmit}>
               {mode === "admin" ? (
                 <div>
-                  <label htmlFor="adminToken" className="block text-sm font-medium text-slate-700">
+                  <label
+                    htmlFor="adminToken"
+                    className="block text-sm font-medium text-slate-700"
+                  >
                     Secreto de administrador
                   </label>
-                  <div className="relative mt-1.5">
+                  <div className="group relative mt-1.5">
                     <span
                       aria-hidden
-                      className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                      className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 transition group-focus-within:text-[var(--primary)]"
                     >
                       <KeyRound size={16} />
                     </span>
@@ -211,21 +273,21 @@ export default function LoginPage() {
                       value={adminToken}
                       onChange={(ev) => setAdminToken(ev.target.value)}
                       placeholder="BACKOFFICE_ADMIN_SECRET"
-                      className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-10 font-mono text-sm shadow-sm transition placeholder:text-slate-400 focus:border-[var(--primary)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                      className="w-full rounded-xl border border-slate-200 bg-white py-3 pl-10 pr-11 font-mono text-sm shadow-sm transition placeholder:text-slate-400 hover:border-slate-300 focus:border-[var(--primary)] focus:outline-none focus:ring-4 focus:ring-[var(--ring)]"
                       required
                     />
                     <button
                       type="button"
                       onClick={() => setShowAdminToken((v) => !v)}
                       aria-label={showAdminToken ? "Ocultar token" : "Mostrar token"}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
                     >
                       {showAdminToken ? <EyeOff size={15} /> : <Eye size={15} />}
                     </button>
                   </div>
-                  <p className="mt-1.5 text-xs text-slate-500">
+                  <p className="mt-2 text-xs text-slate-500">
                     Coincide con la variable de entorno{" "}
-                    <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] text-slate-700">
+                    <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
                       BACKOFFICE_ADMIN_SECRET
                     </code>
                     .
@@ -234,13 +296,16 @@ export default function LoginPage() {
               ) : (
                 <>
                   <div>
-                    <label htmlFor="merchantId" className="block text-sm font-medium text-slate-700">
+                    <label
+                      htmlFor="merchantId"
+                      className="block text-sm font-medium text-slate-700"
+                    >
                       Merchant ID
                     </label>
-                    <div className="relative mt-1.5">
+                    <div className="group relative mt-1.5">
                       <span
                         aria-hidden
-                        className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                        className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 transition group-focus-within:text-[var(--primary)]"
                       >
                         <Building2 size={16} />
                       </span>
@@ -252,19 +317,22 @@ export default function LoginPage() {
                         value={merchantId}
                         onChange={(ev) => setMerchantId(ev.target.value)}
                         placeholder="merchant_xxxx"
-                        className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-3 font-mono text-sm shadow-sm transition placeholder:text-slate-400 focus:border-[var(--primary)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                        className="w-full rounded-xl border border-slate-200 bg-white py-3 pl-10 pr-3 font-mono text-sm shadow-sm transition placeholder:text-slate-400 hover:border-slate-300 focus:border-[var(--primary)] focus:outline-none focus:ring-4 focus:ring-[var(--ring)]"
                         required
                       />
                     </div>
                   </div>
                   <div>
-                    <label htmlFor="merchantToken" className="block text-sm font-medium text-slate-700">
+                    <label
+                      htmlFor="merchantToken"
+                      className="block text-sm font-medium text-slate-700"
+                    >
                       Token merchant
                     </label>
-                    <div className="relative mt-1.5">
+                    <div className="group relative mt-1.5">
                       <span
                         aria-hidden
-                        className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                        className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 transition group-focus-within:text-[var(--primary)]"
                       >
                         <Fingerprint size={16} />
                       </span>
@@ -276,28 +344,28 @@ export default function LoginPage() {
                         value={merchantToken}
                         onChange={(ev) => setMerchantToken(ev.target.value)}
                         placeholder="expUnix:hexHmac"
-                        className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-10 font-mono text-sm shadow-sm transition placeholder:text-slate-400 focus:border-[var(--primary)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                        className="w-full rounded-xl border border-slate-200 bg-white py-3 pl-10 pr-11 font-mono text-sm shadow-sm transition placeholder:text-slate-400 hover:border-slate-300 focus:border-[var(--primary)] focus:outline-none focus:ring-4 focus:ring-[var(--ring)]"
                         required
                       />
                       <button
                         type="button"
                         onClick={() => setShowMerchantToken((v) => !v)}
                         aria-label={showMerchantToken ? "Ocultar token" : "Mostrar token"}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
                       >
                         {showMerchantToken ? <EyeOff size={15} /> : <Eye size={15} />}
                       </button>
                     </div>
-                    <p className="mt-1.5 text-xs leading-relaxed text-slate-500">
+                    <p className="mt-2 text-xs leading-relaxed text-slate-500">
                       Formato{" "}
-                      <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] text-slate-700">
+                      <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
                         expUnix:hexHmac
                       </code>
                       . HMAC de{" "}
-                      <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] text-slate-700">
+                      <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
                         merchantId.exp
                       </code>{" "}
-                      con validez de unos minutos. Ver README.
+                      con validez de unos minutos.
                     </p>
                   </div>
                 </>
@@ -306,17 +374,21 @@ export default function LoginPage() {
               {error ? (
                 <div
                   role="alert"
-                  className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+                  className="flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 px-3.5 py-3 text-sm text-red-700"
                 >
-                  <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden />
-                  <span>{error}</span>
+                  <AlertCircle
+                    size={16}
+                    className="mt-0.5 shrink-0"
+                    aria-hidden
+                  />
+                  <span className="leading-relaxed">{error}</span>
                 </div>
               ) : null}
 
               <button
                 type="submit"
                 disabled={pending}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-[var(--primary)] px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:opacity-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-60"
+                className="group relative inline-flex w-full items-center justify-center gap-2 overflow-hidden rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white shadow-sm transition hover:bg-slate-800 focus:outline-none focus-visible:ring-4 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {pending ? (
                   <>
@@ -326,21 +398,22 @@ export default function LoginPage() {
                 ) : (
                   <>
                     <Lock size={15} aria-hidden />
-                    Entrar
+                    Entrar al backoffice
                   </>
                 )}
               </button>
-
-              <p className="pt-2 text-center text-xs text-slate-500">
-                Al continuar, aceptas que el servidor establezca una cookie de sesión{" "}
-                <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] text-slate-700">
-                  backoffice_session
-                </code>
-                .
-              </p>
             </form>
-          </section>
-        </div>
+
+            <p className="mt-8 text-center text-xs leading-relaxed text-slate-500">
+              Al continuar, aceptas que el servidor establezca una cookie de
+              sesión{" "}
+              <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
+                backoffice_session
+              </code>
+              .
+            </p>
+          </div>
+        </section>
       </div>
     </div>
   );
