@@ -84,22 +84,20 @@ export default function LoginPage() {
         {/* Top bar: logo + tagline chip */}
         <header className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="relative h-10 w-10 overflow-hidden rounded-xl bg-white p-1.5 shadow-lg shadow-black/20 ring-1 ring-white/10">
+            <div className="relative h-9 w-28">
               <Image
                 src="/finara-logo.png"
                 alt="Finara"
                 fill
-                sizes="40px"
-                className="object-contain"
+                sizes="112px"
+                className="object-contain object-left"
                 priority
               />
             </div>
-            <div className="leading-tight">
-              <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-slate-400">
-                Finara
-              </p>
-              <p className="text-sm font-semibold text-white">PSP Backoffice</p>
-            </div>
+            <span className="hidden h-5 w-px bg-white/15 sm:block" aria-hidden />
+            <p className="hidden text-xs font-medium uppercase tracking-[0.22em] text-slate-400 sm:block">
+              PSP Backoffice
+            </p>
           </div>
           <div className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-medium text-slate-300 backdrop-blur sm:inline-flex">
             <span className="relative flex h-1.5 w-1.5">
@@ -114,23 +112,21 @@ export default function LoginPage() {
         <div className="grid flex-1 items-center gap-10 py-10 lg:grid-cols-[1.1fr_minmax(0,1fr)] lg:gap-16 lg:py-16">
           {/* Left: hero with Finara logo */}
           <section className="hidden flex-col justify-center lg:flex">
-            <div className="relative w-full max-w-md">
-              <div className="relative aspect-[5/3] w-full overflow-hidden rounded-3xl bg-white p-10 shadow-2xl shadow-fuchsia-900/30 ring-1 ring-white/10">
-                <div className="relative h-full w-full">
-                  <Image
-                    src="/finara-logo.png"
-                    alt="Finara"
-                    fill
-                    sizes="(min-width: 1024px) 480px, 100vw"
-                    className="object-contain"
-                    priority
-                  />
-                </div>
+            <div className="relative w-full max-w-lg">
+              <div className="relative h-44 w-full">
+                <Image
+                  src="/finara-logo.png"
+                  alt="Finara"
+                  fill
+                  sizes="(min-width: 1024px) 520px, 100vw"
+                  className="object-contain object-left drop-shadow-[0_8px_40px_rgba(217,70,239,0.35)]"
+                  priority
+                />
               </div>
-              {/* Glow under the card */}
+              {/* Soft glow behind the wordmark */}
               <div
                 aria-hidden
-                className="absolute -inset-x-6 -bottom-6 -z-10 h-12 rounded-full bg-gradient-to-r from-cyan-500/30 via-fuchsia-500/30 to-orange-400/30 blur-2xl"
+                className="absolute -bottom-2 left-0 -z-10 h-16 w-3/4 rounded-full bg-gradient-to-r from-cyan-500/30 via-fuchsia-500/30 to-orange-400/30 blur-3xl"
               />
             </div>
 
@@ -173,18 +169,16 @@ export default function LoginPage() {
           {/* Right: form card */}
           <section className="mx-auto w-full max-w-md">
             {/* Compact logo for mobile only */}
-            <div className="mb-6 flex items-center justify-center lg:hidden">
-              <div className="relative h-16 w-40 overflow-hidden rounded-2xl bg-white p-3 shadow-xl ring-1 ring-white/10">
-                <div className="relative h-full w-full">
-                  <Image
-                    src="/finara-logo.png"
-                    alt="Finara"
-                    fill
-                    sizes="160px"
-                    className="object-contain"
-                    priority
-                  />
-                </div>
+            <div className="mb-8 flex items-center justify-center lg:hidden">
+              <div className="relative h-14 w-44">
+                <Image
+                  src="/finara-logo.png"
+                  alt="Finara"
+                  fill
+                  sizes="176px"
+                  className="object-contain drop-shadow-[0_4px_24px_rgba(217,70,239,0.35)]"
+                  priority
+                />
               </div>
             </div>
 
