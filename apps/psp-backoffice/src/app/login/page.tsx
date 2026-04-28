@@ -120,7 +120,6 @@ export default function LoginPage() {
                   fill
                   sizes="(min-width: 1024px) 520px, 100vw"
                   className="object-contain object-left drop-shadow-[0_8px_40px_rgba(217,70,239,0.35)]"
-                  priority
                 />
               </div>
               {/* Soft glow behind the wordmark */}
@@ -177,7 +176,6 @@ export default function LoginPage() {
                   fill
                   sizes="176px"
                   className="object-contain drop-shadow-[0_4px_24px_rgba(217,70,239,0.35)]"
-                  priority
                 />
               </div>
             </div>
@@ -386,7 +384,11 @@ export default function LoginPage() {
             </div>
 
             <p className="mt-6 text-center text-xs text-slate-400">
-              &copy; {new Date().getFullYear()} Finara · PSP Backoffice
+              &copy;{" "}
+              <span suppressHydrationWarning>
+                {new Date().getUTCFullYear()}
+              </span>{" "}
+              Finara · PSP Backoffice
             </p>
           </section>
         </div>

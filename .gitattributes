@@ -1,0 +1,2 @@
+# Evita CRLF en entrypoint: Alpine `sh` falla al parsear con \r.
+apps/psp-api/docker-entrypoint.sh text eol=lf
