@@ -102,6 +102,10 @@ export function AppShell({
 
   const showLoginLink = !session && pathname !== "/login";
 
+  if (pathname === "/login") {
+    return <>{children}</>;
+  }
+
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="border-b border-slate-200 bg-white">
