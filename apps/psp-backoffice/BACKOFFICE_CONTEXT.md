@@ -1,6 +1,6 @@
 # BACKOFFICE_CONTEXT — PSP Backoffice
 
-Ultima actualizacion: 2026-04-23
+Ultima actualizacion: 2026-04-28
 
 Documento **local** del app `apps/psp-backoffice` (nombre distinto de `PROJECT_CONTEXT.md` en la raíz para evitar confusion). El monorepo mantiene visión global y API en **`PROJECT_CONTEXT.md`** (raíz); aquí se detalla solo el panel administrativo.
 
@@ -50,20 +50,39 @@ src/
 
 Cliente browser → `src/lib/api/client.ts` → fetch relativo a `/api/internal/...` (misma origin).
 
-## 4) Variables de entorno
+## 4) Datos de prueba en el panel (transacciones)
+
+El listado `/transactions` lee la misma base que **`psp-api`**. Para generar filas de demo contra sandbox o Render:
+
+1. Desde `apps/psp-api`, con la URL y el secreto interno **del mismo deploy** que consume el backoffice (`PSP_API_BASE_URL` / `PSP_INTERNAL_API_SECRET`):
+   - `npm run demo:backoffice-payments`
+2. Variables reconocidas por el script: `DEMO_API_BASE_URL` o `SMOKE_BASE_URL`, y `INTERNAL_API_SECRET` o `SMOKE_INTERNAL_API_SECRET`. Opcional: `DEMO_FETCH_TIMEOUT_MS` (default 90000) si el cold start es lento.
+3. Alternativa: `npm run test:smoke:sandbox` con las mismas variables (Jest) también persiste pagos v2.
+
+Entrar al backoffice como **admin** y abrir `/` o `/transactions` (sin filtro de fecha por defecto se listan todas las recientes).
+
+### Si el panel se queda en “Cargando…”
+
+- El navegador llama a rutas **`/api/internal/*`** del propio Next; el servidor reenvía a **`PSP_API_BASE_URL`**. Si esa URL no es la del servicio `psp-api` real, o la API está fría y los timeouts son cortos, la petición puede tardar mucho o no completar.
+- En Render: `PSP_API_BASE_URL` = URL **https** pública del servicio API (no la del backoffice). `PSP_INTERNAL_API_SECRET` debe coincidir con `INTERNAL_API_SECRET` de la API. Sube **`PSP_API_PROXY_TIMEOUT_MS`** en el backoffice (p. ej. `60000`) para cold start.
+- Opcional en el backoffice: **`NEXT_PUBLIC_BFF_FETCH_TIMEOUT_MS`** (default 90000) limita cuánto espera el **cliente** al BFF; si vence, verás error en UI en lugar de carga infinita (`src/lib/api/client.ts`).
+
+## 5) Variables de entorno
 
 Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.local`.
 
 | Variable | Uso |
 |----------|-----|
 | `PSP_API_BASE_URL` | Base URL de `psp-api` (solo servidor) |
+| `PSP_API_PROXY_TIMEOUT_MS` | Opcional: timeout ms del `fetch` BFF→API (default **5000**, máx. 120000). Debe ser **solo dígitos** (p. ej. `60000`; sin `60s`, `1e5`, etc.). Valores mal formados usan el default y un **warning** único en logs del servidor. Subir en hosting con cold start largo (p. ej. Render free). |
 | `PSP_INTERNAL_API_SECRET` | Secreto interno API; **nunca** al cliente |
 | `BACKOFFICE_ADMIN_SECRET` | Credencial de login **admin** (solo `POST /api/auth/session` modo admin); distinto de `PSP_INTERNAL_API_SECRET` |
 | `BACKOFFICE_SESSION_JWT_SECRET` | Firma del JWT en cookie `backoffice_session` (sesión admin/merchant); distinto de `PSP_INTERNAL_API_SECRET` y de `BACKOFFICE_ADMIN_SECRET` |
 | `BACKOFFICE_MERCHANT_PORTAL_SECRET` | Clave HMAC para login **merchant** (token `expUnix:hexHmac` sobre ``merchantId.exp``); distinto de `PSP_INTERNAL_API_SECRET` |
 | `NEXT_PUBLIC_TRANSACTIONS_REFRESH_MS` | Intervalo de auto-refresh del monitor (publico) |
+| `NEXT_PUBLIC_BFF_FETCH_TIMEOUT_MS` | Opcional: timeout ms del **navegador** hacia `/api/internal/*` (default **90000**). Evita carga perpetua si el Route Handler no responde. |
 
-## 5) Rutas de producto
+## 6) Rutas de producto
 
 - **`/`** — Inicio: **admin** — bloque **Resumen** (intervalo/comparador vía `GET /api/internal/transactions/summary`), tarjetas UTC + volumen EUR + card volumen **USD** (`/ops/dashboard/volume-usd` vía BFF) + accesos a `/merchants` y `/operations`. **Merchant** — resumen scoped + enlaces al portal.
 - **`/transactions`** — Dashboard de transacciones (lista ops, filtros, export CSV de pagina visible, conteos por estado, cursores). Filtros extendidos (país, método, weekday, `merchantActive`) se reenvían al BFF.
@@ -78,7 +97,7 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 - **`/payments/[paymentId]`** — Detalle de pago (intentos acotados a los 200 más recientes si el historial crece; aviso en UI si `attemptsTruncated`), metadatos, enlaces operativos.
 - **`/merchants/[merchantId]/finance`** — Resumen gross/fee/net (EUR), tabla de fee quotes y payouts; enlaces desde transacciones y detalle de pago.
 
-## 6) BFF y seguridad
+## 7) BFF y seguridad
 
 - El merchant **no** envía proveedor en `POST /api/v2/payments` (ruteo del PSP en API); los filtros por `provider` en este panel son solo operativos sobre datos ya persistidos. Los valores permitidos en BFF/UI siguen `OPS_PAYMENT_PROVIDERS` en `src/lib/api/payment-providers.ts` (debe mantenerse alineado con `PAYMENT_PROVIDER_NAMES` en `psp-api`).
 - Las rutas `app/api/internal/*` reenvian a endpoints internos de Nest (`/api/v2/payments/ops/...`, `/api/v1/settlements/...`, `/api/v1/merchants/ops/...`, health, etc.) con `X-Internal-Secret` solo en servidor. El listado ops va a `.../ops/transactions`; los conteos agregados por estado del dashboard a `.../ops/transactions/counts` (`GET /api/internal/transactions/counts`); el resumen comparativo (payments, bruto, neto, errores) a `.../ops/transactions/summary` (`GET /api/internal/transactions/summary`); la serie de volumen horario a `.../ops/transactions/volume-hourly` (`GET /api/internal/transactions/volume-hourly`); volumen agregado en USD a `.../ops/dashboard/volume-usd` (`GET /api/internal/transactions/dashboard-volume-usd`). Finanzas por merchant (resumen gross/fee/net, filas por `PaymentFeeQuote`, payouts): `GET /api/internal/merchants/:merchantId/finance/summary|transactions|payouts` → `.../ops/merchants/:merchantId/finance/...`. Settlements: `.../internal/settlements/merchants/:id/available-balance`, `.../requests` (GET/POST), inbox y approve/reject. Merchants ops: `.../internal/merchants/ops/directory`, `.../ops/:id/detail|active|payment-methods`. El proxy (`lib/server/backoffice-api.ts`) exige `backofficeScope` en cualquier ruta payments ops **o** settlements **o** `merchants/ops` (RBAC fail-closed alineado con `InternalSecretGuard` en API). Soporta `proxyInternalPost` / `proxyInternalPatch` para cuerpos JSON.
@@ -92,14 +111,14 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 - Errores del proxy hacia `psp-api`: el cliente recibe un mensaje genérico; el detalle del fallo se registra en el servidor, no en el JSON de respuesta.
 - No leer secretos desde `NEXT_PUBLIC_*` salvo decision documentada; el patron actual mantiene secretos server-only.
 
-## 7) Convenciones de implementacion
+## 8) Convenciones de implementacion
 
 - Componentes y paginas: TypeScript estricto; preferir datos vía React Query con claves estables.
 - Tablas y filtros: alineados con parametros soportados por la API (ver raiz `PROJECT_CONTEXT.md` para paginacion cursor/keyset y `includeTotal`).
 - Estilo visual: acento de marca `--primary: #635bff`, fuente Inter (`next/font`) — coherente con resumen en `PROJECT_CONTEXT.md` raíz.
 - Tras cambiar contratos consumidos, actualizar este archivo (`BACKOFFICE_CONTEXT.md`) y, si aplica, ejecutar `gen:api-types` y mencionarlo aqui.
 
-## 8) Comandos utiles
+## 9) Comandos utiles
 
 ```bash
 npm run dev          # http://localhost:3005
@@ -110,7 +129,7 @@ npm run build
 npm run gen:api-types   # requiere API + Swagger
 ```
 
-## 9) Lecturas relacionadas
+## 10) Lecturas relacionadas
 
 - `README.md` en este mismo directorio (arranque rapido).
 - `PROJECT_CONTEXT.md` (raíz del repo) — pagos v2, endpoints ops, ledger, webhooks, CI.

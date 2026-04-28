@@ -199,3 +199,11 @@ npm run test:integration
 npm run test:integration:critical
 npm run test:smoke:sandbox
 ```
+
+Para **poblar transacciones de demo** visibles en el backoffice (misma API/DB), con `SMOKE_BASE_URL` o `DEMO_API_BASE_URL` y `INTERNAL_API_SECRET` apuntando al entorno:
+
+```bash
+npm run demo:backoffice-payments
+```
+
+Ver detalle en `BACKOFFICE_CONTEXT.md` (sección datos de prueba).

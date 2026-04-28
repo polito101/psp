@@ -129,8 +129,8 @@ export function AdminHomeDashboard() {
         </Card>
       </div>
 
-      <Card>
-        <CardContent>
+      <Card className="min-w-0">
+        <CardContent className="min-w-0">
           {volumeQuery.isError ? (
             <p className="text-sm text-rose-700">{(volumeQuery.error as Error).message}</p>
           ) : vol ? (

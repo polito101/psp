@@ -3,6 +3,27 @@ import type { SessionClaims } from "@/lib/server/auth/session-claims";
 
 const DEFAULT_API_BASE_URL = "http://localhost:3000";
 const DEFAULT_PROXY_TIMEOUT_MS = 5000;
+const PROXY_TIMEOUT_MS_MIN = 1_000;
+const PROXY_TIMEOUT_MS_MAX = 120_000;
+
+let warnedInvalidPspApiProxyTimeoutMs = false;
+
+function parseProxyTimeoutMs(): number {
+  const raw = process.env.PSP_API_PROXY_TIMEOUT_MS?.trim();
+  if (!raw) return DEFAULT_PROXY_TIMEOUT_MS;
+  if (!/^\d+$/.test(raw)) {
+    if (!warnedInvalidPspApiProxyTimeoutMs) {
+      warnedInvalidPspApiProxyTimeoutMs = true;
+      console.warn(
+        `[psp-backoffice] PSP_API_PROXY_TIMEOUT_MS is invalid (expected digits only, milliseconds). Got "${raw}". Using default ${DEFAULT_PROXY_TIMEOUT_MS}ms.`,
+      );
+    }
+    return DEFAULT_PROXY_TIMEOUT_MS;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_PROXY_TIMEOUT_MS;
+  return Math.min(PROXY_TIMEOUT_MS_MAX, Math.max(PROXY_TIMEOUT_MS_MIN, parsed));
+}
 
 /** Máximo de bytes leídos del cuerpo upstream en errores (evita OOM y payloads enormes). */
 const PROXY_UPSTREAM_BODY_READ_MAX_BYTES = 64 * 1024;
@@ -72,7 +93,7 @@ function getServerConfig() {
     throw new Error("Missing PSP_INTERNAL_API_SECRET in backoffice environment");
   }
 
-  return { apiBaseOrigin, internalSecret };
+  return { apiBaseOrigin, internalSecret, proxyTimeoutMs: parseProxyTimeoutMs() };
 }
 
 function mergeUint8Arrays(parts: readonly Uint8Array[]): Uint8Array {
@@ -172,7 +193,7 @@ export class ProxyUpstreamError extends Error {
 }
 
 export async function proxyInternalGet<T>(options: ProxyRequestOptions): Promise<T> {
-  const { apiBaseOrigin, internalSecret } = getServerConfig();
+  const { apiBaseOrigin, internalSecret, proxyTimeoutMs } = getServerConfig();
   const url = new URL(options.path, apiBaseOrigin);
   if (options.searchParams) {
     options.searchParams.forEach((value, key) => {
@@ -185,7 +206,7 @@ export async function proxyInternalGet<T>(options: ProxyRequestOptions): Promise
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), DEFAULT_PROXY_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), proxyTimeoutMs);
 
   const headers: Record<string, string> = {
     "X-Internal-Secret": internalSecret,
@@ -230,7 +251,7 @@ export async function proxyInternalGet<T>(options: ProxyRequestOptions): Promise
 }
 
 export async function proxyInternalPost<T>(options: ProxyWriteOptions): Promise<T> {
-  const { apiBaseOrigin, internalSecret } = getServerConfig();
+  const { apiBaseOrigin, internalSecret, proxyTimeoutMs } = getServerConfig();
   const url = new URL(options.path, apiBaseOrigin);
   if (options.searchParams) {
     options.searchParams.forEach((value, key) => {
@@ -243,7 +264,7 @@ export async function proxyInternalPost<T>(options: ProxyWriteOptions): Promise<
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), DEFAULT_PROXY_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), proxyTimeoutMs);
 
   const headers: Record<string, string> = {
     "X-Internal-Secret": internalSecret,
@@ -297,7 +318,7 @@ export async function proxyInternalPost<T>(options: ProxyWriteOptions): Promise<
 }
 
 export async function proxyInternalPatch<T>(options: ProxyWriteOptions): Promise<T> {
-  const { apiBaseOrigin, internalSecret } = getServerConfig();
+  const { apiBaseOrigin, internalSecret, proxyTimeoutMs } = getServerConfig();
   const url = new URL(options.path, apiBaseOrigin);
   if (options.searchParams) {
     options.searchParams.forEach((value, key) => {
@@ -310,7 +331,7 @@ export async function proxyInternalPatch<T>(options: ProxyWriteOptions): Promise
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), DEFAULT_PROXY_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), proxyTimeoutMs);
 
   const headers: Record<string, string> = {
     "X-Internal-Secret": internalSecret,

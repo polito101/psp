@@ -294,6 +294,17 @@ export type OpsPaymentsSummaryDailyResponse = {
   compare: OpsPaymentsSummaryDailySeries;
 };
 
+/** Respuesta de `GET .../ops/transactions/summary-hourly` (24 buckets UTC 0–23 por día). */
+export type OpsPaymentsSummaryHourlyResponse = {
+  granularity: "hourly";
+  currency: string | null;
+  current: OpsPaymentsSummaryDailySeries;
+  compare: OpsPaymentsSummaryDailySeries;
+};
+
+/** Serie diaria u horaria del resumen ops (misma forma de `current` / `compare`). */
+export type OpsPaymentsSummaryChartResponse = OpsPaymentsSummaryDailyResponse | OpsPaymentsSummaryHourlyResponse;
+
 export type OpsPaymentAttemptDetail = {
   id: string;
   operation: string;

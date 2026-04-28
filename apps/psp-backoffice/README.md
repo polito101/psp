@@ -20,6 +20,7 @@ cp .env.example .env.local
 Variables:
 
 - `PSP_API_BASE_URL`: URL base de `psp-api`.
+- `PSP_API_PROXY_TIMEOUT_MS` (opcional): timeout del BFF hacia la API en ms (default 5000); en Render free suele hacer falta subirlo por el cold start.
 - `PSP_INTERNAL_API_SECRET`: secreto interno usado solo en server-side BFF.
 - `BACKOFFICE_ADMIN_SECRET`: credencial de login **admin** (debe ser distinta de `PSP_INTERNAL_API_SECRET`).
 - `BACKOFFICE_SESSION_JWT_SECRET`: firma del JWT de sesión en cookie HttpOnly (distinta de `PSP_INTERNAL_API_SECRET` y de `BACKOFFICE_ADMIN_SECRET`).

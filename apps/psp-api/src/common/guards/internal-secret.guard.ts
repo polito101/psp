@@ -192,6 +192,7 @@ export class InternalSecretGuard implements CanActivate {
       path.includes('/ops/transactions/counts') ||
       path.includes('/ops/transactions/volume-hourly') ||
       path.includes('/ops/transactions/summary-daily') ||
+      path.includes('/ops/transactions/summary-hourly') ||
       path.includes('/ops/transactions/summary') ||
       /\/ops\/transactions$/.test(path)
     );

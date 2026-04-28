@@ -66,6 +66,15 @@ export class PaymentsV2InternalController {
     return this.payments.getOpsPaymentsSummaryDaily(query);
   }
 
+  @Get('ops/transactions/summary-hourly')
+  @ApiOperation({
+    summary:
+      'Series horarias UTC (24 buckets por hora 0–23) para dos ventanas de exactamente un día calendario UTC cada una: payments, bruto, neto, errores failed+canceled',
+  })
+  async paymentsSummaryHourly(@Query() query: OpsPaymentsSummaryQueryDto) {
+    return this.payments.getOpsPaymentsSummaryHourly(query);
+  }
+
   @Get('ops/transactions/volume-hourly')
   @ApiOperation({
     summary:

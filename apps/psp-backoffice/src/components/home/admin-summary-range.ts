@@ -54,14 +54,36 @@ function shiftYmdByMonths(ymd: string, deltaMonths: number): string {
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
 }
 
+/** Día calendario UTC de hoy (`YYYY-MM-DD`). */
+export function utcTodayYmd(): string {
+  const now = new Date();
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
+}
+
+/** Un solo día UTC: hoy. */
+export function defaultSummaryTodayYmd(): { fromYmd: string; toYmd: string } {
+  const t = utcTodayYmd();
+  return { fromYmd: t, toYmd: t };
+}
+
 /** Rango por defecto: últimos 7 días calendario UTC inclusive hasta hoy. */
 export function defaultSummaryCurrentRangeYmd(): { fromYmd: string; toYmd: string } {
-  const now = new Date();
-  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const start = new Date(end.getTime() - 6 * 86_400_000);
-  const toYmd = `${end.getUTCFullYear()}-${String(end.getUTCMonth() + 1).padStart(2, "0")}-${String(end.getUTCDate()).padStart(2, "0")}`;
-  const fromYmd = `${start.getUTCFullYear()}-${String(start.getUTCMonth() + 1).padStart(2, "0")}-${String(start.getUTCDate()).padStart(2, "0")}`;
-  return { fromYmd, toYmd };
+  const toYmd = utcTodayYmd();
+  const from = addUtcCalendarDaysYmd(toYmd, -6);
+  if (!from) throw new Error("Invalid today YMD");
+  return { fromYmd: from, toYmd };
+}
+
+/**
+ * Últimos `dayCount` días calendario UTC inclusive hasta hoy (`dayCount` >= 1).
+ * Ej.: 7 = misma ventana que `defaultSummaryCurrentRangeYmd`.
+ */
+export function utcLastNDaysInclusiveUntilTodayYmd(dayCount: number): { fromYmd: string; toYmd: string } {
+  if (dayCount < 1) throw new Error("dayCount must be >= 1");
+  const toYmd = utcTodayYmd();
+  const from = addUtcCalendarDaysYmd(toYmd, -(dayCount - 1));
+  if (!from) throw new Error("Invalid range");
+  return { fromYmd: from, toYmd };
 }
 
 /**

@@ -12,6 +12,7 @@
     "test:integration": "jest --config jest.integration.config.js --runInBand --testPathIgnorePatterns=payments-v2-merchant-rate-limit && jest --config jest.integration.config.js --runInBand test/integration/payments-v2-merchant-rate-limit.integration.spec.ts",
     "test:integration:critical": "jest --config jest.integration.config.js --runInBand test/integration/payments-v2.integration.spec.ts test/integration/internal-webhooks.integration.spec.ts && jest --config jest.integration.config.js --runInBand test/integration/payments-v2-merchant-rate-limit.integration.spec.ts",
     "test:smoke:sandbox": "jest --config jest.smoke.config.js --runInBand",
+    "demo:backoffice-payments": "node scripts/demo/create-backoffice-demo-payments.mjs",
     "test:smoke:ops": "jest --config jest.smoke.config.js --runInBand test/smoke/orchestrator.integration.spec.ts",
     "test:ci:ops-metrics": "jest --config jest.smoke.config.js --runInBand test/smoke/check-ops-metrics-ci.spec.ts",
     "test:watch": "jest --watch",
@@ -35,6 +36,7 @@
     "helmet": "^8.1.0",
     "ioredis": "^5.10.1",
     "pg": "^8.16.0",
+    "prisma": "^7.0.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2"
   },
@@ -49,7 +51,6 @@
     "@types/supertest": "^7.2.0",
     "dotenv": "^16.6.1",
     "jest": "^30.3.0",
-    "prisma": "^7.0.0",
     "source-map-support": "^0.5.21",
     "supertest": "^7.2.2",
     "ts-jest": "^29.4.9",
