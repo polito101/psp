@@ -12,14 +12,14 @@
     "gen:api-types": "openapi-typescript http://localhost:3003/api/docs-json -o src/lib/api/generated/openapi.d.ts"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.99.0",
+    "@tanstack/react-query": "^5.100.5",
     "@tanstack/react-table": "^8.21.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "jose": "^6.2.2",
-    "lucide-react": "^1.8.0",
+    "lucide-react": "^1.11.0",
     "next": "16.2.3",
-    "react": "19.2.4",
+    "react": "^19.2.4",
     "react-dom": "19.2.4",
     "tailwind-merge": "^3.5.0",
     "zod": "^4.3.6"
