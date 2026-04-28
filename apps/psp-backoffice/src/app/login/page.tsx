@@ -2,11 +2,9 @@
 
 import { type FormEvent, useState } from "react";
 import Image from "next/image";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   AlertCircle,
-  ArrowLeft,
   Building2,
   Eye,
   EyeOff,
@@ -72,15 +70,6 @@ export default function LoginPage() {
 
   return (
     <div className="relative min-h-screen w-full bg-slate-50">
-      {/* Volver al inicio */}
-      <Link
-        href="/"
-        className="absolute left-4 top-4 z-20 inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white/80 px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm backdrop-blur transition hover:bg-white hover:text-slate-900 sm:left-6 sm:top-6"
-      >
-        <ArrowLeft size={14} aria-hidden />
-        Volver al inicio
-      </Link>
-
       <div className="grid min-h-screen lg:grid-cols-2">
         {/* Panel marca */}
         <aside className="relative hidden overflow-hidden bg-slate-950 lg:flex lg:flex-col lg:justify-between lg:p-12 xl:p-16">
