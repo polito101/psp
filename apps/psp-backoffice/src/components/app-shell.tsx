@@ -102,6 +102,12 @@ export function AppShell({
 
   const showLoginLink = !session && pathname !== "/login";
 
+  // Entry pages render fullscreen without header/sidebar (login, etc.)
+  const isEntryPage = pathname === "/login";
+  if (isEntryPage) {
+    return <div className="min-h-screen bg-slate-50">{children}</div>;
+  }
+
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="border-b border-slate-200 bg-white">
