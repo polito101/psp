@@ -1,6 +1,7 @@
 "use client";
 
 import { type FormEvent, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -105,13 +106,15 @@ export default function LoginPage() {
 
           {/* Header marca */}
           <div className="relative z-10 flex flex-col items-start gap-2">
-            <span
-              className="bg-gradient-to-r from-teal-300 via-indigo-400 via-fuchsia-400 to-orange-300 bg-clip-text text-7xl font-semibold leading-none tracking-tight text-transparent xl:text-8xl"
-              aria-label="Finara"
-            >
-              Finara
-            </span>
-            <span className="pl-1 text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
+            <Image
+              src="/finara-logo.png"
+              alt="Finara"
+              width={640}
+              height={240}
+              priority
+              className="h-28 w-auto object-contain xl:h-36"
+            />
+            <span className="pl-2 text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
               Backoffice
             </span>
           </div>
@@ -182,13 +185,15 @@ export default function LoginPage() {
           <div className="w-full max-w-md">
             {/* Marca móvil */}
             <div className="mb-10 flex flex-col items-start gap-2 lg:hidden">
-              <span
-                className="bg-gradient-to-r from-teal-500 via-indigo-500 via-fuchsia-500 to-orange-400 bg-clip-text text-6xl font-semibold leading-none tracking-tight text-transparent"
-                aria-label="Finara"
-              >
-                Finara
-              </span>
-              <span className="pl-1 text-[10px] font-medium uppercase tracking-[0.22em] text-slate-500">
+              <Image
+                src="/finara-logo.png"
+                alt="Finara"
+                width={520}
+                height={200}
+                priority
+                className="h-24 w-auto object-contain"
+              />
+              <span className="pl-2 text-[10px] font-medium uppercase tracking-[0.22em] text-slate-500">
                 Backoffice
               </span>
             </div>
