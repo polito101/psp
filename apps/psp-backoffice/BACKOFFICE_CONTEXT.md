@@ -50,6 +50,8 @@ src/
 
 Cliente browser → `src/lib/api/client.ts` → fetch relativo a `/api/internal/...` (misma origin).
 
+Estaticos en `public/`: favicon PNG (`favicon-16x16.png`, `favicon-32x32.png`, `favicon.png`), `apple-touch-icon.png`, `android-chrome-192x192.png` / `512x512.png`, `site.webmanifest`; enlazados desde `metadata` en `src/app/layout.tsx`.
+
 ## 4) Datos de prueba en el panel (transacciones)
 
 El listado `/transactions` lee la misma base que **`psp-api`**. Para generar filas de demo contra sandbox o Render:
