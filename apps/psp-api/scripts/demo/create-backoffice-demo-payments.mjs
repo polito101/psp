@@ -8,6 +8,7 @@
  * Variables (local o CI):
  * - `DEMO_API_BASE_URL` o `SMOKE_BASE_URL`: origen de la API (p. ej. https://psp-api-xxxx.onrender.com)
  * - `INTERNAL_API_SECRET` o `SMOKE_INTERNAL_API_SECRET`: mismo valor que en la API (`INTERNAL_API_SECRET`)
+ * - `PRINT_DEMO_API_KEY=true` o flag `--print-api-key`: imprime la API key completa en stdout (por defecto solo se muestra enmascarada).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -18,6 +19,10 @@ const fetchTimeoutMs = Math.min(
   120_000,
   Math.max(5_000, Number.parseInt(process.env.DEMO_FETCH_TIMEOUT_MS ?? '90000', 10) || 90_000),
 );
+const printApiKeyFull =
+  process.argv.includes('--print-api-key') ||
+  process.env.PRINT_DEMO_API_KEY === 'true' ||
+  process.env.PRINT_DEMO_API_KEY === '1';
 
 function fail(msg) {
   console.error(msg);
@@ -132,4 +137,14 @@ console.log('Pago authorized:', id4, `(status=${p4.payment?.status})`);
 
 console.log('');
 console.log('Listo. En el backoffice (sesión admin): /transactions — deberías ver estos pagos del merchant', merchant.id);
-console.log('API key (solo para pruebas curl):', apiKey);
+if (printApiKeyFull) {
+  console.log('API key (solo para pruebas curl):', apiKey);
+} else {
+  const masked =
+    apiKey.length > 8 ? `${apiKey.slice(0, 4)}…${apiKey.slice(-4)}` : '****';
+  console.log(
+    'API key (enmascarada):',
+    masked,
+    '(PRINT_DEMO_API_KEY=true o --print-api-key para la clave completa)',
+  );
+}

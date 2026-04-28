@@ -46,21 +46,89 @@ function getBffClientTimeoutMs(): number {
   return Math.min(BFF_CLIENT_TIMEOUT_MAX_MS, Math.max(BFF_CLIENT_TIMEOUT_MIN_MS, n));
 }
 
+type BffFetchAbortHandle = {
+  signal: AbortSignal;
+  /** Limpia timers y listeners del fallback; llamar siempre en `finally`. */
+  dispose: () => void;
+};
+
+/**
+ * Señal de timeout para `fetch`, con soporte amplio de navegadores y combinación opcional con `userSignal`.
+ * - `AbortSignal.timeout` cuando exista y no haya señal externa.
+ * - `AbortSignal.any` cuando haya que unir timeout + señal del caller.
+ * - Si no, `AbortController` + `setTimeout` y propagación manual de abort.
+ */
+function createBffFetchAbort(ms: number, userSignal?: AbortSignal | null): BffFetchAbortHandle {
+  const noop = () => {};
+
+  if (userSignal?.aborted) {
+    return { signal: userSignal, dispose: noop };
+  }
+
+  const hasAbortSignal = typeof AbortSignal !== "undefined";
+  const hasTimeout = hasAbortSignal && typeof AbortSignal.timeout === "function";
+  const hasAny = hasAbortSignal && typeof AbortSignal.any === "function";
+
+  if (hasTimeout && !userSignal) {
+    return { signal: AbortSignal.timeout(ms), dispose: noop };
+  }
+
+  if (hasTimeout && userSignal && hasAny) {
+    return {
+      signal: AbortSignal.any([AbortSignal.timeout(ms), userSignal]),
+      dispose: noop,
+    };
+  }
+
+  const controller = new AbortController();
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  const onUserAbort = () => {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+      timeoutId = undefined;
+    }
+    if (!controller.signal.aborted) {
+      controller.abort();
+    }
+  };
+
+  if (userSignal) {
+    userSignal.addEventListener("abort", onUserAbort);
+  }
+
+  timeoutId = setTimeout(() => {
+    timeoutId = undefined;
+    if (!controller.signal.aborted) {
+      controller.abort();
+    }
+  }, ms);
+
+  const dispose = () => {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+      timeoutId = undefined;
+    }
+    if (userSignal) {
+      userSignal.removeEventListener("abort", onUserAbort);
+    }
+  };
+
+  return { signal: controller.signal, dispose };
+}
+
 /**
  * `fetch` al BFF same-origin con tope de tiempo. Si el Route Handler espera indefinidamente a psp-api,
  * sin esto el cliente queda en carga perpetua (React Query `isLoading`).
  */
 async function internalBffFetch(input: string, init?: RequestInit): Promise<Response> {
   const ms = getBffClientTimeoutMs();
-  const timeoutSignal =
-    typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
-      ? AbortSignal.timeout(ms)
-      : undefined;
+  const { signal, dispose } = createBffFetchAbort(ms, init?.signal ?? null);
   try {
     return await globalThis.fetch(input, {
       ...internalBffInit,
       ...init,
-      ...(timeoutSignal ? { signal: timeoutSignal } : {}),
+      signal,
     });
   } catch (e) {
     const err = e instanceof Error ? e : new Error(String(e));
@@ -70,6 +138,8 @@ async function internalBffFetch(input: string, init?: RequestInit): Promise<Resp
       );
     }
     throw err;
+  } finally {
+    dispose();
   }
 }
 

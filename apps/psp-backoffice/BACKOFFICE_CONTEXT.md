@@ -74,7 +74,7 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 | Variable | Uso |
 |----------|-----|
 | `PSP_API_BASE_URL` | Base URL de `psp-api` (solo servidor) |
-| `PSP_API_PROXY_TIMEOUT_MS` | Opcional: timeout ms del `fetch` BFF→API (default **5000**, máx. 120000). Subir en hosting con cold start largo (p. ej. Render free). |
+| `PSP_API_PROXY_TIMEOUT_MS` | Opcional: timeout ms del `fetch` BFF→API (default **5000**, máx. 120000). Debe ser **solo dígitos** (p. ej. `60000`; sin `60s`, `1e5`, etc.). Valores mal formados usan el default y un **warning** único en logs del servidor. Subir en hosting con cold start largo (p. ej. Render free). |
 | `PSP_INTERNAL_API_SECRET` | Secreto interno API; **nunca** al cliente |
 | `BACKOFFICE_ADMIN_SECRET` | Credencial de login **admin** (solo `POST /api/auth/session` modo admin); distinto de `PSP_INTERNAL_API_SECRET` |
 | `BACKOFFICE_SESSION_JWT_SECRET` | Firma del JWT en cookie `backoffice_session` (sesión admin/merchant); distinto de `PSP_INTERNAL_API_SECRET` y de `BACKOFFICE_ADMIN_SECRET` |
