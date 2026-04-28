@@ -1,7 +1,6 @@
 "use client";
 
 import { type FormEvent, useState } from "react";
-import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -105,17 +104,13 @@ export default function LoginPage() {
           />
 
           {/* Header marca */}
-          <div className="relative z-10 flex flex-col items-start gap-3">
-            <div className="inline-flex items-center justify-center rounded-2xl bg-white px-5 py-3 shadow-lg ring-1 ring-white/20">
-              <Image
-                src="/finara-logo.png"
-                alt="Finara"
-                width={320}
-                height={120}
-                className="h-20 w-auto object-contain"
-                priority
-              />
-            </div>
+          <div className="relative z-10 flex flex-col items-start gap-2">
+            <span
+              className="bg-gradient-to-r from-teal-300 via-indigo-400 via-fuchsia-400 to-orange-300 bg-clip-text text-7xl font-semibold leading-none tracking-tight text-transparent xl:text-8xl"
+              aria-label="Finara"
+            >
+              Finara
+            </span>
             <span className="pl-1 text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
               Backoffice
             </span>
@@ -187,16 +182,12 @@ export default function LoginPage() {
           <div className="w-full max-w-md">
             {/* Marca móvil */}
             <div className="mb-10 flex flex-col items-start gap-2 lg:hidden">
-              <div className="inline-flex items-center justify-center rounded-xl bg-white px-4 py-2 ring-1 ring-slate-200">
-                <Image
-                  src="/finara-logo.png"
-                  alt="Finara"
-                  width={240}
-                  height={96}
-                  className="h-16 w-auto object-contain"
-                  priority
-                />
-              </div>
+              <span
+                className="bg-gradient-to-r from-teal-500 via-indigo-500 via-fuchsia-500 to-orange-400 bg-clip-text text-6xl font-semibold leading-none tracking-tight text-transparent"
+                aria-label="Finara"
+              >
+                Finara
+              </span>
               <span className="pl-1 text-[10px] font-medium uppercase tracking-[0.22em] text-slate-500">
                 Backoffice
               </span>
