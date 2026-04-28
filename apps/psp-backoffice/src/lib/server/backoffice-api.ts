@@ -6,9 +6,20 @@ const DEFAULT_PROXY_TIMEOUT_MS = 5000;
 const PROXY_TIMEOUT_MS_MIN = 1_000;
 const PROXY_TIMEOUT_MS_MAX = 120_000;
 
+let warnedInvalidPspApiProxyTimeoutMs = false;
+
 function parseProxyTimeoutMs(): number {
   const raw = process.env.PSP_API_PROXY_TIMEOUT_MS?.trim();
   if (!raw) return DEFAULT_PROXY_TIMEOUT_MS;
+  if (!/^\d+$/.test(raw)) {
+    if (!warnedInvalidPspApiProxyTimeoutMs) {
+      warnedInvalidPspApiProxyTimeoutMs = true;
+      console.warn(
+        `[psp-backoffice] PSP_API_PROXY_TIMEOUT_MS is invalid (expected digits only, milliseconds). Got "${raw}". Using default ${DEFAULT_PROXY_TIMEOUT_MS}ms.`,
+      );
+    }
+    return DEFAULT_PROXY_TIMEOUT_MS;
+  }
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed)) return DEFAULT_PROXY_TIMEOUT_MS;
   return Math.min(PROXY_TIMEOUT_MS_MAX, Math.max(PROXY_TIMEOUT_MS_MIN, parsed));

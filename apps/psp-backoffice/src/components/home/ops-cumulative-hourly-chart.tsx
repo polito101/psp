@@ -315,10 +315,19 @@ export function OpsCumulativeHourlyChart({
     const box = chartInteractRef.current?.getBoundingClientRect();
     if (box) {
       const x = clientX - box.left;
-      const tipW = 220;
       const p = 8;
+      const effectiveTipW = Math.min(220, Math.max(0, box.width - 2 * p));
       const flip = x > box.width * 0.52;
-      const left = flip ? Math.max(p, x - tipW - p) : Math.min(x + p, box.width - tipW - p);
+      const maxLeft = box.width - effectiveTipW - p;
+      let left: number;
+      if (maxLeft < p) {
+        left = p;
+      } else {
+        const leftUnclamped = flip
+          ? x - effectiveTipW - p
+          : Math.min(x + p, maxLeft);
+        left = Math.max(p, Math.min(leftUnclamped, maxLeft));
+      }
       const next = { left, top: p };
       const prev = lastTooltipOffsetRef.current;
       if (!prev || prev.left !== next.left || prev.top !== next.top) {

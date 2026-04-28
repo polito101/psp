@@ -20,7 +20,7 @@ services:
     runtime: docker
     plan: free
     region: oregon
-    branch: Phase1
+    branch: main
     dockerfilePath: ./apps/psp-api/Dockerfile
     dockerContext: ./apps/psp-api
     healthCheckPath: /health
@@ -59,10 +59,10 @@ services:
     runtime: node
     plan: free
     region: oregon
-    branch: Phase1
+    branch: main
     rootDir: apps/psp-backoffice
-    # NODE_ENV=production hace que npm ci omita devDependencies; Tailwind/PostCSS viven ahí y next build las necesita.
-    buildCommand: NPM_CONFIG_PRODUCTION=false npm ci && npm run build
+    # Tailwind/PostCSS y herramientas de build están en devDependencies; luego `npm prune --omit=dev` limpia el runtime.
+    buildCommand: npm ci --include=dev && npm run build && npm prune --omit=dev
     startCommand: npm run start
     buildFilter:
       paths:
