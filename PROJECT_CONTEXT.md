@@ -147,7 +147,7 @@ En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc`, `te
 - Se consolidó CI en `.github/workflows/ci.yml`: `api-ci` (lint/test/build/Docker API), `backoffice-ci` (lint/typecheck/test Vitest/build del panel), `terraform-validate`, y en rama `sandbox` deploy + migrate + readiness estricto de `/health` [status/db/redis en `ok`] + gate de métricas operativas en `/api/v2/payments/ops/metrics` + smoke.
 - `api-ci` ahora trata `test:integration:critical` como bloqueante, agrega `test:ci:ops-metrics` para hardening del gate de métricas internas y valida build Docker (`psp-api:ci`) en cada corrida.
 - `sandbox-deploy` define umbrales explícitos de readiness operativo (`READINESS_*`) para reducir falsos verdes y alinear promoción con SLO operativo de canary.
-- Se agrego contenedorizacion de API (`Dockerfile`, `.dockerignore`) para ejecucion reproducible; en produccion el entrypoint (`docker-entrypoint.sh`) ejecuta `prisma migrate deploy` antes de `node dist/main` para que Postgres tenga tablas como `WebhookDelivery` al levantar el servicio.
+- Se agrego contenedorizacion de API (`Dockerfile`, `.dockerignore`) para ejecucion reproducible; en produccion el entrypoint (`docker-entrypoint.sh`) ejecuta `prisma migrate deploy` antes de `node dist/main` para que Postgres tenga tablas como `WebhookDelivery` al levantar el servicio. Los reintentos ante fallos transitorios y el tiempo maximo total estan acotados por variables `PRISMA_MIGRATE_*` (ver comentarios en el script); errores de migracion no recuperables (p. ej. P3009/P3018) cortan sin esperar el maximo de tiempo.
 - Se agregaron documentos operativos para sandbox:
   - `docs/sandbox-env.md`
   - `docs/sandbox-runbook.md`
