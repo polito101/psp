@@ -105,25 +105,20 @@ export default function LoginPage() {
           />
 
           {/* Header marca */}
-          <div className="relative z-10 flex items-center gap-4">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white p-1.5 shadow-lg ring-1 ring-white/20">
+          <div className="relative z-10 flex flex-col items-start gap-3">
+            <div className="inline-flex items-center justify-center rounded-2xl bg-white px-5 py-3 shadow-lg ring-1 ring-white/20">
               <Image
                 src="/finara-logo.png"
                 alt="Finara"
-                width={56}
-                height={56}
-                className="h-full w-full object-contain"
+                width={320}
+                height={120}
+                className="h-20 w-auto object-contain"
                 priority
               />
             </div>
-            <div className="flex flex-col">
-              <span className="text-lg font-semibold tracking-tight text-white">
-                Finara
-              </span>
-              <span className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
-                Backoffice
-              </span>
-            </div>
+            <span className="pl-1 text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
+              Backoffice
+            </span>
           </div>
 
           {/* Hero */}
@@ -191,25 +186,20 @@ export default function LoginPage() {
         <section className="relative flex items-center justify-center px-4 py-16 sm:px-8 lg:py-12">
           <div className="w-full max-w-md">
             {/* Marca móvil */}
-            <div className="mb-10 flex items-center gap-3 lg:hidden">
-              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-white p-1 ring-1 ring-slate-200">
+            <div className="mb-10 flex flex-col items-start gap-2 lg:hidden">
+              <div className="inline-flex items-center justify-center rounded-xl bg-white px-4 py-2 ring-1 ring-slate-200">
                 <Image
                   src="/finara-logo.png"
                   alt="Finara"
-                  width={48}
-                  height={48}
-                  className="h-full w-full object-contain"
+                  width={240}
+                  height={96}
+                  className="h-16 w-auto object-contain"
                   priority
                 />
               </div>
-              <div className="flex flex-col">
-                <span className="text-base font-semibold tracking-tight text-slate-900">
-                  Finara
-                </span>
-                <span className="text-[10px] font-medium uppercase tracking-[0.22em] text-slate-500">
-                  Backoffice
-                </span>
-              </div>
+              <span className="pl-1 text-[10px] font-medium uppercase tracking-[0.22em] text-slate-500">
+                Backoffice
+              </span>
             </div>
 
             {/* Header */}
