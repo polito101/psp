@@ -105,14 +105,14 @@ export default function LoginPage() {
           />
 
           {/* Header marca */}
-          <div className="relative z-10 flex flex-col items-start gap-2">
+          <div className="relative z-10 flex flex-col items-start gap-3">
             <Image
               src="/finara-logo.png"
               alt="Finara"
               width={640}
               height={240}
               priority
-              className="h-28 w-auto object-contain xl:h-36"
+              className="h-40 w-auto object-contain xl:h-52"
             />
             <span className="pl-2 text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">
               Backoffice
@@ -184,14 +184,14 @@ export default function LoginPage() {
         <section className="relative flex items-center justify-center px-4 py-16 sm:px-8 lg:py-12">
           <div className="w-full max-w-md">
             {/* Marca móvil */}
-            <div className="mb-10 flex flex-col items-start gap-2 lg:hidden">
+            <div className="mb-12 flex flex-col items-start gap-2 lg:hidden">
               <Image
                 src="/finara-logo.png"
                 alt="Finara"
                 width={520}
                 height={200}
                 priority
-                className="h-24 w-auto object-contain"
+                className="h-32 w-auto object-contain"
               />
               <span className="pl-2 text-[10px] font-medium uppercase tracking-[0.22em] text-slate-500">
                 Backoffice
