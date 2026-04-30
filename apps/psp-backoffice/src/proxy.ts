@@ -2,6 +2,11 @@ import { jwtVerify } from "jose";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { BACKOFFICE_SESSION_COOKIE_NAME } from "@/lib/session-cookie";
+import {
+  getBackofficePortalMode,
+  getPortalLoginPath,
+  sessionRoleMatchesPortal,
+} from "@/lib/server/portal-mode";
 
 type ProxySession =
   | { role: "admin" }
@@ -28,14 +33,19 @@ async function readSessionFromRequest(req: NextRequest): Promise<ProxySession | 
   if (!secret || !isDistinctSessionSecret(secret)) {
     return null;
   }
+
+  const portalMode = getBackofficePortalMode();
+
   try {
     const { payload } = await jwtVerify(token, new TextEncoder().encode(secret), {
       algorithms: ["HS256"],
     });
     if (payload.role === "admin") {
+      if (!sessionRoleMatchesPortal(portalMode, "admin")) return null;
       return { role: "admin" };
     }
     if (payload.role === "merchant" && typeof payload.merchantId === "string") {
+      if (!sessionRoleMatchesPortal(portalMode, "merchant")) return null;
       const merchantId = payload.merchantId.trim();
       if (merchantId) {
         return { role: "merchant", merchantId };
@@ -59,14 +69,26 @@ export async function proxy(req: NextRequest) {
     return NextResponse.next();
   }
 
+  const portalMode = getBackofficePortalMode();
+  const loginPath = getPortalLoginPath(portalMode);
   const session = await readSessionFromRequest(req);
   const hasSession = session !== null;
 
-  if (!hasSession && pathname !== "/login") {
-    return NextResponse.redirect(new URL("/login", req.nextUrl));
+  if (portalMode === "merchant" && pathname.startsWith("/admin")) {
+    const dest = hasSession ? "/" : "/login";
+    return NextResponse.redirect(new URL(dest, req.nextUrl));
   }
 
-  if (hasSession && pathname === "/login") {
+  if (portalMode === "admin" && pathname === "/login") {
+    const dest = hasSession ? "/" : "/admin/login";
+    return NextResponse.redirect(new URL(dest, req.nextUrl));
+  }
+
+  if (!hasSession && pathname !== loginPath) {
+    return NextResponse.redirect(new URL(loginPath, req.nextUrl));
+  }
+
+  if (hasSession && (pathname === "/login" || pathname === "/admin/login")) {
     return NextResponse.redirect(new URL("/", req.nextUrl));
   }
 

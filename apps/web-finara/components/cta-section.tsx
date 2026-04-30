@@ -1,6 +1,10 @@
 import { ArrowRight } from "lucide-react"
-import Link from "next/link"
 import Image from "next/image"
+import Link from "next/link"
+
+import { getMerchantBackofficeLoginUrl } from "@/lib/merchant-portal-url"
+
+const merchantPortalLoginUrl = getMerchantBackofficeLoginUrl()
 
 export function CTASection() {
   return (
@@ -27,7 +31,7 @@ export function CTASection() {
               </p>
               <div className="mt-8 flex flex-col sm:flex-row items-start sm:items-center gap-4">
                 <Link
-                  href="https://finara.online"
+                  href={merchantPortalLoginUrl}
                   className="btn-brand-gradient inline-flex items-center gap-2 text-base font-semibold px-8 py-3.5 rounded-full"
                 >
                   Start processing payments

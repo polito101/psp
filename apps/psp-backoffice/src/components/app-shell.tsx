@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { LayoutSession } from "@/lib/session-types";
+import { getClientPortalLoginPath } from "@/lib/portal-mode";
 
 type NavItem = {
   href: string;
@@ -31,6 +32,7 @@ function sessionBadgeLabel(session: LayoutSession | null): string {
 }
 
 function buildNavItems(session: LayoutSession | null): NavItem[] {
+  const loginHref = getClientPortalLoginPath();
   const financeHref =
     session?.role === "merchant" ? `/merchants/${session.merchantId}/finance` : "/merchants/lookup";
 
@@ -38,7 +40,7 @@ function buildNavItems(session: LayoutSession | null): NavItem[] {
     const mid = encodeURIComponent(session.merchantId);
     return [
       { href: "/", id: "home", label: "Inicio", icon: LayoutDashboard },
-      { href: "/login", id: "login", label: "Iniciar sesión", icon: LogIn },
+      { href: loginHref, id: "login", label: "Iniciar sesión", icon: LogIn },
       { href: "/transactions", id: "transactions", label: "Transacciones", icon: CreditCard },
       {
         href: `/merchants/${mid}/overview`,
@@ -59,7 +61,7 @@ function buildNavItems(session: LayoutSession | null): NavItem[] {
 
   const base: NavItem[] = [
     { href: "/", id: "home", label: "Inicio", icon: LayoutDashboard },
-    { href: "/login", id: "login", label: "Iniciar sesión", icon: LogIn },
+    { href: loginHref, id: "login", label: "Iniciar sesión", icon: LogIn },
     { href: "/transactions", id: "transactions", label: "Transacciones", icon: CreditCard },
     {
       href: "/merchants",
@@ -98,18 +100,18 @@ export function AppShell({
 }) {
   const pathname = usePathname();
   const router = useRouter();
+  const loginHref = getClientPortalLoginPath();
   const navItems = buildNavItems(session);
 
   async function logout() {
     await fetch("/api/auth/session", { method: "DELETE", credentials: "include" });
-    router.push("/login");
+    router.push(loginHref);
     router.refresh();
   }
 
-  const showLoginLink = !session && pathname !== "/login";
+  const showLoginLink = !session && pathname !== loginHref;
 
-  // Entry pages render fullscreen without header/sidebar (login, etc.)
-  const isEntryPage = pathname === "/login";
+  const isEntryPage = pathname === "/login" || pathname === "/admin/login";
   if (isEntryPage) {
     return <div className="min-h-screen bg-slate-50">{children}</div>;
   }

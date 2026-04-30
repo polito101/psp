@@ -13,6 +13,8 @@ describe("merchant finance internal BFF routes", () => {
     process.env.BACKOFFICE_SESSION_JWT_SECRET = "session-jwt-secret-dev-only-32b";
     process.env.BACKOFFICE_ADMIN_SECRET = "admin-secret";
     process.env.PSP_INTERNAL_API_SECRET = "internal-only";
+    process.env.BACKOFFICE_PORTAL_MODE = "merchant";
+    process.env.NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE = "merchant";
   });
 
   afterEach(() => {
@@ -40,6 +42,8 @@ describe("merchant finance internal BFF routes", () => {
   });
 
   it("returns 400 for summary when currency is not uppercase ISO", async () => {
+    process.env.BACKOFFICE_PORTAL_MODE = "admin";
+    process.env.NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE = "admin";
     const jwt = await mintTestAdminSessionJwt();
     const req = new NextRequest(
       "http://localhost:3005/api/internal/merchants/m1/finance/summary?currency=eur",
@@ -50,6 +54,8 @@ describe("merchant finance internal BFF routes", () => {
   });
 
   it("returns 400 for summary when createdFrom is after createdTo", async () => {
+    process.env.BACKOFFICE_PORTAL_MODE = "admin";
+    process.env.NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE = "admin";
     process.env.BACKOFFICE_ADMIN_SECRET = "admin-secret";
     process.env.PSP_INTERNAL_API_SECRET = "internal-only";
 

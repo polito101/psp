@@ -152,6 +152,8 @@ jobs:
       - name: E2E (Playwright)
         env:
           NODE_ENV: development
+          BACKOFFICE_PORTAL_MODE: admin
+          NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE: admin
           BACKOFFICE_ADMIN_SECRET: admin-secret
           BACKOFFICE_SESSION_JWT_SECRET: session-jwt-secret-dev-only-32b
           BACKOFFICE_MERCHANT_PORTAL_SECRET: portal-hmac-secret-32bytes!!

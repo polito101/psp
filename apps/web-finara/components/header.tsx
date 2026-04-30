@@ -5,6 +5,9 @@ import Link from "next/link"
 import Image from "next/image"
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
 import { Menu, X } from "lucide-react"
+import { getMerchantBackofficeLoginUrl } from "@/lib/merchant-portal-url"
+
+const merchantPortalLoginUrl = getMerchantBackofficeLoginUrl()
 
 const navLinks = [
   { href: "#who-is-finara-for", label: "For Business" },
@@ -60,13 +63,13 @@ export function Header() {
           {/* Desktop CTAs */}
           <div className="hidden lg:flex items-center gap-3">
             <Link
-              href="https://finara.online"
+              href={merchantPortalLoginUrl}
               className="text-sm font-medium text-[#8b8baa] hover:text-white px-4 py-2 transition-colors duration-200"
             >
               Log in
             </Link>
             <Link
-              href="https://finara.online"
+              href={merchantPortalLoginUrl}
               className="btn-brand-gradient text-sm font-semibold px-5 py-2 rounded-full transition-opacity duration-200"
             >
               Create account
@@ -97,13 +100,13 @@ export function Header() {
                 ))}
                 <div className="flex flex-col gap-3 mt-4 pt-6 border-t border-white/10">
                   <Link
-                    href="https://finara.online"
+                    href={merchantPortalLoginUrl}
                     className="text-center py-2 px-4 rounded-full border border-white/20 text-sm font-medium text-white hover:bg-white/10 transition-colors"
                   >
                     Log in
                   </Link>
                   <Link
-                    href="https://finara.online"
+                    href={merchantPortalLoginUrl}
                     className="btn-brand-gradient text-center py-2 px-4 rounded-full text-sm font-semibold"
                   >
                     Create account

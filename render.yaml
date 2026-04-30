@@ -1,4 +1,4 @@
-# Render Blueprint: psp-api (Docker) + web-finara + psp-backoffice (Node) + Postgres + Key-Value (Redis/Valkey).
+# Render Blueprint: psp-api (Docker) + web-finara + psp-backoffice (merchant) + psp-backoffice-admin (admin) + Postgres + Key-Value (Redis/Valkey).
 # Aplicar: https://dashboard.render.com/blueprint/new
 #
 # Migraciones: el Dockerfile de psp-api ejecuta `prisma migrate deploy` en el entrypoint antes de `node dist/main`.
@@ -50,9 +50,9 @@ services:
         value: "*"
       - key: ENABLE_SWAGGER
         value: "false"
-      # Orígenes del panel y sitio marketing (ajústalos si cambian los dominios en Render).
+      # Orígenes del panel merchant, panel admin interno y sitio marketing.
       - key: CORS_ALLOWED_ORIGINS
-        value: https://psp-backoffice.onrender.com,https://web-finara.onrender.com
+        value: https://psp-backoffice.onrender.com,https://psp-backoffice-admin.onrender.com,https://web-finara.onrender.com
 
   - type: web
     name: web-finara
@@ -69,6 +69,8 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL
+        value: https://psp-backoffice.onrender.com/login
 
   - type: web
     name: psp-backoffice
@@ -97,11 +99,50 @@ services:
           name: psp-api
           type: web
           envVarKey: INTERNAL_API_SECRET
-      - key: BACKOFFICE_ADMIN_SECRET
-        generateValue: true
+      # Portal público merchant: solo /login merchant (sin secreto admin en este deploy).
+      - key: BACKOFFICE_PORTAL_MODE
+        value: merchant
+      - key: NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE
+        value: merchant
       - key: BACKOFFICE_SESSION_JWT_SECRET
         generateValue: true
       - key: BACKOFFICE_MERCHANT_PORTAL_SECRET
+        generateValue: true
+      - key: NEXT_PUBLIC_TRANSACTIONS_REFRESH_MS
+        value: "15000"
+
+  - type: web
+    name: psp-backoffice-admin
+    runtime: node
+    plan: free
+    region: oregon
+    branch: main
+    rootDir: apps/psp-backoffice
+    buildCommand: npm ci --include=dev && npm run build && npm prune --omit=dev
+    startCommand: npm run start
+    buildFilter:
+      paths:
+        - apps/psp-backoffice/**
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PSP_API_BASE_URL
+        value: https://psp-api.onrender.com
+      - key: PSP_API_PROXY_TIMEOUT_MS
+        value: "60000"
+      - key: PSP_INTERNAL_API_SECRET
+        fromService:
+          name: psp-api
+          type: web
+          envVarKey: INTERNAL_API_SECRET
+      # Portal admin: login en /admin/login (no enlazar públicamente desde marketing).
+      - key: BACKOFFICE_PORTAL_MODE
+        value: admin
+      - key: NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE
+        value: admin
+      - key: BACKOFFICE_ADMIN_SECRET
+        generateValue: true
+      - key: BACKOFFICE_SESSION_JWT_SECRET
         generateValue: true
       - key: NEXT_PUBLIC_TRANSACTIONS_REFRESH_MS
         value: "15000"

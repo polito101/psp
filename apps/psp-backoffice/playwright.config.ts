@@ -10,6 +10,8 @@ const devDefaults = {
   BACKOFFICE_ADMIN_SECRET: "admin-secret",
   PSP_INTERNAL_API_SECRET: "internal-only",
   BACKOFFICE_MERCHANT_PORTAL_SECRET: "portal-hmac-secret-32bytes!!",
+  BACKOFFICE_PORTAL_MODE: "admin",
+  NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE: "admin",
 };
 
 export default defineConfig({
@@ -22,7 +24,7 @@ export default defineConfig({
   },
   webServer: {
     command: "npm run dev",
-    url: "http://127.0.0.1:3005/login",
+    url: "http://127.0.0.1:3005/admin/login",
     /**
      * En local suele haber `next dev` en 3005. En CI (`CI=true`) siempre arrancamos un proceso nuevo.
      * `psp-api` no lo levanta Playwright: debe estar en marcha en `PSP_API_BASE_URL` (p. ej. CI levanta la API antes de `test:e2e`).
@@ -39,6 +41,9 @@ export default defineConfig({
       PSP_INTERNAL_API_SECRET: process.env.PSP_INTERNAL_API_SECRET ?? devDefaults.PSP_INTERNAL_API_SECRET,
       BACKOFFICE_MERCHANT_PORTAL_SECRET:
         process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET ?? devDefaults.BACKOFFICE_MERCHANT_PORTAL_SECRET,
+      BACKOFFICE_PORTAL_MODE: process.env.BACKOFFICE_PORTAL_MODE ?? devDefaults.BACKOFFICE_PORTAL_MODE,
+      NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE:
+        process.env.NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE ?? devDefaults.NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE,
     },
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],

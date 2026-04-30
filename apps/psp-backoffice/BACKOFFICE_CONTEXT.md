@@ -27,6 +27,8 @@ Puerto dev por defecto: **3005** (`next dev -p 3005`). API local típica: **3003
 src/
 ├── app/
 │   ├── layout.tsx, page.tsx          # `/` inicio (admin vs merchant)
+│   ├── login/page.tsx                # `/login` portal **merchant** (credenciales merchant)
+│   ├── admin/login/page.tsx          # `/admin/login` portal **admin**
 │   ├── transactions/page.tsx         # `/transactions` listado ops
 │   ├── operations/page.tsx           # `/operations` inbox settlements (admin)
 │   ├── merchants/page.tsx            # directorio merchants (admin)
@@ -75,17 +77,21 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 
 | Variable | Uso |
 |----------|-----|
+| `BACKOFFICE_PORTAL_MODE` | **`merchant`** u **`admin`**: en `merchant` solo acepta sesión merchant y login en `/login`; en `admin` solo admin y login en `/admin/login`. Si falta, por defecto **`merchant`** (fail-closed para no exponer admin). |
+| `NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE` | Debe coincidir con `BACKOFFICE_PORTAL_MODE` (copia para UI en cliente: rutas de logout / enlace “Iniciar sesión”). Middleware/Edge puede usar este fallback si el server env no está inlined en el bundle. |
 | `PSP_API_BASE_URL` | Base URL de `psp-api` (solo servidor); **obligatoria** fuera de `NODE_ENV=development`. En desarrollo local puede omitirse y usar `http://localhost:3000` como valor por defecto. |
 | `PSP_API_PROXY_TIMEOUT_MS` | Opcional: timeout ms del `fetch` BFF→API (default **5000**, máx. 120000). Debe ser **solo dígitos** (p. ej. `60000`; sin `60s`, `1e5`, etc.). Valores mal formados usan el default y un **warning** único en logs del servidor. Subir en hosting con cold start largo (p. ej. Render free). |
 | `PSP_INTERNAL_API_SECRET` | Secreto interno API; **nunca** al cliente |
-| `BACKOFFICE_ADMIN_SECRET` | Credencial de login **admin** (solo `POST /api/auth/session` modo admin); distinto de `PSP_INTERNAL_API_SECRET` |
+| `BACKOFFICE_ADMIN_SECRET` | Credencial de login **admin** (solo deploy admin y `POST /api/auth/session` con `mode: "admin"`); distinto de `PSP_INTERNAL_API_SECRET`. En deploy **solo merchant** suele omitirse. |
 | `BACKOFFICE_SESSION_JWT_SECRET` | Firma del JWT en cookie `backoffice_session` (sesión admin/merchant); distinto de `PSP_INTERNAL_API_SECRET` y de `BACKOFFICE_ADMIN_SECRET` |
-| `BACKOFFICE_MERCHANT_PORTAL_SECRET` | Clave HMAC para login **merchant** (token `expUnix:hexHmac` sobre ``merchantId.exp``); distinto de `PSP_INTERNAL_API_SECRET` |
+| `BACKOFFICE_MERCHANT_PORTAL_SECRET` | Clave HMAC para login **merchant** (token `expUnix:hexHmac` sobre ``merchantId.exp``); distinto de `PSP_INTERNAL_API_SECRET`. En deploy **solo admin** puede omitirse. |
 | `NEXT_PUBLIC_TRANSACTIONS_REFRESH_MS` | Intervalo de auto-refresh del monitor (publico) |
 | `NEXT_PUBLIC_BFF_FETCH_TIMEOUT_MS` | Opcional: timeout ms del **navegador** hacia `/api/internal/*` (default **90000**). Evita carga perpetua si el Route Handler no responde. |
 
 ## 6) Rutas de producto
 
+- **`/login`** — Solo **portal merchant** (`BACKOFFICE_PORTAL_MODE=merchant`): formulario merchant ID + token temporal; no admin.
+- **`/admin/login`** — Solo **portal admin** (`BACKOFFICE_PORTAL_MODE=admin`): formulario mínimo con secreto admin.
 - **`/`** — Inicio: **admin** — bloque **Resumen** (intervalo/comparador vía `GET /api/internal/transactions/summary`), tarjetas UTC + volumen EUR + card volumen **USD** (`/ops/dashboard/volume-usd` vía BFF) + accesos a `/merchants` y `/operations`. **Merchant** — resumen scoped + enlaces al portal.
 - **`/transactions`** — Dashboard de transacciones (lista ops, filtros, export CSV de pagina visible, conteos por estado, cursores). Filtros extendidos (país, método, weekday, `merchantActive`) se reenvían al BFF.
 - **`/merchants`** — Directorio merchants (solo admin); desde aquí **Ver** → overview, **Admin** → panel activación / admin-enabled métodos.
@@ -105,15 +111,16 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 - Las rutas `app/api/internal/*` reenvian a endpoints internos de Nest (`/api/v2/payments/ops/...`, `/api/v1/settlements/...`, `/api/v1/merchants/ops/...`, health, etc.) con `X-Internal-Secret` solo en servidor. El listado ops va a `.../ops/transactions`; los conteos agregados por estado del dashboard a `.../ops/transactions/counts` (`GET /api/internal/transactions/counts`); el resumen comparativo (payments, bruto, neto, errores) a `.../ops/transactions/summary` (`GET /api/internal/transactions/summary`); la serie de volumen horario a `.../ops/transactions/volume-hourly` (`GET /api/internal/transactions/volume-hourly`); volumen agregado en USD a `.../ops/dashboard/volume-usd` (`GET /api/internal/transactions/dashboard-volume-usd`). Finanzas por merchant (resumen gross/fee/net, filas por `PaymentFeeQuote`, payouts): `GET /api/internal/merchants/:merchantId/finance/summary|transactions|payouts` → `.../ops/merchants/:merchantId/finance/...`. Settlements: `.../internal/settlements/merchants/:id/available-balance`, `.../requests` (GET/POST), inbox y approve/reject. Merchants ops: `.../internal/merchants/ops/directory`, `.../ops/:id/detail|active|payment-methods`. El proxy (`lib/server/backoffice-api.ts`) exige `backofficeScope` en cualquier ruta payments ops **o** settlements **o** `merchants/ops` (RBAC fail-closed alineado con `InternalSecretGuard` en API). Soporta `proxyInternalPost` / `proxyInternalPatch` para cuerpos JSON.
 - Detalle de pago: `GET /api/internal/payments/:paymentId` hace proxy a `.../ops/payments/:id`. Por defecto **no** se incluye `responsePayload` por intento (menos payload y menos metadata de proveedor en el navegador). Solo si la peticion al BFF lleva `?includePayload=true` se reenvia ese flag a la API (uso depuracion).
 - Sesión: cookie HttpOnly `backoffice_session` con JWT (claims `role: admin` o `merchant` y `merchantId` si aplica). El BFF acepta también `Authorization: Bearer <JWT>` (p. ej. tests). Sin sesión válida: `401`/`403`. Faltan `BACKOFFICE_SESSION_JWT_SECRET` o conflictos con otros secretos → `500` (fail-closed).
+- Alcance portal en BFF (`enforceInternalRouteAuth`): JWT verificado pero con **rol incompatible** con `BACKOFFICE_PORTAL_MODE` → **`403`** (p. ej. cookie admin en deploy merchant).
 - Mutaciones BFF (`POST`/`PATCH` bajo `/api/internal/*`): el navegador debe enviar cabecera `X-Backoffice-Mutation: 1`; si existe cabecera `Origin`, debe coincidir con el origen del propio backoffice. La sesión/RBAC sigue aplicándose después.
-- Login: `POST /api/auth/session` con `{ "mode": "admin", "token": "<BACKOFFICE_ADMIN_SECRET>" }` o `{ "mode": "merchant", "merchantId": "...", "merchantToken": "<expUnix>:<hmac_hex>" }` (HMAC de ``merchantId.exp`` con caducidad). Ver `README.md`. Rate limit best-effort en proceso solo cuando hay una IP cliente válida (`request.ip` si existe, luego `x-vercel-forwarded-for`, `x-real-ip`, primer hop de `x-forwarded-for`; normalización con `node:net`/`isIP`). Sin IP resoluble **no** se aplica RL (evita lockout global). Map de buckets con barrido de ventanas expiradas y tope de entradas; en producción complementar con límite en edge/WAF si hay varias instancias.
+- Login: `POST /api/auth/session` acepta **solo** el `mode` que coincida con `BACKOFFICE_PORTAL_MODE`: admin `{ "mode":"admin","token":"<BACKOFFICE_ADMIN_SECRET>" }` o merchant `{ "mode":"merchant","merchantId":"...","merchantToken":"<expUnix>:<hmac_hex>" }` (HMAC de ``merchantId.exp``, caducidad acotada). Otro modo → **`404`** (no filtrar existencia por UI). Rate limit best-effort en proceso solo cuando hay una IP cliente válida (`request.ip` si existe, luego `x-vercel-forwarded-for`, `x-real-ip`, primer hop de `x-forwarded-for`; normalización con `node:net`/`isIP`). Sin IP resoluble **no** se aplica RL (evita lockout global). Map de buckets con barrido de ventanas expiradas y tope de entradas; en producción complementar con límite en edge/WAF si hay varias instancias.
 - Navegación: rol **merchant** no ve `/monitor` ni `/merchants/lookup`; enlaces a **Mi comercio** (`/merchants/{id}/overview` y subrutas) y **Finanzas**. Admin ve **Merchants**, **Operaciones**, monitor y lookup financiero.
 - Detalle de pago: un merchant que pida un `paymentId` de otro comercio recibe **404** (anti-enumeración), en BFF y en API.
 - Alcance **merchant** en BFF: rutas con `merchantId` en path o query fuerzan/validan contra el claim; métricas globales (`provider-health` → `ops/metrics`) solo **admin**. El proxy añade cabeceras `X-Backoffice-Role` y `X-Backoffice-Merchant-Id` para que `psp-api` vuelva a validar (defensa en profundidad). Las páginas merchant incluyen `/merchants/[merchantId]/finance` con validación en Server Component vía `ensureMerchantPortalRoute`, además del proxy y el BFF.
 - Cabeceras de seguridad globales desde `next.config.ts`: `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`.
-- Proxy (`src/proxy.ts`, Next.js 16+): páginas sin cookie de sesión redirigen a `/login`; rutas `/api/*` no se redirigen (el BFF sigue respondiendo 401/403).
+- Proxy HTTP de páginas (`src/proxy.ts`, Next.js 16 “Proxy Middleware”): sin sesión válida para el portal actual redirige a **`/login`** (merchant) o **`/admin/login`** (admin); bloquea `/admin/*` en portal merchant sin sesión (redirección al login merchant); fuerza **`/login` → `/admin/login`** cuando no hay sesión en portal admin. Rutas **`/api/*`** no redirigen (el BFF responde `401`/`403`).
 - Errores del proxy hacia `psp-api`: el servidor registra un preview acotado del cuerpo upstream en logs; el navegador recibe mensajes seguros (`message` + opcional `upstreamStatus`) y **no** se reenvía el JSON 4xx crudo del upstream.
-- No leer secretos desde `NEXT_PUBLIC_*` salvo decision documentada; el patron actual mantiene secretos server-only.
+- No leer secretos desde `NEXT_PUBLIC_*` salvo decision documentada; **`NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE`** es la excepción acordada para alinear UI con `BACKOFFICE_PORTAL_MODE` sin exponer secretos.
 
 ## 8) Convenciones de implementacion
 
@@ -135,7 +142,7 @@ npm run build
 npm run gen:api-types   # requiere API + Swagger
 ```
 
-En **GitHub Actions**, el job `backoffice-ci` arranca servicios Postgres/Redis, aplica migraciones de `psp-api`, ejecuta `npm run start:prod` en el puerto **3003** y luego Playwright, de modo que el listado `/merchants` no puede quedar verde si el proxy interno falla.
+En **GitHub Actions**, el job `backoffice-ci` arranca servicios Postgres/Redis, aplica migraciones de `psp-api`, ejecuta `npm run start:prod` en el puerto **3003** y luego Playwright en **`BACKOFFICE_PORTAL_MODE=admin`** (login en `/admin/login`), de modo que el listado `/merchants` no puede quedar verde si el proxy interno falla.
 
 ## 10) Lecturas relacionadas
 
