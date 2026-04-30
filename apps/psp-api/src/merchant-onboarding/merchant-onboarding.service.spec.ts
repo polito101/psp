@@ -1,5 +1,5 @@
 import { ConfigService } from '@nestjs/config';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { MerchantOnboardingService } from './merchant-onboarding.service';
 import { OnboardingEmailService } from './onboarding-email.service';
 import { OnboardingTokenService } from './onboarding-token.service';
@@ -31,6 +31,13 @@ describe('MerchantOnboardingService', () => {
         merchantId: 'merchant_1',
         status: 'DOCUMENTATION_PENDING',
       }),
+      findUnique: jest.fn().mockResolvedValue({
+        id: 'app_1',
+        merchantId: 'merchant_1',
+        status: 'APPROVED',
+        merchant: { id: 'merchant_1', isActive: false },
+      }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     merchantOnboardingChecklistItem: {
       createMany: jest.fn().mockResolvedValue({ count: 5 }),
@@ -176,7 +183,7 @@ describe('MerchantOnboardingService', () => {
     expect(emailService.sendOnboardingLink).toHaveBeenCalledWith({
       to: 'ada@example.com',
       contactName: 'Ada Lovelace',
-      onboardingUrl: 'https://onboarding.example.com/onboarding/merchant/plain_token',
+      onboardingUrl: 'https://onboarding.example.com/onboarding/plain_token',
     });
     expect(result).toEqual({
       ok: true,
@@ -249,7 +256,7 @@ describe('MerchantOnboardingService', () => {
     ).resolves.toEqual({
       ok: true,
       message: 'If the email can receive onboarding links, we will send next steps shortly.',
-      onboardingUrl: 'https://onboarding.example.com/onboarding/merchant/plain_token',
+      onboardingUrl: 'https://onboarding.example.com/onboarding/plain_token',
     });
 
     const sandboxContext = createService();
@@ -264,7 +271,7 @@ describe('MerchantOnboardingService', () => {
     ).resolves.toEqual({
       ok: true,
       message: 'If the email can receive onboarding links, we will send next steps shortly.',
-      onboardingUrl: 'https://onboarding.example.com/onboarding/merchant/plain_token',
+      onboardingUrl: 'https://onboarding.example.com/onboarding/plain_token',
     });
   });
 
@@ -311,6 +318,15 @@ describe('MerchantOnboardingService', () => {
       businessType: 'ecommerce',
     });
 
+    expect(tx.merchantOnboardingToken.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'tok_1',
+        usedAt: null,
+        revokedAt: null,
+        expiresAt: { gt: now },
+      },
+      data: { usedAt: now },
+    });
     expect(tx.merchantOnboardingApplication.update).toHaveBeenCalledWith({
       where: { id: 'app_1' },
       data: expect.objectContaining({
@@ -327,10 +343,6 @@ describe('MerchantOnboardingService', () => {
       where: { applicationId: 'app_1', key: 'business_profile_submitted' },
       data: { status: 'COMPLETED', completedAt: now },
     });
-    expect(tx.merchantOnboardingToken.update).toHaveBeenCalledWith({
-      where: { id: 'tok_1' },
-      data: { usedAt: now },
-    });
     expect(tx.merchantOnboardingEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         applicationId: 'app_1',
@@ -339,6 +351,32 @@ describe('MerchantOnboardingService', () => {
       }),
     });
     expect(result.status).toBe('IN_REVIEW');
+    jest.useRealTimers();
+  });
+
+  it('does not submit when the token conditional consume claim loses the race', async () => {
+    jest.useFakeTimers().setSystemTime(now.getTime());
+    const { service, prisma, tx } = createService();
+    prisma.merchantOnboardingToken.findUnique.mockResolvedValue({
+      id: 'tok_1',
+      applicationId: 'app_1',
+      expiresAt: new Date('2026-05-01T10:00:00.000Z'),
+      usedAt: null,
+      revokedAt: null,
+      application: { id: 'app_1', status: 'DOCUMENTATION_PENDING' },
+    });
+    tx.merchantOnboardingToken.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      service.submitBusinessProfile('plain_token', {
+        tradeName: 'Ada Shop',
+        legalName: 'Ada Shop SL',
+        country: 'ES',
+        website: 'https://adashop.example',
+        businessType: 'ecommerce',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(tx.merchantOnboardingApplication.update).not.toHaveBeenCalled();
     jest.useRealTimers();
   });
 
@@ -392,8 +430,8 @@ describe('MerchantOnboardingService', () => {
 
     const result = await service.approveApplication('app_1');
 
-    expect(tx.merchantOnboardingApplication.update).toHaveBeenNthCalledWith(1, {
-      where: { id: 'app_1' },
+    expect(tx.merchantOnboardingApplication.updateMany).toHaveBeenCalledWith({
+      where: { id: 'app_1', status: 'IN_REVIEW' },
       data: {
         status: 'APPROVED',
         reviewedAt: now,
@@ -401,7 +439,7 @@ describe('MerchantOnboardingService', () => {
         rejectionReason: null,
       },
     });
-    expect(tx.merchantOnboardingApplication.update).toHaveBeenNthCalledWith(2, {
+    expect(tx.merchantOnboardingApplication.update).toHaveBeenCalledWith({
       where: { id: 'app_1' },
       data: {
         status: 'ACTIVE',
@@ -438,6 +476,22 @@ describe('MerchantOnboardingService', () => {
     jest.useRealTimers();
   });
 
+  it('does not approve when the conditional status claim loses the race', async () => {
+    jest.useFakeTimers().setSystemTime(now.getTime());
+    const { service, prisma, tx } = createService();
+    tx.merchantOnboardingApplication.updateMany.mockResolvedValue({ count: 0 });
+    tx.merchantOnboardingApplication.findUnique.mockResolvedValue({
+      id: 'app_1',
+      merchantId: 'merchant_1',
+      status: 'REJECTED',
+      merchant: { id: 'merchant_1', isActive: false },
+    });
+
+    await expect(service.approveApplication('app_1')).rejects.toBeInstanceOf(ConflictException);
+    expect(tx.merchant.update).not.toHaveBeenCalled();
+    jest.useRealTimers();
+  });
+
   it('rejects application and keeps merchant inactive', async () => {
     jest.useFakeTimers().setSystemTime(now.getTime());
     const { service, prisma, tx } = createService();
@@ -457,8 +511,8 @@ describe('MerchantOnboardingService', () => {
       reason: 'No cumple los requisitos de riesgo actuales.',
     });
 
-    expect(tx.merchantOnboardingApplication.update).toHaveBeenCalledWith({
-      where: { id: 'app_1' },
+    expect(tx.merchantOnboardingApplication.updateMany).toHaveBeenCalledWith({
+      where: { id: 'app_1', status: 'IN_REVIEW' },
       data: {
         status: 'REJECTED',
         reviewedAt: now,
@@ -476,6 +530,26 @@ describe('MerchantOnboardingService', () => {
       data: { status: 'BLOCKED', completedAt: now },
     });
     expect(result.status).toBe('REJECTED');
+    jest.useRealTimers();
+  });
+
+  it('does not reject when the conditional status claim loses the race', async () => {
+    jest.useFakeTimers().setSystemTime(now.getTime());
+    const { service, prisma, tx } = createService();
+    tx.merchantOnboardingApplication.updateMany.mockResolvedValue({ count: 0 });
+    tx.merchantOnboardingApplication.findUnique.mockResolvedValue({
+      id: 'app_1',
+      merchantId: 'merchant_1',
+      status: 'ACTIVE',
+      merchant: { id: 'merchant_1', isActive: true },
+    });
+
+    await expect(
+      service.rejectApplication('app_1', {
+        reason: 'No cumple los requisitos de riesgo actuales.',
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(tx.merchant.update).not.toHaveBeenCalled();
     jest.useRealTimers();
   });
 
@@ -510,7 +584,7 @@ describe('MerchantOnboardingService', () => {
     expect(emailService.sendOnboardingLink).toHaveBeenCalledWith({
       to: 'ada@example.com',
       contactName: 'Ada Lovelace',
-      onboardingUrl: 'https://onboarding.example.com/onboarding/merchant/plain_token',
+      onboardingUrl: 'https://onboarding.example.com/onboarding/plain_token',
     });
     expect(result).toEqual({
       ok: true,
@@ -524,5 +598,92 @@ describe('MerchantOnboardingService', () => {
     prisma.merchantOnboardingApplication.findUnique.mockResolvedValue(null);
 
     await expect(service.getApplication('missing')).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('returns sanitized token validation data without token hashes', async () => {
+    const { service, prisma } = createService();
+    prisma.merchantOnboardingToken.findUnique.mockResolvedValue({
+      id: 'tok_1',
+      applicationId: 'app_1',
+      tokenHash: 'hashed_token',
+      expiresAt: new Date('2026-05-01T10:00:00.000Z'),
+      usedAt: null,
+      revokedAt: null,
+      application: { id: 'app_1', status: 'DOCUMENTATION_PENDING' },
+    });
+
+    const result = await service.validateToken('plain_token');
+
+    expect(result).toEqual({
+      id: 'tok_1',
+      applicationId: 'app_1',
+      expiresAt: new Date('2026-05-01T10:00:00.000Z'),
+      application: { id: 'app_1', status: 'DOCUMENTATION_PENDING' },
+    });
+    expect(result).not.toHaveProperty('tokenHash');
+  });
+
+  it('returns sanitized application detail without merchant secrets', async () => {
+    const { service, prisma } = createService();
+    prisma.merchantOnboardingApplication.findUnique.mockResolvedValue({
+      id: 'app_1',
+      merchantId: 'merchant_1',
+      status: 'IN_REVIEW',
+      contactEmail: 'ada@example.com',
+      merchant: {
+        id: 'merchant_1',
+        name: 'Ada Lovelace',
+        isActive: false,
+        apiKeyHash: 'secret_hash',
+        webhookSecretCiphertext: 'secret_ciphertext',
+      },
+      checklistItems: [],
+      events: [],
+    });
+
+    const result = await service.getApplication('app_1');
+
+    expect(result.merchant).toEqual({
+      id: 'merchant_1',
+      name: 'Ada Lovelace',
+      isActive: false,
+      deactivatedAt: undefined,
+      createdAt: undefined,
+    });
+    expect(result.merchant).not.toHaveProperty('apiKeyHash');
+    expect(result.merchant).not.toHaveProperty('webhookSecretCiphertext');
+  });
+
+  it('returns sanitized application list without merchant secrets', async () => {
+    const { service, prisma } = createService();
+    prisma.merchantOnboardingApplication.findMany.mockResolvedValue([
+      {
+        id: 'app_1',
+        merchantId: 'merchant_1',
+        status: 'IN_REVIEW',
+        contactEmail: 'ada@example.com',
+        merchant: {
+          id: 'merchant_1',
+          name: 'Ada Lovelace',
+          isActive: false,
+          apiKeyHash: 'secret_hash',
+          webhookSecretCiphertext: 'secret_ciphertext',
+        },
+        checklistItems: [],
+      },
+    ]);
+    prisma.merchantOnboardingApplication.count.mockResolvedValue(1);
+
+    const result = await service.listApplications({});
+
+    expect(result.items[0].merchant).toEqual({
+      id: 'merchant_1',
+      name: 'Ada Lovelace',
+      isActive: false,
+      deactivatedAt: undefined,
+      createdAt: undefined,
+    });
+    expect(result.items[0].merchant).not.toHaveProperty('apiKeyHash');
+    expect(result.items[0].merchant).not.toHaveProperty('webhookSecretCiphertext');
   });
 });

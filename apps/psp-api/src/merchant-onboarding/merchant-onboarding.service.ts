@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'crypto';
 import * as bcrypt from 'bcryptjs';
@@ -35,6 +35,16 @@ type OnboardingTransaction = Prisma.TransactionClient;
 type EmailDeliveryResult =
   | { ok: true; providerMessageId: string | null }
   | { ok: false; errorMessage: string };
+type MerchantSummary = {
+  id: string;
+  name: string;
+  isActive: boolean;
+  deactivatedAt?: Date | null;
+  createdAt?: Date;
+};
+type ApplicationWithMerchant = {
+  merchant?: MerchantSummary | null;
+};
 
 @Injectable()
 export class MerchantOnboardingService {
@@ -51,6 +61,7 @@ export class MerchantOnboardingService {
    */
   async createApplication(dto: CreateMerchantOnboardingApplicationDto) {
     const contactEmail = normalizeEmail(dto.email);
+    // Neutralidad best-effort: sin constraint único, la regla definitiva queda en producto/DB.
     const existing = await this.prisma.merchantOnboardingApplication.findFirst({
       where: { contactEmail },
       select: { id: true },
@@ -152,8 +163,18 @@ export class MerchantOnboardingService {
     const tokenHash = this.tokenService.hashToken(token);
     const row = await this.prisma.merchantOnboardingToken.findUnique({
       where: { tokenHash },
-      include: {
-        application: true,
+      select: {
+        id: true,
+        applicationId: true,
+        expiresAt: true,
+        usedAt: true,
+        revokedAt: true,
+        application: {
+          select: {
+            id: true,
+            status: true,
+          },
+        },
       },
     });
 
@@ -165,7 +186,12 @@ export class MerchantOnboardingService {
       throw new BadRequestException('Onboarding token is not valid for this application');
     }
 
-    return row;
+    return {
+      id: row.id,
+      applicationId: row.applicationId,
+      expiresAt: row.expiresAt,
+      application: row.application,
+    };
   }
 
   /**
@@ -176,6 +202,20 @@ export class MerchantOnboardingService {
     const now = new Date();
 
     return this.prisma.$transaction(async (tx) => {
+      const tokenClaim = await tx.merchantOnboardingToken.updateMany({
+        where: {
+          id: tokenRow.id,
+          usedAt: null,
+          revokedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { usedAt: now },
+      });
+
+      if (tokenClaim.count !== 1) {
+        throw new BadRequestException('Invalid or expired onboarding token');
+      }
+
       const application = await tx.merchantOnboardingApplication.update({
         where: { id: tokenRow.applicationId },
         data: {
@@ -195,11 +235,6 @@ export class MerchantOnboardingService {
           status: MerchantOnboardingChecklistStatus.COMPLETED,
           completedAt: now,
         },
-      });
-
-      await tx.merchantOnboardingToken.update({
-        where: { id: tokenRow.id },
-        data: { usedAt: now },
       });
 
       await tx.merchantOnboardingEvent.create({
@@ -237,22 +272,76 @@ export class MerchantOnboardingService {
         where,
         orderBy: { createdAt: 'desc' },
         take: pageSize,
-        include: {
-          merchant: true,
+        select: {
+          id: true,
+          merchantId: true,
+          status: true,
+          contactName: true,
+          contactEmail: true,
+          contactPhone: true,
+          tradeName: true,
+          legalName: true,
+          country: true,
+          website: true,
+          businessType: true,
+          rejectionReason: true,
+          submittedAt: true,
+          reviewedAt: true,
+          approvedAt: true,
+          rejectedAt: true,
+          activatedAt: true,
+          createdAt: true,
+          updatedAt: true,
+          merchant: {
+            select: {
+              id: true,
+              name: true,
+              isActive: true,
+              deactivatedAt: true,
+              createdAt: true,
+            },
+          },
           checklistItems: true,
         },
       }),
       this.prisma.merchantOnboardingApplication.count({ where }),
     ]);
 
-    return { items, total, pageSize };
+    return { items: items.map(sanitizeApplicationMerchant), total, pageSize };
   }
 
   async getApplication(applicationId: string) {
     const application = await this.prisma.merchantOnboardingApplication.findUnique({
       where: { id: applicationId },
-      include: {
-        merchant: true,
+      select: {
+        id: true,
+        merchantId: true,
+        status: true,
+        contactName: true,
+        contactEmail: true,
+        contactPhone: true,
+        tradeName: true,
+        legalName: true,
+        country: true,
+        website: true,
+        businessType: true,
+        rejectionReason: true,
+        submittedAt: true,
+        reviewedAt: true,
+        approvedAt: true,
+        rejectedAt: true,
+        activatedAt: true,
+        createdAt: true,
+        updatedAt: true,
+        merchant: {
+          select: {
+            id: true,
+            name: true,
+            isActive: true,
+            deactivatedAt: true,
+            createdAt: true,
+          },
+        },
         checklistItems: { orderBy: { createdAt: 'asc' } },
         events: { orderBy: { createdAt: 'desc' } },
       },
@@ -262,19 +351,18 @@ export class MerchantOnboardingService {
       throw new NotFoundException('Merchant onboarding application not found');
     }
 
-    return application;
+    return sanitizeApplicationMerchant(application);
   }
 
   /**
    * Aprueba una solicitud y activa el merchant en una única transacción.
    */
   async approveApplication(applicationId: string) {
-    const application = await this.findApplicationForDecision(applicationId);
     const now = new Date();
 
     return this.prisma.$transaction(async (tx) => {
-      await tx.merchantOnboardingApplication.update({
-        where: { id: application.id },
+      const claim = await tx.merchantOnboardingApplication.updateMany({
+        where: { id: applicationId, status: MerchantOnboardingStatus.IN_REVIEW },
         data: {
           status: MerchantOnboardingStatus.APPROVED,
           reviewedAt: now,
@@ -282,6 +370,12 @@ export class MerchantOnboardingService {
           rejectionReason: null,
         },
       });
+
+      if (claim.count !== 1) {
+        await this.throwDecisionClaimError(tx, applicationId);
+      }
+
+      const application = await this.findApplicationAfterClaim(tx, applicationId);
 
       await tx.merchantOnboardingChecklistItem.updateMany({
         where: {
@@ -327,12 +421,11 @@ export class MerchantOnboardingService {
    * Rechaza una solicitud sin activar el merchant asociado.
    */
   async rejectApplication(applicationId: string, dto: RejectMerchantOnboardingDto) {
-    const application = await this.findApplicationForDecision(applicationId);
     const now = new Date();
 
     return this.prisma.$transaction(async (tx) => {
-      const updated = await tx.merchantOnboardingApplication.update({
-        where: { id: application.id },
+      const claim = await tx.merchantOnboardingApplication.updateMany({
+        where: { id: applicationId, status: MerchantOnboardingStatus.IN_REVIEW },
         data: {
           status: MerchantOnboardingStatus.REJECTED,
           reviewedAt: now,
@@ -340,6 +433,19 @@ export class MerchantOnboardingService {
           rejectionReason: dto.reason,
         },
       });
+
+      if (claim.count !== 1) {
+        await this.throwDecisionClaimError(tx, applicationId);
+      }
+
+      const application = await this.findApplicationAfterClaim(tx, applicationId);
+      const updated = {
+        ...application,
+        status: MerchantOnboardingStatus.REJECTED,
+        reviewedAt: now,
+        rejectedAt: now,
+        rejectionReason: dto.reason,
+      };
 
       await tx.merchantOnboardingChecklistItem.updateMany({
         where: { applicationId: application.id, key: 'internal_review' },
@@ -500,11 +606,11 @@ export class MerchantOnboardingService {
   private buildOnboardingUrl(token: string): string {
     const baseUrl =
       this.config.get<string>('MERCHANT_ONBOARDING_BASE_URL') ?? 'http://localhost:3005';
-    return `${baseUrl.replace(/\/+$/, '')}/onboarding/merchant/${encodeURIComponent(token)}`;
+    return `${baseUrl.replace(/\/+$/, '')}/onboarding/${encodeURIComponent(token)}`;
   }
 
-  private async findApplicationForDecision(applicationId: string) {
-    const application = await this.prisma.merchantOnboardingApplication.findUnique({
+  private async findApplicationAfterClaim(tx: OnboardingTransaction, applicationId: string) {
+    const application = await tx.merchantOnboardingApplication.findUnique({
       where: { id: applicationId },
       select: {
         id: true,
@@ -518,11 +624,23 @@ export class MerchantOnboardingService {
       throw new NotFoundException('Merchant onboarding application not found');
     }
 
-    if (application.status !== MerchantOnboardingStatus.IN_REVIEW) {
-      throw new BadRequestException('Application must be in review before a decision');
+    return application;
+  }
+
+  private async throwDecisionClaimError(
+    tx: OnboardingTransaction,
+    applicationId: string,
+  ): Promise<never> {
+    const application = await tx.merchantOnboardingApplication.findUnique({
+      where: { id: applicationId },
+      select: { id: true, status: true },
+    });
+
+    if (!application) {
+      throw new NotFoundException('Merchant onboarding application not found');
     }
 
-    return application;
+    throw new ConflictException('Application must be in review before a decision');
   }
 
   private async createDecisionEvent(
@@ -548,4 +666,21 @@ function normalizeEmail(email: string): string {
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown onboarding email error';
+}
+
+function sanitizeApplicationMerchant<T extends ApplicationWithMerchant>(application: T): T {
+  if (!application.merchant) {
+    return application;
+  }
+
+  return {
+    ...application,
+    merchant: {
+      id: application.merchant.id,
+      name: application.merchant.name,
+      isActive: application.merchant.isActive,
+      deactivatedAt: application.merchant.deactivatedAt,
+      createdAt: application.merchant.createdAt,
+    },
+  };
 }
