@@ -206,6 +206,7 @@ describe("isPaymentsV2OpsPath", () => {
 describe("requiresBackofficeScopePath", () => {
   it("includes merchants ops and settlements", () => {
     expect(requiresBackofficeScopePath("/api/v1/merchants/ops/directory")).toBe(true);
+    expect(requiresBackofficeScopePath("/api/v1/merchant-onboarding/ops/applications")).toBe(true);
     expect(requiresBackofficeScopePath("/api/v1/settlements/merchants/x/requests")).toBe(true);
     expect(requiresBackofficeScopePath("/api/v2/payments/ops/transactions")).toBe(true);
     expect(requiresBackofficeScopePath("/api/v1/merchants")).toBe(false);
