@@ -13,7 +13,10 @@ import {
 } from "@/lib/server/internal-route-auth";
 import { resolveLoginRateLimitKey } from "@/lib/server/client-ip";
 import { checkLoginRateLimit } from "@/lib/server/login-rate-limit";
-import { getBackofficePortalMode } from "@/lib/server/portal-mode";
+import {
+  BackofficePortalModeMisconfiguredError,
+  getBackofficePortalMode,
+} from "@/lib/server/portal-mode";
 
 const COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 7;
 
@@ -40,6 +43,7 @@ function sessionCookieOptions() {
 }
 
 export async function POST(request: NextRequest) {
+  // RL: IP vía `resolveLoginRateLimitClientIp` (XFF/X-Real-IP con TRUST_X_FORWARDED_FOR; Vercel/CF con runtime u opt-in de plataforma); sin IP → fingerprint o sentinela.
   const rateLimit = checkLoginRateLimit(resolveLoginRateLimitKey(request));
   if (!rateLimit.allowed) {
     return NextResponse.json(
@@ -71,7 +75,15 @@ export async function POST(request: NextRequest) {
   }
 
   const data = parsed.data;
-  const portalMode = getBackofficePortalMode();
+  let portalMode: ReturnType<typeof getBackofficePortalMode>;
+  try {
+    portalMode = getBackofficePortalMode();
+  } catch (e) {
+    if (e instanceof BackofficePortalModeMisconfiguredError) {
+      return NextResponse.json({ message: e.message }, { status: 500 });
+    }
+    throw e;
+  }
   if (data.mode !== portalMode) {
     return NextResponse.json({ message: "Not found" }, { status: 404 });
   }

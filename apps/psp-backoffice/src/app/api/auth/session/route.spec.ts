@@ -18,6 +18,7 @@ describe("POST /api/auth/session (admin portal)", () => {
     process.env.BACKOFFICE_ADMIN_SECRET = "admin-secret";
     process.env.PSP_INTERNAL_API_SECRET = "internal-only";
     process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET = "portal-hmac-secret-32bytes!!";
+    process.env.TRUST_X_FORWARDED_FOR = "true";
   });
 
   afterEach(() => {
@@ -64,7 +65,7 @@ describe("POST /api/auth/session (admin portal)", () => {
     expect(res.status).toBe(404);
   });
 
-  it("returns 429 after too many login attempts when no client IP is resolvable (shared key)", async () => {
+  it("returns 429 after too many login attempts when no client IP and no fingerprint headers (sentinel bucket)", async () => {
     const body = JSON.stringify({ mode: "admin", token: "admin-secret" });
     for (let i = 0; i < 10; i += 1) {
       const res = await POST(
@@ -84,6 +85,34 @@ describe("POST /api/auth/session (admin portal)", () => {
       }),
     );
     expect(resBlocked.status).toBe(429);
+  });
+
+  it("returns 429 when rotating User-Agent after exhausting the global unresolved bucket (no IP)", async () => {
+    const body = JSON.stringify({ mode: "admin", token: "admin-secret" });
+    for (let i = 0; i < 10; i += 1) {
+      const res = await POST(
+        new NextRequest("http://localhost:3005/api/auth/session", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "user-agent": "RL-Isolated-A/1.0",
+          },
+          body,
+        }),
+      );
+      expect(res.status).toBe(200);
+    }
+    const resOtherUa = await POST(
+      new NextRequest("http://localhost:3005/api/auth/session", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "user-agent": "RL-Isolated-B/1.0",
+        },
+        body,
+      }),
+    );
+    expect(resOtherUa.status).toBe(429);
   });
 
   it("returns 429 after too many login attempts from the same resolved IP", async () => {
@@ -181,5 +210,38 @@ describe("POST /api/auth/session (merchant portal)", () => {
     });
     const res = await POST(req);
     expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /api/auth/session (portal env mismatch)", () => {
+  const snapshot = { ...process.env };
+
+  beforeEach(() => {
+    resetLoginRateLimitForTests();
+    process.env = { ...snapshot };
+    process.env.BACKOFFICE_PORTAL_MODE = "admin";
+    process.env.NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE = "merchant";
+    process.env.BACKOFFICE_SESSION_JWT_SECRET = "session-jwt-secret-dev-only-32b";
+    process.env.BACKOFFICE_ADMIN_SECRET = "admin-secret";
+    process.env.PSP_INTERNAL_API_SECRET = "internal-only";
+    process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET = "portal-hmac-secret-32bytes!!";
+  });
+
+  afterEach(() => {
+    process.env = { ...snapshot };
+  });
+
+  it("returns 500 when BACKOFFICE_PORTAL_MODE and NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE disagree", async () => {
+    const req = new NextRequest("http://localhost:3005/api/auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "admin", token: "admin-secret" }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { message?: string };
+    expect(body.message).toMatch(
+      /BACKOFFICE_PORTAL_MODE \(admin\) and NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE \(merchant\)/,
+    );
   });
 });
