@@ -23,8 +23,11 @@ export default defineConfig({
   webServer: {
     command: "npm run dev",
     url: "http://127.0.0.1:3005/login",
-    /** En local suele haber `next dev` en 3005; en CI el puerto está libre. */
-    reuseExistingServer: true,
+    /**
+     * En local suele haber `next dev` en 3005. En CI (`CI=true`) siempre arrancamos un proceso nuevo.
+     * `psp-api` no lo levanta Playwright: debe estar en marcha en `PSP_API_BASE_URL` (p. ej. CI levanta la API antes de `test:e2e`).
+     */
+    reuseExistingServer: process.env.CI !== "true",
     timeout: 120_000,
     env: {
       ...process.env,

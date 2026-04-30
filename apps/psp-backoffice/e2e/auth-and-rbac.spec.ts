@@ -19,6 +19,16 @@ test("admin puede iniciar sesión y abrir merchants", async ({ page, context }) 
     headers: { "Content-Type": "application/json" },
   });
   expect(res.ok()).toBeTruthy();
+
+  const directoryResponsePromise = page.waitForResponse(
+    (r) =>
+      r.url().includes("/api/internal/merchants/ops/directory") && r.request().method() === "GET",
+    { timeout: 25_000 },
+  );
   await page.goto("/merchants");
+  const directoryResponse = await directoryResponsePromise;
+  expect(directoryResponse.status()).toBe(200);
+
   await expect(page).toHaveURL(/\/merchants$/);
+  await expect(page.getByRole("columnheader", { name: "Nombre" })).toBeVisible();
 });

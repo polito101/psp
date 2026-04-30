@@ -86,4 +86,43 @@ describe("POST /api/auth/session", () => {
     expect(payload.role).toBe("merchant");
     expect(payload.merchantId).toBe(mid);
   });
+
+  it("does not apply shared rate limit when no client IP can be resolved", async () => {
+    for (let i = 0; i < 12; i += 1) {
+      const res = await POST(
+        new NextRequest("http://localhost:3005/api/auth/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: "admin", token: "admin-secret" }),
+        }),
+      );
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it("returns 429 after too many login attempts from the same resolved IP", async () => {
+    const headersBase = {
+      "Content-Type": "application/json",
+      "x-forwarded-for": "203.0.113.10",
+    };
+    const body = JSON.stringify({ mode: "admin", token: "admin-secret" });
+    for (let i = 0; i < 10; i += 1) {
+      const res = await POST(
+        new NextRequest("http://localhost:3005/api/auth/session", {
+          method: "POST",
+          headers: headersBase,
+          body,
+        }),
+      );
+      expect(res.status).toBe(200);
+    }
+    const resBlocked = await POST(
+      new NextRequest("http://localhost:3005/api/auth/session", {
+        method: "POST",
+        headers: headersBase,
+        body,
+      }),
+    );
+    expect(resBlocked.status).toBe(429);
+  });
 });

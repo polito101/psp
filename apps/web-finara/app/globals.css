@@ -1,0 +1,153 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* Finara — near-black with purple ambient, matching the PSP backoffice aesthetic */
+  --background: #09090f;
+  --foreground: #f2f2ff;
+  --card: #111118;
+  --card-foreground: #f2f2ff;
+  --popover: #111118;
+  --popover-foreground: #f2f2ff;
+  --primary: #f2f2ff;
+  --primary-foreground: #09090f;
+  --secondary: #18181f;
+  --secondary-foreground: #f2f2ff;
+  --muted: #18181f;
+  --muted-foreground: #8b8baa;
+  --accent: #00cfc8;
+  --accent-foreground: #09090f;
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.577 0.245 27.325);
+  --border: rgba(255,255,255,0.07);
+  --input: rgba(255,255,255,0.07);
+  --ring: #00cfc8;
+  --chart-1: #00cfc8;
+  --chart-2: #7c6bff;
+  --chart-3: #e940b8;
+  --chart-4: #f97316;
+  --chart-5: #3b82f6;
+  --radius: 0.75rem;
+  --sidebar: #09090f;
+  --sidebar-foreground: #f2f2ff;
+  --sidebar-primary: #00cfc8;
+  --sidebar-primary-foreground: #09090f;
+  --sidebar-accent: #18181f;
+  --sidebar-accent-foreground: #f2f2ff;
+  --sidebar-border: rgba(255,255,255,0.07);
+  --sidebar-ring: #00cfc8;
+  /* Brand gradient stops */
+  --grad-start: #00d4c8;
+  --grad-mid1: #5b6ef7;
+  --grad-mid2: #c936e8;
+  --grad-mid3: #ec4899;
+  --grad-end: #f97316;
+}
+
+@theme inline {
+  --font-sans: 'Inter', 'Inter Fallback';
+  --font-mono: 'Geist Mono', 'Geist Mono Fallback';
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+@layer utilities {
+  .text-brand-gradient {
+    background: linear-gradient(90deg, #00d4c8, #4f6ef7, #c936e8, #ec4899, #f97316);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .border-brand-gradient {
+    border: 1px solid transparent;
+    background-clip: padding-box;
+    position: relative;
+  }
+
+  .btn-brand-gradient {
+    background: linear-gradient(90deg, #00d4c8, #4f6ef7, #c936e8, #f97316);
+    color: #fff;
+    border: none;
+  }
+
+  .btn-brand-gradient:hover {
+    opacity: 0.92;
+  }
+
+  .glow-cyan {
+    box-shadow: 0 0 40px rgba(0, 212, 200, 0.15);
+  }
+
+  .glow-purple {
+    box-shadow: 0 0 40px rgba(124, 107, 255, 0.15);
+  }
+
+  /* Removes white background from logo PNGs on dark surfaces */
+  .logo-lighten {
+    mix-blend-mode: lighten;
+  }
+
+  /* Animated background pattern */
+  .animated-bg-pattern {
+    background-image: 
+      linear-gradient(0deg, rgba(0, 212, 200, 0.25) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(79, 110, 247, 0.25) 1px, transparent 1px);
+    background-size: 100px 100px;
+    animation: slideBackground 30s linear infinite;
+  }
+
+  @keyframes slideBackground {
+    0% {
+      background-position: 0 0;
+    }
+    100% {
+      background-position: 0 100px;
+    }
+  }
+}

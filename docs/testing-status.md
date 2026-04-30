@@ -1,6 +1,6 @@
 # Estado de tests
 
-Ultima actualizacion: 2026-04-28
+Ultima actualizacion: 2026-04-30
 
 ## Objetivo
 
@@ -14,7 +14,7 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 - `integration-local`: tests de integracion con app Nest local + Supertest en `apps/psp-api/test/integration/**/*.spec.ts` (`npm run test:integration` desde `apps/psp-api`).
 - `smoke`: tests HTTP contra entorno desplegado/base URL en `apps/psp-api/test/smoke/**/*.spec.ts` (`npm run test:smoke:sandbox`).
 
-La CI del monorepo incluye `api-ci` (lint/test/build API) y `backoffice-ci` (lint, typecheck, `npm run test` Vitest, build del panel).
+La CI del monorepo incluye `api-ci` (lint/test/build API), `backoffice-ci` (lint, typecheck, Vitest, Playwright con **`psp-api`** levantado en el mismo job vía Postgres/Redis + migraciones en `127.0.0.1:3003`, validación del proxy a `/api/internal/merchants/ops/directory`, y build del panel), y `web-finara-ci` (solo build estático de la landing en `apps/web-finara`).
 
 ## Matriz de cobertura por dominio
 
@@ -27,7 +27,8 @@ La CI del monorepo incluye `api-ci` (lint/test/build API) y `backoffice-ci` (lin
 | `fees` | Si | Si | No | Cubierto | Unit `FeeService` (fixed/percentage/minimum + resolve active rate table) e integración de endpoints internos para rate tables por merchant/currency/provider. |
 | `settlements` | Si | Si | No | Parcial | Unit `SettlementService` (ventanas T+N/WEEKLY, agrupación e idempotencia de payout) e integración `settlements.integration.spec.ts`. Workflow **SettlementRequest** (controller + BFF approve/reject) sin suite dedicada aún. Falta cobertura de chargeback/refund post-payout y estados `SENT/FAILED` del payout. |
 | `fx` | Si | Parcial | No | Parcial | Unit `fx-rates.service.spec.ts`; integration `fx.integration.spec.ts` (salta si falta migración/tabla). |
-| `backoffice BFF` | Si (proxy + guards + login RL) | No | Playwright smoke | Parcial | Vitest: proxy (`backoffice-api.spec.ts`, mensajes 4xx saneados; `PSP_API_BASE_URL` obligatorio fuera de dev), mutación interna (`internal-mutation-guard.spec.ts`), rate limit login (`login-rate-limit.spec.ts`), rutas API (`provider-health`, `payments`, `auth/session`). E2E: `e2e/auth-and-rbac.spec.ts` (redirect login + sesión admin + `/merchants`). Cobertura UI ampliada opcional. |
+| `backoffice BFF` | Si (proxy + guards + login RL) | No | Playwright smoke | Parcial | Vitest: proxy (`backoffice-api.spec.ts`, mensajes 4xx saneados; `PSP_API_BASE_URL` obligatorio fuera de dev), mutación interna (`internal-mutation-guard.spec.ts`), rate limit login (`login-rate-limit.spec.ts`, barrido/evicción), resolución IP (`client-ip.spec.ts`), rutas API (`provider-health`, `payments`, `auth/session`: RL solo con IP válida + 429 por IP). E2E: `e2e/auth-and-rbac.spec.ts` (redirect login + sesión admin + `/merchants` con `GET /api/internal/merchants/ops/directory` **200** y cabecera de tabla). Cobertura UI ampliada opcional. |
+| `web-finara` (marketing) | No | No | No | Solo CI build | Landing estática; sin tests dedicados; build verificado en `web-finara-ci`. |
 | `health` | Si | Si | Si | Cubierto | Unit + integration `/health` + smoke readiness. |
 | `webhooks` | Si | Si | Si | Cubierto | Unit worker/outbox + integration retry interno + smoke backlog/métricas. |
 | `internal endpoints` | Si (guards) | Si | Si | Cubierto | Ops `GET/POST/PATCH` en `/api/v2/payments/ops/*`, `/api/v1/settlements/*`, `/api/v1/merchants/ops/*`: con `X-Internal-Secret` válido exige también `X-Backoffice-Role` (`admin` o `merchant`); rol `merchant` exige `X-Backoffice-Merchant-Id` alineado con path/query (incl. inbox/approve solo admin). Script CI `scripts/ci/check-ops-metrics.mjs` envía `X-Backoffice-Role: admin`. Detalle pago scoped: `404` cross-merchant. Backoffice: proxy fail-closed (`backoffice-api.spec.ts`), middleware por rol, token merchant con `exp`. |
@@ -56,6 +57,7 @@ La CI del monorepo incluye `api-ci` (lint/test/build API) y `backoffice-ci` (lin
 - `src/lib/server/backoffice-api.spec.ts`
 - `src/lib/server/internal-mutation-guard.spec.ts`
 - `src/lib/server/login-rate-limit.spec.ts`
+- `src/lib/server/client-ip.spec.ts`
 - `src/lib/server/merchant-finance-internal-routes.spec.ts`
 - `src/lib/server/auth/session-claims.spec.ts`
 - `src/proxy.spec.ts`
@@ -102,7 +104,7 @@ Desde `apps/psp-backoffice`:
 - `npm run typecheck`
 - `npm run test`
 - `npm run build`
-- `npm run test:e2e` (Playwright; requiere Chromium instalado vía `npx playwright install chromium` o CI `npx playwright install --with-deps chromium`)
+- `npm run test:e2e` (Playwright; requiere Chromium: `npm run playwright:install` o CI `npm run playwright:install`; el smoke de merchants exige **`psp-api`** en `PSP_API_BASE_URL`, p. ej. el job `backoffice-ci` lo arranca en el puerto 3003)
 
 ## Regla de mantenimiento
 
