@@ -121,6 +121,22 @@ export function validateEnv(input: EnvInput): EnvInput {
   const httpLogSkipPrefixes = getString(env.HTTP_LOG_SKIP_PATH_PREFIXES) ?? '';
   env.HTTP_LOG_SKIP_PATH_PREFIXES = httpLogSkipPrefixes;
 
+  env.RESEND_API_KEY = getString(env.RESEND_API_KEY) ?? '';
+  env.ONBOARDING_EMAIL_FROM = getString(env.ONBOARDING_EMAIL_FROM) ?? '';
+  const merchantOnboardingBaseUrl =
+    getString(env.MERCHANT_ONBOARDING_BASE_URL) ?? 'http://localhost:3005';
+  validateMerchantOnboardingBaseUrl(merchantOnboardingBaseUrl, nodeEnv);
+  env.MERCHANT_ONBOARDING_BASE_URL = merchantOnboardingBaseUrl;
+  env.MERCHANT_ONBOARDING_TOKEN_TTL_HOURS = String(
+    parseIntegerRange(
+      getString(env.MERCHANT_ONBOARDING_TOKEN_TTL_HOURS),
+      168,
+      1,
+      24 * 30,
+      'MERCHANT_ONBOARDING_TOKEN_TTL_HOURS',
+    ),
+  );
+
   env.PAYMENTS_V2_ENABLED_MERCHANTS = getString(env.PAYMENTS_V2_ENABLED_MERCHANTS) ?? '';
   env.PAYMENTS_ALLOW_MOCK = String(
     parseBoolean(getString(env.PAYMENTS_ALLOW_MOCK), false, 'PAYMENTS_ALLOW_MOCK'),
@@ -376,6 +392,31 @@ function getString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Valida que el link público de onboarding apunte a un origen desplegado seguro,
+ * manteniendo `localhost` para desarrollo local.
+ */
+function validateMerchantOnboardingBaseUrl(value: string, nodeEnv: string): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('MERCHANT_ONBOARDING_BASE_URL must be an absolute URL');
+  }
+
+  if (url.protocol === 'https:') {
+    return;
+  }
+
+  if (nodeEnv === 'development' && url.protocol === 'http:' && url.hostname === 'localhost') {
+    return;
+  }
+
+  throw new Error(
+    'MERCHANT_ONBOARDING_BASE_URL must use https (http://localhost is allowed in development)',
+  );
 }
 
 function parseBoolean(value: string | undefined, defaultValue: boolean, envName: string): boolean {
