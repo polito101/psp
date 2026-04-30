@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { NextRequest } from "next/server";
-import { normalizeClientIp, resolveLoginRateLimitClientIp } from "./client-ip";
+import { normalizeClientIp, resolveLoginRateLimitClientIp, resolveLoginRateLimitKey, LOGIN_RATE_LIMIT_UNRESOLVED_KEY } from "./client-ip";
 
 describe("normalizeClientIp", () => {
   it("accepts IPv4 and IPv6", () => {
@@ -42,8 +42,41 @@ describe("resolveLoginRateLimitClientIp", () => {
     expect(resolveLoginRateLimitClientIp(req)).toBe("198.51.100.2");
   });
 
+  it("picks first valid IP from a comma list when earlier hops are invalid", () => {
+    const req = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({
+        "x-forwarded-for": "not-an-ip, 198.51.100.3, 10.0.0.1",
+      }),
+    });
+    expect(resolveLoginRateLimitClientIp(req)).toBe("198.51.100.3");
+  });
+
+  it("parses all segments of x-vercel-forwarded-for", () => {
+    const req = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({
+        "x-vercel-forwarded-for": "bogus, 203.0.113.50",
+        "x-forwarded-for": "10.0.0.1",
+      }),
+    });
+    expect(resolveLoginRateLimitClientIp(req)).toBe("203.0.113.50");
+  });
+
   it("returns null when no header yields a valid IP", () => {
     const req = new NextRequest("http://localhost/api/auth/session");
     expect(resolveLoginRateLimitClientIp(req)).toBeNull();
+  });
+});
+
+describe("resolveLoginRateLimitKey", () => {
+  it("uses unresolved sentinel when no IP is available", () => {
+    const req = new NextRequest("http://localhost/api/auth/session");
+    expect(resolveLoginRateLimitKey(req)).toBe(LOGIN_RATE_LIMIT_UNRESOLVED_KEY);
+  });
+
+  it("uses normalized IP when present", () => {
+    const req = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({ "x-forwarded-for": "198.51.100.7" }),
+    });
+    expect(resolveLoginRateLimitKey(req)).toBe("198.51.100.7");
   });
 });

@@ -11,7 +11,7 @@ import {
   validateAdminTokenForSession,
   validateMerchantPortalLogin,
 } from "@/lib/server/internal-route-auth";
-import { resolveLoginRateLimitClientIp } from "@/lib/server/client-ip";
+import { resolveLoginRateLimitKey } from "@/lib/server/client-ip";
 import { checkLoginRateLimit } from "@/lib/server/login-rate-limit";
 import { getBackofficePortalMode } from "@/lib/server/portal-mode";
 
@@ -40,15 +40,12 @@ function sessionCookieOptions() {
 }
 
 export async function POST(request: NextRequest) {
-  const clientIp = resolveLoginRateLimitClientIp(request);
-  if (clientIp) {
-    const rateLimit = checkLoginRateLimit(clientIp);
-    if (!rateLimit.allowed) {
-      return NextResponse.json(
-        { message: "Too many login attempts" },
-        { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSec) } },
-      );
-    }
+  const rateLimit = checkLoginRateLimit(resolveLoginRateLimitKey(request));
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      { message: "Too many login attempts" },
+      { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSec) } },
+    );
   }
 
   let jwtSecret: string;
