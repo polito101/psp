@@ -63,6 +63,7 @@
 
 - Modify: `PROJECT_CONTEXT.md`.
 - Modify: `apps/psp-backoffice/BACKOFFICE_CONTEXT.md`.
+- Create/modify: `docs/crm-status.md` — living status document for CRM/onboarding progress and future edits.
 - Modify: `docs/testing-status.md`.
 - Modify: `apps/psp-api/README.md` — document Resend and onboarding environment variables.
 
@@ -1132,6 +1133,7 @@ Expected: PASS.
 **Files:**
 - Modify: `PROJECT_CONTEXT.md`
 - Modify: `apps/psp-backoffice/BACKOFFICE_CONTEXT.md`
+- Create/modify: `docs/crm-status.md`
 - Modify: `docs/testing-status.md`
 - Modify: `apps/psp-api/README.md`
 - Modify: `apps/psp-backoffice/.env.example`
@@ -1156,7 +1158,38 @@ Add:
 - Admin CRM routes `/crm/onboarding` and `/crm/onboarding/[applicationId]`.
 - BFF routes under `/api/public/onboarding/*` and `/api/internal/crm/onboarding/*`.
 
-- [ ] **Step 3: Update env examples**
+- [ ] **Step 3: Create/update CRM status document**
+
+Create or update `docs/crm-status.md` with:
+
+```md
+# CRM Status
+
+Ultima actualizacion: 2026-04-30
+
+## Alcance actual
+
+- CRM orientado a merchants.
+- Primer modulo: onboarding y seguimiento de status.
+- Flujo aprobado: signup publico -> merchant inactivo + expediente -> link Resend -> formulario negocio -> revision -> aprobado/rechazado -> activo.
+
+## Estado de implementacion
+
+- Diseno aprobado: `docs/superpowers/specs/2026-04-30-merchant-onboarding-crm-design.md`.
+- Plan aprobado: `docs/superpowers/plans/2026-04-30-merchant-onboarding-crm.md`.
+- Implementacion: en progreso.
+
+## Proximas extensiones fuera de esta fase
+
+- KYC externo.
+- Subida real de documentos.
+- Operadores nominales y auditoria persistente.
+- Tareas, notas, pipeline comercial y soporte.
+```
+
+Update this file in any future task that changes CRM scope, routes, status model, implementation state, or follow-up roadmap.
+
+- [ ] **Step 4: Update env examples**
 
 API:
 
@@ -1175,7 +1208,7 @@ PSP_API_BASE_URL=http://localhost:3003
 
 Backoffice already has `PSP_API_BASE_URL`; add a comment that public onboarding BFF also uses it.
 
-- [ ] **Step 4: Update testing status**
+- [ ] **Step 5: Update testing status**
 
 Record new API Jest coverage, backoffice Vitest/typecheck coverage, and web typecheck/build coverage.
 
