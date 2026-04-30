@@ -17,6 +17,8 @@ describe("enforceInternalRouteAuth", () => {
 
   beforeEach(() => {
     process.env = { ...snapshot };
+    process.env.BACKOFFICE_PORTAL_MODE = "admin";
+    process.env.NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE = "admin";
   });
 
   afterEach(() => {
@@ -78,6 +80,7 @@ describe("enforceInternalRouteAuth", () => {
     process.env.BACKOFFICE_SESSION_JWT_SECRET = "session-jwt-secret-dev-only-32b";
     process.env.BACKOFFICE_ADMIN_SECRET = "admin-secret";
     process.env.PSP_INTERNAL_API_SECRET = "internal-only";
+    process.env.BACKOFFICE_PORTAL_MODE = "admin";
 
     const jwt = await mintAdminJwt();
     const req = new NextRequest("http://localhost:3005/api/internal/transactions", {
@@ -89,6 +92,43 @@ describe("enforceInternalRouteAuth", () => {
     if (res.ok) {
       expect(res.claims.role).toBe("admin");
     }
+  });
+
+  it("returns 403 when admin JWT is presented on merchant portal", async () => {
+    process.env.BACKOFFICE_SESSION_JWT_SECRET = "session-jwt-secret-dev-only-32b";
+    process.env.BACKOFFICE_ADMIN_SECRET = "admin-secret";
+    process.env.PSP_INTERNAL_API_SECRET = "internal-only";
+    process.env.BACKOFFICE_PORTAL_MODE = "merchant";
+    process.env.NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE = "merchant";
+
+    const jwt = await mintAdminJwt();
+    const req = new NextRequest("http://localhost:3005/api/internal/transactions", {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    const res = await enforceInternalRouteAuth(req);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.response.status).toBe(403);
+  });
+
+  it("returns 403 when merchant JWT is presented on admin portal", async () => {
+    process.env.BACKOFFICE_SESSION_JWT_SECRET = "session-jwt-secret-dev-only-32b";
+    process.env.BACKOFFICE_ADMIN_SECRET = "admin-secret";
+    process.env.PSP_INTERNAL_API_SECRET = "internal-only";
+    process.env.BACKOFFICE_PORTAL_MODE = "admin";
+    process.env.NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE = "admin";
+
+    const jwt = await signSession(
+      { sub: "merchant:m1", role: "merchant", merchantId: "m1" },
+      process.env.BACKOFFICE_SESSION_JWT_SECRET,
+    );
+    const req = new NextRequest("http://localhost:3005/api/internal/transactions", {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    const res = await enforceInternalRouteAuth(req);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.response.status).toBe(403);
   });
 });
 

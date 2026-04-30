@@ -9,7 +9,7 @@ const ADMIN_SECRET =
 test("usuario sin sesión va a login desde transacciones", async ({ page, context }) => {
   await context.clearCookies();
   await page.goto("/transactions");
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/admin\/login$/);
 });
 
 test("admin puede iniciar sesión y abrir merchants", async ({ page, context }) => {

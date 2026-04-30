@@ -5,6 +5,7 @@ import {
   verifySession,
   type SessionClaims,
 } from "@/lib/server/auth/session-claims";
+import { getBackofficePortalMode, sessionRoleMatchesPortal } from "@/lib/server/portal-mode";
 import { BACKOFFICE_SESSION_COOKIE_NAME } from "@/lib/session-cookie";
 
 export { BACKOFFICE_SESSION_COOKIE_NAME };
@@ -252,6 +253,13 @@ export async function enforceInternalRouteAuth(request: NextRequest): Promise<In
 
   try {
     const claims = await verifySession(requestToken, sessionSecret);
+    const portalMode = getBackofficePortalMode();
+    if (!sessionRoleMatchesPortal(portalMode, claims.role)) {
+      return {
+        ok: false,
+        response: NextResponse.json({ message: "Forbidden" }, { status: 403 }),
+      };
+    }
     return { ok: true, claims };
   } catch {
     return {

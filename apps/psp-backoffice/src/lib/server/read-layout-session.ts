@@ -5,6 +5,7 @@ import {
   BACKOFFICE_SESSION_COOKIE_NAME,
   getSessionJwtSecret,
 } from "@/lib/server/internal-route-auth";
+import { getBackofficePortalMode, sessionRoleMatchesPortal } from "@/lib/server/portal-mode";
 
 export type { LayoutSession } from "@/lib/session-types";
 
@@ -21,6 +22,10 @@ export async function readLayoutSessionFromCookies(): Promise<LayoutSession | nu
       return null;
     }
     const claims = await verifySession(token, secret);
+    const portalMode = getBackofficePortalMode();
+    if (!sessionRoleMatchesPortal(portalMode, claims.role)) {
+      return null;
+    }
     if (claims.role === "admin") {
       return { role: "admin" };
     }

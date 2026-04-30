@@ -2,6 +2,10 @@ import Link from "next/link"
 import Image from "next/image"
 import { ArrowRight, ChevronDown, Instagram, Twitter, Music } from "lucide-react"
 
+import { getMerchantBackofficeLoginUrl } from "@/lib/merchant-portal-url"
+
+const merchantPortalLoginUrl = getMerchantBackofficeLoginUrl()
+
 
 const stats = [
   { value: "Global", label: "Coverage" },
@@ -101,7 +105,7 @@ export function HeroSection() {
 
             <div className="mt-8 flex flex-wrap items-center gap-2.5">
               <Link
-                href="https://finara.online"
+                href={merchantPortalLoginUrl}
                 className="btn-brand-gradient inline-flex items-center gap-1.5 text-xs font-semibold px-5 py-2 rounded-full"
               >
                 Start accepting payments

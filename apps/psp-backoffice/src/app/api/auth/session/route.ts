@@ -13,6 +13,7 @@ import {
 } from "@/lib/server/internal-route-auth";
 import { resolveLoginRateLimitClientIp } from "@/lib/server/client-ip";
 import { checkLoginRateLimit } from "@/lib/server/login-rate-limit";
+import { getBackofficePortalMode } from "@/lib/server/portal-mode";
 
 const COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 7;
 
@@ -73,6 +74,11 @@ export async function POST(request: NextRequest) {
   }
 
   const data = parsed.data;
+  const portalMode = getBackofficePortalMode();
+  if (data.mode !== portalMode) {
+    return NextResponse.json({ message: "Not found" }, { status: 404 });
+  }
+
   let jwt: string;
 
   if (data.mode === "admin") {

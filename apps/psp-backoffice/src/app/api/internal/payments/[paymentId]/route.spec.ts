@@ -23,6 +23,8 @@ describe("GET /api/internal/payments/[paymentId]", () => {
     process.env.BACKOFFICE_SESSION_JWT_SECRET = "session-jwt-secret-dev-only-32b";
     process.env.BACKOFFICE_ADMIN_SECRET = "admin-secret";
     process.env.PSP_INTERNAL_API_SECRET = "internal-only";
+    process.env.BACKOFFICE_PORTAL_MODE = "merchant";
+    process.env.NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE = "merchant";
     proxyInternalGetMock.mockReset();
   });
 
@@ -78,6 +80,8 @@ describe("GET /api/internal/payments/[paymentId]", () => {
   });
 
   it("returns upstream 403 for admin when API responds 403", async () => {
+    process.env.BACKOFFICE_PORTAL_MODE = "admin";
+    process.env.NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE = "admin";
     proxyInternalGetMock.mockRejectedValue(
       new ProxyUpstreamError(403, JSON.stringify({ message: "Forbidden", statusCode: 403 }), false, 40),
     );
