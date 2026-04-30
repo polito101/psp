@@ -225,6 +225,52 @@ describe('InternalSecretGuard', () => {
     ).toBe(true);
   });
 
+  it('throws Forbidden when merchant onboarding ops request misses X-Backoffice-Role', () => {
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+    expect(() =>
+      guard.canActivate(
+        makeContext(
+          { 'x-internal-secret': VALID_SECRET },
+          '/api/v1/merchant-onboarding/ops/applications',
+          {},
+        ),
+      ),
+    ).toThrow(ForbiddenException);
+  });
+
+  it('throws Forbidden when merchant onboarding ops request uses merchant role', () => {
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+    expect(() =>
+      guard.canActivate(
+        makeContext(
+          {
+            'x-internal-secret': VALID_SECRET,
+            'x-backoffice-role': 'merchant',
+            'x-backoffice-merchant-id': 'mrc_1',
+          },
+          '/api/v1/merchant-onboarding/ops/applications',
+          {},
+        ),
+      ),
+    ).toThrow(ForbiddenException);
+  });
+
+  it('allows merchant onboarding ops request with admin role', () => {
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+    expect(
+      guard.canActivate(
+        makeContext(
+          {
+            'x-internal-secret': VALID_SECRET,
+            'x-backoffice-role': 'admin',
+          },
+          '/api/v1/merchant-onboarding/ops/applications',
+          {},
+        ),
+      ),
+    ).toBe(true);
+  });
+
   it('throws Forbidden when non-ops request sends merchant backoffice role', () => {
     const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
     expect(() =>

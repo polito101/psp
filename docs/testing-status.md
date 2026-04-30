@@ -32,7 +32,7 @@ La CI del monorepo incluye `api-ci` (lint/test/build API), `backoffice-ci` (lint
 | `web-finara` (marketing) | No | No | No | Solo CI build | Landing estática enlazando login merchant configurado por env; `.env.example` con `NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL`; `web-finara-ci` ejecuta `npm run typecheck` (`next typegen` + `tsc --noEmit`) y `npm run build`. |
 | `health` | Si | Si | Si | Cubierto | Unit + integration `/health` + smoke readiness. |
 | `webhooks` | Si | Si | Si | Cubierto | Unit worker/outbox + integration retry interno + smoke backlog/métricas. |
-| `internal endpoints` | Si (guards) | Si | Si | Cubierto | Ops `GET/POST/PATCH` en `/api/v2/payments/ops/*`, `/api/v1/settlements/*`, `/api/v1/merchants/ops/*`: con `X-Internal-Secret` válido exige también `X-Backoffice-Role` (`admin` o `merchant`); rol `merchant` exige `X-Backoffice-Merchant-Id` alineado con path/query (incl. inbox/approve solo admin). Script CI `scripts/ci/check-ops-metrics.mjs` envía `X-Backoffice-Role: admin`. Detalle pago scoped: `404` cross-merchant. Backoffice: proxy fail-closed (`backoffice-api.spec.ts`), middleware por rol, token merchant con `exp`. |
+| `internal endpoints` | Si (guards) | Si | Si | Cubierto | Ops `GET/POST/PATCH` en `/api/v2/payments/ops/*`, `/api/v1/settlements/*`, `/api/v1/merchants/ops/*`: con `X-Internal-Secret` válido exige también `X-Backoffice-Role` (`admin` o `merchant`); rol `merchant` exige `X-Backoffice-Merchant-Id` alineado con path/query (incl. inbox/approve solo admin). `/api/v1/merchant-onboarding/ops/*` es admin-only fail-closed. Script CI `scripts/ci/check-ops-metrics.mjs` envía `X-Backoffice-Role: admin`. Detalle pago scoped: `404` cross-merchant. Backoffice: proxy fail-closed (`backoffice-api.spec.ts`), middleware por rol, token merchant con `exp`. |
 
 ## Inventario actual de archivos
 
@@ -73,6 +73,7 @@ La CI del monorepo incluye `api-ci` (lint/test/build API), `backoffice-ci` (lint
 - `src/payments-v2/payments-v2-merchant-rate-limit.spec.ts`
 - `src/payments-v2/payments-v2-merchant-rate-limit.service.spec.ts`
 - `src/config/env.validation.spec.ts`
+- `src/common/guards/internal-secret.guard.spec.ts`
 - `src/common/correlation/correlation-id.spec.ts`
 - `src/merchant-onboarding/merchant-onboarding.controller.spec.ts`
 - `src/merchant-onboarding/merchant-onboarding.service.spec.ts`
