@@ -1271,55 +1271,61 @@ describe('PaymentsV2Service', () => {
   });
 
   it('aplica backoff entre reintentos por fallo transitorio del adapter', async () => {
-    process.env.PAYMENTS_PROVIDER_RETRY_BASE_MS = '2';
-    process.env.PAYMENTS_PROVIDER_RETRY_MAX_MS = '50';
-    process.env.PAYMENTS_PROVIDER_MAX_RETRIES = '1';
-    service = buildService();
-    registry.orderedProviders.mockReturnValue(['mock']);
-    registry.getProvider.mockReturnValue(mockProvider);
-    prisma.payment.create.mockResolvedValue({
-      id: 'pay_backoff',
-      merchantId: 'm_1',
-      status: PAYMENT_V2_STATUS.PROCESSING,
-      amountMinor: 1000,
-      currency: 'EUR',
-      selectedProvider: 'mock',
-      providerRef: null,
-      statusReason: null,
-      paymentLinkId: null,
-    });
-    mockProvider.run
-      .mockResolvedValueOnce({
-        status: PAYMENT_V2_STATUS.FAILED,
-        transientError: true,
-        reasonCode: 'provider_timeout',
-      })
-      .mockResolvedValueOnce({
-        status: PAYMENT_V2_STATUS.AUTHORIZED,
-        providerPaymentId: 'mock_pi_backoff',
+    const sleepSpy = jest.spyOn(PaymentsV2Service.prototype as never, 'sleep' as never);
+    try {
+      process.env.PAYMENTS_PROVIDER_RETRY_BASE_MS = '2';
+      process.env.PAYMENTS_PROVIDER_RETRY_MAX_MS = '50';
+      process.env.PAYMENTS_PROVIDER_MAX_RETRIES = '1';
+      service = buildService();
+      registry.orderedProviders.mockReturnValue(['mock']);
+      registry.getProvider.mockReturnValue(mockProvider);
+      prisma.payment.create.mockResolvedValue({
+        id: 'pay_backoff',
+        merchantId: 'm_1',
+        status: PAYMENT_V2_STATUS.PROCESSING,
+        amountMinor: 1000,
+        currency: 'EUR',
+        selectedProvider: 'mock',
+        providerRef: null,
+        statusReason: null,
+        paymentLinkId: null,
       });
-    prisma.payment.update.mockResolvedValue({
-      id: 'pay_backoff',
-      merchantId: 'm_1',
-      status: PAYMENT_V2_STATUS.AUTHORIZED,
-      amountMinor: 1000,
-      currency: 'EUR',
-      selectedProvider: 'mock',
-      providerRef: 'mock_pi_backoff',
-      statusReason: null,
-      paymentLinkId: null,
-    });
+      mockProvider.run
+        .mockResolvedValueOnce({
+          status: PAYMENT_V2_STATUS.FAILED,
+          transientError: true,
+          reasonCode: 'provider_timeout',
+        })
+        .mockResolvedValueOnce({
+          status: PAYMENT_V2_STATUS.AUTHORIZED,
+          providerPaymentId: 'mock_pi_backoff',
+        });
+      prisma.payment.update.mockResolvedValue({
+        id: 'pay_backoff',
+        merchantId: 'm_1',
+        status: PAYMENT_V2_STATUS.AUTHORIZED,
+        amountMinor: 1000,
+        currency: 'EUR',
+        selectedProvider: 'mock',
+        providerRef: 'mock_pi_backoff',
+        statusReason: null,
+        paymentLinkId: null,
+      });
 
-    const started = Date.now();
-    const result = await service.createIntent('m_1', {
-      amountMinor: 1000,
-      currency: 'EUR',
-    });
-    const elapsed = Date.now() - started;
+      const result = await service.createIntent('m_1', {
+        amountMinor: 1000,
+        currency: 'EUR',
+      });
 
-    expect(mockProvider.run).toHaveBeenCalledTimes(2);
-    expect(result.payment.status).toBe(PAYMENT_V2_STATUS.AUTHORIZED);
-    expect(elapsed).toBeGreaterThanOrEqual(1);
+      expect(mockProvider.run).toHaveBeenCalledTimes(2);
+      expect(result.payment.status).toBe(PAYMENT_V2_STATUS.AUTHORIZED);
+      expect(sleepSpy).toHaveBeenCalledTimes(1);
+      const [backoffMs] = sleepSpy.mock.calls[0] as [number];
+      expect(backoffMs).toBeGreaterThanOrEqual(1);
+      expect(backoffMs).toBeLessThanOrEqual(50);
+    } finally {
+      sleepSpy.mockRestore();
+    }
   });
 
   it('no adquiere lock de capture si el pago ya está SUCCEEDED', async () => {

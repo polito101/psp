@@ -44,13 +44,45 @@ type NextRequestWithIp = NextRequest & { ip?: string };
  * `X-Forwarded-For` y `X-Real-IP` (las sobrescribe o las añade en el borde).
  * Sin eso, un cliente puede falsificar esas cabeceras y desviar el rate limit a otra IP (DoS dirigido).
  *
- * Por defecto (`false` / ausente) **no** se leen; solo se usan `request.ip` y cabeceras típicas
- * de plataforma (`x-vercel-forwarded-for`, `cf-connecting-ip`).
+ * Por defecto (`false` / ausente) **no** se leen; solo `request.ip` y cabeceras de plataforma
+ * si hay señal verificable en el proceso o `TRUST_PLATFORM_IP_HEADERS` / flags granulares
+ * (`TRUST_VERCEL_IP_HEADERS`, `TRUST_CLOUDFLARE_IP_HEADERS`).
  *
  * @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Forwarded-For
  */
 function trustProxyForwardedClientHeaders(): boolean {
   return process.env.TRUST_X_FORWARDED_FOR === "true";
+}
+
+/** Opt-in global: confía en IPs de cabeceras típicas de Vercel y Cloudflare. */
+function trustPlatformIpHeadersOptIn(): boolean {
+  return process.env.TRUST_PLATFORM_IP_HEADERS === "true";
+}
+
+/**
+ * ¿Puede usarse `x-vercel-forwarded-for` para la clave de RL?
+ * En Vercel el runtime expone `VERCEL=1` (no lo fija el cliente HTTP). Fuera de Vercel esa
+ * cabecera es spoofeable salvo `TRUST_VERCEL_IP_HEADERS` o `TRUST_PLATFORM_IP_HEADERS`.
+ */
+function trustVercelForwardedForHeader(): boolean {
+  return (
+    process.env.VERCEL === "1" ||
+    process.env.TRUST_VERCEL_IP_HEADERS === "true" ||
+    trustPlatformIpHeadersOptIn()
+  );
+}
+
+/**
+ * ¿Puede usarse `cf-connecting-ip` para la clave de RL?
+ * En Cloudflare Pages el runtime suele exponer `CF_PAGES=1`. Tras proxy orange-cloud el origen
+ * real suele llegar solo vía CF; fuera de ese entorno la cabecera es spoofeable salvo opt-in.
+ */
+function trustCfConnectingIpHeader(): boolean {
+  return (
+    process.env.CF_PAGES === "1" ||
+    process.env.TRUST_CLOUDFLARE_IP_HEADERS === "true" ||
+    trustPlatformIpHeadersOptIn()
+  );
 }
 
 /**
@@ -111,12 +143,15 @@ export function computeLoginRateLimitKeyWithoutClientIp(
 /**
  * Resuelve la IP del cliente para rate limit best-effort.
  *
- * Orden: `request.ip`; primer IP válida en **toda** la lista de `x-vercel-forwarded-for`;
- * si `TRUST_X_FORWARDED_FOR=true`: `x-real-ip` y `x-forwarded-for` (listas con varios hops);
- * `cf-connecting-ip` (Cloudflare).
+ * Orden: `request.ip`; si hay confianza en cabeceras Vercel (runtime `VERCEL=1` o
+ * `TRUST_VERCEL_IP_HEADERS` / `TRUST_PLATFORM_IP_HEADERS`): primer IP válida en **toda** la lista
+ * de `x-vercel-forwarded-for`; si `TRUST_X_FORWARDED_FOR=true`: `x-real-ip` y `x-forwarded-for`;
+ * si hay confianza en CF (`CF_PAGES=1` o `TRUST_CLOUDFLARE_IP_HEADERS` / `TRUST_PLATFORM_IP_HEADERS`):
+ * `cf-connecting-ip`.
  *
- * `X-Forwarded-For` / `X-Real-IP` sin proxy de confianza son spoofeables; quedan desactivados
- * salvo opt-in explícito con `TRUST_X_FORWARDED_FOR=true`.
+ * `X-Forwarded-For`, `X-Real-IP`, `x-vercel-forwarded-for` y `cf-connecting-ip` son spoofeables
+ * si el cliente llega directo al Node sin el borde que las controla; las de plataforma quedan
+ * acotadas a señales de runtime u opt-in explícito (igual que XFF con `TRUST_X_FORWARDED_FOR`).
  *
  * Si no hay ninguna IP válida, devuelve `null` (usar `resolveLoginRateLimitKey` para no saltar el RL).
  */
@@ -127,10 +162,12 @@ export function resolveLoginRateLimitClientIp(request: NextRequest): string | nu
     if (n) return n;
   }
 
-  const fromVercel = firstValidIpFromForwardedList(
-    request.headers.get("x-vercel-forwarded-for"),
-  );
-  if (fromVercel) return fromVercel;
+  if (trustVercelForwardedForHeader()) {
+    const fromVercel = firstValidIpFromForwardedList(
+      request.headers.get("x-vercel-forwarded-for"),
+    );
+    if (fromVercel) return fromVercel;
+  }
 
   const trusted = trustProxyForwardedClientHeaders();
   if (trusted) {
@@ -141,10 +178,12 @@ export function resolveLoginRateLimitClientIp(request: NextRequest): string | nu
     }
   }
 
-  const cfIp = request.headers.get("cf-connecting-ip");
-  if (cfIp) {
-    const n = normalizeClientIp(cfIp);
-    if (n) return n;
+  if (trustCfConnectingIpHeader()) {
+    const cfIp = request.headers.get("cf-connecting-ip");
+    if (cfIp) {
+      const n = normalizeClientIp(cfIp);
+      if (n) return n;
+    }
   }
 
   if (trusted) {
@@ -155,13 +194,14 @@ export function resolveLoginRateLimitClientIp(request: NextRequest): string | nu
 }
 
 /**
- * Clave estable para `checkLoginRateLimit`: IP normalizada; si no hay IP, fingerprint por
- * `User-Agent` + `Accept-Language`; si tampoco hay datos, `LOGIN_RATE_LIMIT_UNRESOLVED_KEY`.
- * Siempre aplica throttling en `POST /api/auth/session`.
+ * Claves para `checkLoginRateLimit`: IP normalizada; sin IP, fingerprint por `User-Agent` +
+ * `Accept-Language` **y** además {@link LOGIN_RATE_LIMIT_UNRESOLVED_KEY} (mismo límite global para
+ * todo tráfico sin IP con fingerprint), para que rotar cabeceras no sume capacidad arbitraria.
+ * Sin IP ni cabeceras utilizables: solo la clave sentinela.
  */
-export function resolveLoginRateLimitKey(request: NextRequest): string {
+export function resolveLoginRateLimitKey(request: NextRequest): string[] {
   const ip = resolveLoginRateLimitClientIp(request);
-  if (ip) return ip;
+  if (ip) return [ip];
 
   const key = computeLoginRateLimitKeyWithoutClientIp(
     request.headers.get("user-agent"),
@@ -169,8 +209,10 @@ export function resolveLoginRateLimitKey(request: NextRequest): string {
   );
   if (key === LOGIN_RATE_LIMIT_UNRESOLVED_KEY) {
     logLoginRateLimitSentinelNoFingerprint();
+    return [LOGIN_RATE_LIMIT_UNRESOLVED_KEY];
   }
-  return key;
+
+  return [key, LOGIN_RATE_LIMIT_UNRESOLVED_KEY];
 }
 
 /** Evita spam en logs bajo tráfico repetido; una línea ~por minuto por proceso. */
@@ -182,6 +224,6 @@ function logLoginRateLimitSentinelNoFingerprint(): void {
   if (now - lastLoginRlSentinelLogAt < LOGIN_RL_SENTINEL_LOG_COOLDOWN_MS) return;
   lastLoginRlSentinelLogAt = now;
   console.warn(
-    "[psp-backoffice] login rate limit: client IP unresolved and no User-Agent/Accept-Language; using global unresolved bucket (set TRUST_X_FORWARDED_FOR=true only if a trusted proxy overwrites X-Forwarded-For / X-Real-IP)",
+    "[psp-backoffice] login rate limit: client IP unresolved and no User-Agent/Accept-Language; using global unresolved bucket (TRUST_X_FORWARDED_FOR=true only behind a trusted proxy for XFF/X-Real-IP; TRUST_PLATFORM_IP_HEADERS / TRUST_VERCEL_IP_HEADERS / TRUST_CLOUDFLARE_IP_HEADERS or deploy on Vercel/CF Pages for platform client-IP headers)",
   );
 }

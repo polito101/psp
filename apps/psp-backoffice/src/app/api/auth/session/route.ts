@@ -43,7 +43,7 @@ function sessionCookieOptions() {
 }
 
 export async function POST(request: NextRequest) {
-  // Clave RL: IP vía `resolveLoginRateLimitClientIp` / `TRUST_X_FORWARDED_FOR`; sin IP → fingerprint UA+`Accept-Language` o clave sentinela.
+  // RL: IP vía `resolveLoginRateLimitClientIp` (XFF/X-Real-IP con TRUST_X_FORWARDED_FOR; Vercel/CF con runtime u opt-in de plataforma); sin IP → fingerprint o sentinela.
   const rateLimit = checkLoginRateLimit(resolveLoginRateLimitKey(request));
   if (!rateLimit.allowed) {
     return NextResponse.json(

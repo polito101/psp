@@ -87,7 +87,7 @@ describe("POST /api/auth/session (admin portal)", () => {
     expect(resBlocked.status).toBe(429);
   });
 
-  it("does not block a different User-Agent when IP is not resolvable (fingerprint bucket)", async () => {
+  it("returns 429 when rotating User-Agent after exhausting the global unresolved bucket (no IP)", async () => {
     const body = JSON.stringify({ mode: "admin", token: "admin-secret" });
     for (let i = 0; i < 10; i += 1) {
       const res = await POST(
@@ -112,7 +112,7 @@ describe("POST /api/auth/session (admin portal)", () => {
         body,
       }),
     );
-    expect(resOtherUa.status).toBe(200);
+    expect(resOtherUa.status).toBe(429);
   });
 
   it("returns 429 after too many login attempts from the same resolved IP", async () => {

@@ -4,6 +4,18 @@ const DEFAULT_MERCHANT_BACKOFFICE_LOGIN =
 
 let warnedInvalidMerchantBackofficeUrl = false;
 
+/**
+ * Valor seguro para logs: nunca incluye userinfo. Si `URL` falla, redacta `scheme://user:pass@`.
+ */
+function sanitizeMerchantBackofficeUrlForLog(raw: string): string {
+  try {
+    const u = new URL(raw);
+    return u.origin;
+  } catch {
+    return raw.replace(/^(https?:\/\/)[^/?#@]*@/i, "$1***@");
+  }
+}
+
 function warnInvalidMerchantBackofficeUrlOnce(message: string): void {
   if (warnedInvalidMerchantBackofficeUrl) {
     return;
@@ -34,28 +46,28 @@ export function getMerchantBackofficeLoginUrl(): string {
     parsed = new URL(trimmed);
   } catch {
     warnInvalidMerchantBackofficeUrlOnce(
-      `NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL is not a valid absolute URL (${JSON.stringify(trimmed)}). Using default merchant login URL.`,
+      `NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL is not a valid absolute URL (${sanitizeMerchantBackofficeUrlForLog(trimmed)}). Using default merchant login URL.`,
     );
     return DEFAULT_MERCHANT_BACKOFFICE_LOGIN;
   }
 
   if (parsed.protocol !== "https:") {
     warnInvalidMerchantBackofficeUrlOnce(
-      `NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL must use https (${JSON.stringify(trimmed)}). Using default merchant login URL.`,
+      `NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL must use https (${parsed.origin}). Using default merchant login URL.`,
     );
     return DEFAULT_MERCHANT_BACKOFFICE_LOGIN;
   }
 
   if (parsed.username !== "" || parsed.password !== "") {
     warnInvalidMerchantBackofficeUrlOnce(
-      `NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL must not include credentials (${JSON.stringify(trimmed)}). Using default merchant login URL.`,
+      `NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL must not include credentials (origin ${parsed.origin}). Using default merchant login URL.`,
     );
     return DEFAULT_MERCHANT_BACKOFFICE_LOGIN;
   }
 
   if (parsed.hostname === "") {
     warnInvalidMerchantBackofficeUrlOnce(
-      `NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL must include a hostname (${JSON.stringify(trimmed)}). Using default merchant login URL.`,
+      `NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL must include a hostname (${parsed.origin}). Using default merchant login URL.`,
     );
     return DEFAULT_MERCHANT_BACKOFFICE_LOGIN;
   }

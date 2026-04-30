@@ -36,29 +36,64 @@ function evictUntilUnderCap(): void {
   }
 }
 
+type BucketPreview = {
+  key: string;
+  next: Bucket;
+  /** `true` si la ventana actual sigue activa antes de aplicar el intento. */
+  wasInWindow: boolean;
+};
+
 /**
- * Límite best-effort en proceso por clave (p. ej. IP). No sustituye WAF/edge en multi-instancia.
- * Limpia buckets expirados periódicamente y acota memoria con un máximo de entradas (evicción FIFO).
+ * Límite best-effort en proceso por una o varias claves (p. ej. IP, o fingerprint + bucket global
+ * sin IP). No sustituye WAF/edge en multi-instancia.
+ *
+ * Evalúa todas las claves contra el estado actual; si **cualquiera** superaría `MAX_ATTEMPTS` tras
+ * contar este intento, devuelve `allowed: false` **sin** mutar buckets. Si todas pasan, incrementa
+ * todas en coherencia con la ventana de cada clave.
+ *
+ * Claves duplicadas en `keys` se deduplican (un intento → +1 por clave física).
  */
-export function checkLoginRateLimit(key: string, now = Date.now()): LoginRateLimitResult {
-  maybeSweep(now);
-
-  const existing = buckets.get(key);
-
-  if (existing && existing.resetAt > now) {
-    buckets.delete(key);
-    existing.count += 1;
-    if (existing.count <= MAX_ATTEMPTS) {
-      buckets.set(key, existing);
-      return { allowed: true };
-    }
-    buckets.set(key, existing);
-    return { allowed: false, retryAfterSec: Math.ceil((existing.resetAt - now) / 1000) };
+export function checkLoginRateLimit(keys: string[], now = Date.now()): LoginRateLimitResult {
+  const uniqueKeys = [...new Set(keys.filter((k) => k.length > 0))];
+  if (uniqueKeys.length === 0) {
+    return { allowed: true };
   }
 
-  buckets.delete(key);
-  evictUntilUnderCap();
-  buckets.set(key, { count: 1, resetAt: now + WINDOW_MS });
+  maybeSweep(now);
+
+  const previews: BucketPreview[] = [];
+  let maxRetryAfterSec = 0;
+
+  for (const key of uniqueKeys) {
+    const existing = buckets.get(key);
+    if (existing && existing.resetAt > now) {
+      const nextCount = existing.count + 1;
+      const next: Bucket = { count: nextCount, resetAt: existing.resetAt };
+      previews.push({ key, next, wasInWindow: true });
+      if (nextCount > MAX_ATTEMPTS) {
+        maxRetryAfterSec = Math.max(maxRetryAfterSec, Math.ceil((existing.resetAt - now) / 1000));
+      }
+    } else {
+      previews.push({
+        key,
+        next: { count: 1, resetAt: now + WINDOW_MS },
+        wasInWindow: false,
+      });
+    }
+  }
+
+  if (previews.some((p) => p.next.count > MAX_ATTEMPTS)) {
+    return { allowed: false, retryAfterSec: maxRetryAfterSec };
+  }
+
+  for (const { key, next, wasInWindow } of previews) {
+    buckets.delete(key);
+    if (!wasInWindow) {
+      evictUntilUnderCap();
+    }
+    buckets.set(key, next);
+  }
+
   return { allowed: true };
 }
 

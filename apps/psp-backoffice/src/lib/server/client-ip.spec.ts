@@ -9,6 +9,15 @@ import {
   LOGIN_RATE_LIMIT_UNRESOLVED_FINGERPRINT_PREFIX,
 } from "./client-ip";
 
+function clearLoginRlIpEnv(): void {
+  delete process.env.TRUST_X_FORWARDED_FOR;
+  delete process.env.TRUST_PLATFORM_IP_HEADERS;
+  delete process.env.TRUST_VERCEL_IP_HEADERS;
+  delete process.env.TRUST_CLOUDFLARE_IP_HEADERS;
+  delete process.env.VERCEL;
+  delete process.env.CF_PAGES;
+}
+
 describe("normalizeClientIp", () => {
   it("accepts IPv4 and IPv6", () => {
     expect(normalizeClientIp(" 203.0.113.1 ")).toBe("203.0.113.1");
@@ -33,7 +42,7 @@ describe("resolveLoginRateLimitClientIp", () => {
 
   beforeEach(() => {
     process.env = { ...snapshot };
-    delete process.env.TRUST_X_FORWARDED_FOR;
+    clearLoginRlIpEnv();
   });
 
   afterEach(() => {
@@ -54,6 +63,20 @@ describe("resolveLoginRateLimitClientIp", () => {
     expect(resolveLoginRateLimitClientIp(req)).toBeNull();
   });
 
+  it("ignores x-vercel-forwarded-for without VERCEL runtime or platform trust opt-in (anti-spoof)", () => {
+    const req = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({ "x-vercel-forwarded-for": "203.0.113.20" }),
+    });
+    expect(resolveLoginRateLimitClientIp(req)).toBeNull();
+  });
+
+  it("ignores cf-connecting-ip without CF_PAGES runtime or platform trust opt-in (anti-spoof)", () => {
+    const req = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({ "cf-connecting-ip": "203.0.113.30" }),
+    });
+    expect(resolveLoginRateLimitClientIp(req)).toBeNull();
+  });
+
   it("uses x-real-ip when TRUST_X_FORWARDED_FOR is true", () => {
     process.env.TRUST_X_FORWARDED_FOR = "true";
     const req = new NextRequest("http://localhost/api/auth/session", {
@@ -62,7 +85,8 @@ describe("resolveLoginRateLimitClientIp", () => {
     expect(resolveLoginRateLimitClientIp(req)).toBe("198.51.100.77");
   });
 
-  it("prefers x-vercel-forwarded-for over x-forwarded-for when both are valid", () => {
+  it("prefers x-vercel-forwarded-for over x-forwarded-for when both are valid on Vercel", () => {
+    process.env.VERCEL = "1";
     const req = new NextRequest("http://localhost/api/auth/session", {
       headers: new Headers({
         "x-vercel-forwarded-for": "203.0.113.20",
@@ -73,6 +97,7 @@ describe("resolveLoginRateLimitClientIp", () => {
   });
 
   it("falls back to x-forwarded-for when Vercel header is invalid and TRUST is set", () => {
+    process.env.VERCEL = "1";
     process.env.TRUST_X_FORWARDED_FOR = "true";
     const req = new NextRequest("http://localhost/api/auth/session", {
       headers: new Headers({
@@ -93,7 +118,8 @@ describe("resolveLoginRateLimitClientIp", () => {
     expect(resolveLoginRateLimitClientIp(req)).toBe("198.51.100.3");
   });
 
-  it("parses all segments of x-vercel-forwarded-for", () => {
+  it("parses all segments of x-vercel-forwarded-for when VERCEL=1", () => {
+    process.env.VERCEL = "1";
     const req = new NextRequest("http://localhost/api/auth/session", {
       headers: new Headers({
         "x-vercel-forwarded-for": "bogus, 203.0.113.50",
@@ -103,9 +129,110 @@ describe("resolveLoginRateLimitClientIp", () => {
     expect(resolveLoginRateLimitClientIp(req)).toBe("203.0.113.50");
   });
 
+  it("uses cf-connecting-ip when CF_PAGES=1", () => {
+    process.env.CF_PAGES = "1";
+    const req = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({ "cf-connecting-ip": "198.51.100.40" }),
+    });
+    expect(resolveLoginRateLimitClientIp(req)).toBe("198.51.100.40");
+  });
+
+  it("TRUST_PLATFORM_IP_HEADERS enables both Vercel and CF client IP headers", () => {
+    process.env.TRUST_PLATFORM_IP_HEADERS = "true";
+    const reqVercel = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({ "x-vercel-forwarded-for": "203.0.113.99" }),
+    });
+    expect(resolveLoginRateLimitClientIp(reqVercel)).toBe("203.0.113.99");
+
+    const reqCf = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({ "cf-connecting-ip": "198.51.100.41" }),
+    });
+    expect(resolveLoginRateLimitClientIp(reqCf)).toBe("198.51.100.41");
+  });
+
+  it("TRUST_VERCEL_IP_HEADERS does not trust cf-connecting-ip alone", () => {
+    process.env.TRUST_VERCEL_IP_HEADERS = "true";
+    const req = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({ "cf-connecting-ip": "198.51.100.50" }),
+    });
+    expect(resolveLoginRateLimitClientIp(req)).toBeNull();
+  });
+
+  it("TRUST_CLOUDFLARE_IP_HEADERS does not trust x-vercel-forwarded-for alone", () => {
+    process.env.TRUST_CLOUDFLARE_IP_HEADERS = "true";
+    const req = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({ "x-vercel-forwarded-for": "203.0.113.1" }),
+    });
+    expect(resolveLoginRateLimitClientIp(req)).toBeNull();
+  });
+
   it("returns null when no header yields a valid IP", () => {
     const req = new NextRequest("http://localhost/api/auth/session");
     expect(resolveLoginRateLimitClientIp(req)).toBeNull();
+  });
+});
+
+describe("resolveLoginRateLimitKey", () => {
+  const snapshot = { ...process.env };
+
+  beforeEach(() => {
+    process.env = { ...snapshot };
+    clearLoginRlIpEnv();
+  });
+
+  afterEach(() => {
+    process.env = { ...snapshot };
+  });
+
+  it("uses unresolved sentinel when no IP and no fingerprint headers", () => {
+    const req = new NextRequest("http://localhost/api/auth/session");
+    expect(resolveLoginRateLimitKey(req)).toEqual([LOGIN_RATE_LIMIT_UNRESOLVED_KEY]);
+  });
+
+  it("uses fingerprint key plus global unresolved when no IP but User-Agent is set", () => {
+    const req = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({ "user-agent": "Vitest-RL/1.0" }),
+    });
+    const keys = resolveLoginRateLimitKey(req);
+    const fp = computeLoginRateLimitKeyWithoutClientIp("Vitest-RL/1.0", null);
+    expect(keys).toEqual([fp, LOGIN_RATE_LIMIT_UNRESOLVED_KEY]);
+    expect(keys[0].startsWith(LOGIN_RATE_LIMIT_UNRESOLVED_FINGERPRINT_PREFIX)).toBe(true);
+  });
+
+  it("does not use x-forwarded-for for rate limit key without TRUST (falls back to fingerprint when UA present)", () => {
+    const req = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({
+        "x-forwarded-for": "198.51.100.7",
+        "user-agent": "Mozilla/5.0 (test)",
+      }),
+    });
+    const keys = resolveLoginRateLimitKey(req);
+    expect(keys).not.toContain("198.51.100.7");
+    expect(keys[0].startsWith(LOGIN_RATE_LIMIT_UNRESOLVED_FINGERPRINT_PREFIX)).toBe(true);
+    expect(keys[1]).toBe(LOGIN_RATE_LIMIT_UNRESOLVED_KEY);
+  });
+
+  it("does not use spoofed platform headers for key without trust (fingerprint when UA present)", () => {
+    const req = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({
+        "x-vercel-forwarded-for": "198.51.100.8",
+        "cf-connecting-ip": "198.51.100.9",
+        "user-agent": "Mozilla/5.0 (spoof-test)",
+      }),
+    });
+    const keys = resolveLoginRateLimitKey(req);
+    expect(keys).not.toContain("198.51.100.8");
+    expect(keys).not.toContain("198.51.100.9");
+    expect(keys[0].startsWith(LOGIN_RATE_LIMIT_UNRESOLVED_FINGERPRINT_PREFIX)).toBe(true);
+    expect(keys[1]).toBe(LOGIN_RATE_LIMIT_UNRESOLVED_KEY);
+  });
+
+  it("uses normalized IP from x-forwarded-for only when TRUST_X_FORWARDED_FOR is true", () => {
+    process.env.TRUST_X_FORWARDED_FOR = "true";
+    const req = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({ "x-forwarded-for": "198.51.100.7" }),
+    });
+    expect(resolveLoginRateLimitKey(req)).toEqual(["198.51.100.7"]);
   });
 });
 
@@ -131,52 +258,5 @@ describe("computeLoginRateLimitKeyWithoutClientIp", () => {
     const a = computeLoginRateLimitKeyWithoutClientIp(null, "en-US");
     const b = computeLoginRateLimitKeyWithoutClientIp(null, "es-ES");
     expect(a).not.toBe(b);
-  });
-});
-
-describe("resolveLoginRateLimitKey", () => {
-  const snapshot = { ...process.env };
-
-  beforeEach(() => {
-    process.env = { ...snapshot };
-    delete process.env.TRUST_X_FORWARDED_FOR;
-  });
-
-  afterEach(() => {
-    process.env = { ...snapshot };
-  });
-
-  it("uses unresolved sentinel when no IP and no fingerprint headers", () => {
-    const req = new NextRequest("http://localhost/api/auth/session");
-    expect(resolveLoginRateLimitKey(req)).toBe(LOGIN_RATE_LIMIT_UNRESOLVED_KEY);
-  });
-
-  it("uses fingerprint key when no IP but User-Agent is set", () => {
-    const req = new NextRequest("http://localhost/api/auth/session", {
-      headers: new Headers({ "user-agent": "Vitest-RL/1.0" }),
-    });
-    const key = resolveLoginRateLimitKey(req);
-    expect(key.startsWith(LOGIN_RATE_LIMIT_UNRESOLVED_FINGERPRINT_PREFIX)).toBe(true);
-    expect(key).toBe(computeLoginRateLimitKeyWithoutClientIp("Vitest-RL/1.0", null));
-  });
-
-  it("does not use x-forwarded-for for rate limit key without TRUST (falls back to fingerprint when UA present)", () => {
-    const req = new NextRequest("http://localhost/api/auth/session", {
-      headers: new Headers({
-        "x-forwarded-for": "198.51.100.7",
-        "user-agent": "Mozilla/5.0 (test)",
-      }),
-    });
-    const key = resolveLoginRateLimitKey(req);
-    expect(key).not.toBe("198.51.100.7");
-    expect(key.startsWith(LOGIN_RATE_LIMIT_UNRESOLVED_FINGERPRINT_PREFIX)).toBe(true);
-  });
-
-  it("uses normalized IP from x-forwarded-for only when TRUST_X_FORWARDED_FOR is true", () => {
-    process.env.TRUST_X_FORWARDED_FOR = "true";
-    const req = new NextRequest("http://localhost/api/auth/session", {
-      headers: new Headers({ "x-forwarded-for": "198.51.100.7" }),
-    });
-    expect(resolveLoginRateLimitKey(req)).toBe("198.51.100.7");
   });
 });
