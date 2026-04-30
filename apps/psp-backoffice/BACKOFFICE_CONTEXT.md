@@ -32,6 +32,8 @@ src/
 │   ├── transactions/page.tsx         # `/transactions` listado ops
 │   ├── operations/page.tsx           # `/operations` inbox settlements (admin)
 │   ├── onboarding/[token]/page.tsx   # formulario público de onboarding merchant
+│   ├── crm/onboarding/page.tsx       # CRM onboarding merchant (admin)
+│   ├── crm/onboarding/[applicationId]/page.tsx
 │   ├── merchants/page.tsx            # directorio merchants (admin)
 │   ├── merchants/[merchantId]/overview|payments|settlements|payment-methods|admin|finance/page.tsx
 │   ├── monitor/page.tsx              # `/monitor`
@@ -47,7 +49,7 @@ src/
 │       ├── merchants/[merchantId]/finance/...
 │       ├── payments/[paymentId]/route.ts
 │       └── provider-health/route.ts
-├── components/                       # UI por feature (home/, merchant-portal/, settlements/, merchants/)
+├── components/                       # UI por feature (home/, merchant-portal/, settlements/, merchants/, crm/)
 └── lib/                              # clientes API, utilidades
 ```
 
@@ -98,6 +100,8 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 - **`/login`** — Solo **portal merchant** (`BACKOFFICE_PORTAL_MODE=merchant`): formulario merchant ID + token temporal; no admin.
 - **`/admin/login`** — Solo **portal admin** (`BACKOFFICE_PORTAL_MODE=admin`): formulario mínimo con secreto admin.
 - **`/onboarding/[token]`** — Página pública de onboarding merchant; valida el token vía `/api/public/onboarding/:token` y envía el perfil de negocio a `/api/public/onboarding/:token/business-profile`.
+- **`/crm/onboarding`** — CRM onboarding (solo admin): listado de expedientes merchant desde `GET /api/internal/crm/onboarding`, con acceso al detalle.
+- **`/crm/onboarding/[applicationId]`** — Detalle admin de expediente onboarding: contacto, negocio, checklist, historial y acciones `approve|reject|resend-link`.
 - **`/`** — Inicio: **admin** — bloque **Resumen** (intervalo/comparador vía `GET /api/internal/transactions/summary`), tarjetas UTC + volumen EUR + card volumen **USD** (`/ops/dashboard/volume-usd` vía BFF) + accesos a `/merchants` y `/operations`. **Merchant** — resumen scoped + enlaces al portal.
 - **`/transactions`** — Dashboard de transacciones (lista ops, filtros, export CSV de pagina visible, conteos por estado, cursores). Filtros extendidos (país, método, weekday, `merchantActive`) se reenvían al BFF.
 - **`/merchants`** — Directorio merchants (solo admin); desde aquí **Ver** → overview, **Admin** → panel activación / admin-enabled métodos.
@@ -121,7 +125,7 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 - Alcance portal en BFF (`enforceInternalRouteAuth`): JWT verificado pero con **rol incompatible** con `BACKOFFICE_PORTAL_MODE` → **`403`** (p. ej. cookie admin en deploy merchant).
 - Mutaciones BFF (`POST`/`PATCH` bajo `/api/internal/*`): el navegador debe enviar cabecera `X-Backoffice-Mutation: 1`; si existe cabecera `Origin`, debe coincidir con el origen del propio backoffice. La sesión/RBAC sigue aplicándose después.
 - Login: `POST /api/auth/session` acepta **solo** el `mode` que coincida con `BACKOFFICE_PORTAL_MODE`: admin `{ "mode":"admin","token":"<BACKOFFICE_ADMIN_SECRET>" }` o merchant `{ "mode":"merchant","merchantId":"...","merchantToken":"<expUnix>:<hmac_hex>" }` (HMAC de ``merchantId.exp``, caducidad acotada). Otro modo → **`404`** (no filtrar existencia por UI). Rate limit best-effort en proceso: clave = IP normalizada desde `request.ip` (si existe); luego `x-vercel-forwarded-for` solo con `VERCEL=1` o `TRUST_VERCEL_IP_HEADERS` / `TRUST_PLATFORM_IP_HEADERS`; **`X-Forwarded-For` y `X-Real-IP` solo si `TRUST_X_FORWARDED_FOR=true`**; luego `cf-connecting-ip` solo con `CF_PAGES=1` o `TRUST_CLOUDFLARE_IP_HEADERS` / `TRUST_PLATFORM_IP_HEADERS`. Sin IP resoluble: clave `__psp_bo_login_rl_fp:` + hash SHA-256 (32 hex) de `User-Agent` + `Accept-Language` normalizados; si faltan ambos, clave interna `LOGIN_RATE_LIMIT_UNRESOLVED_KEY` y **warning** en logs del servidor (throttled ~1/min por proceso). Normalización con `node:net`/`isIP`. Map de buckets con barrido de ventanas expiradas y tope de entradas; en producción complementar con límite en edge/WAF si hay varias instancias.
-- Navegación: rol **merchant** no ve `/monitor` ni `/merchants/lookup`; enlaces a **Mi comercio** (`/merchants/{id}/overview` y subrutas) y **Finanzas**. Admin ve **Merchants**, **Operaciones**, monitor y lookup financiero.
+- Navegación: rol **merchant** no ve `/monitor` ni `/merchants/lookup`; enlaces a **Mi comercio** (`/merchants/{id}/overview` y subrutas) y **Finanzas**. Admin ve **Merchants**, **Operaciones**, **CRM onboarding**, monitor y lookup financiero.
 - Detalle de pago: un merchant que pida un `paymentId` de otro comercio recibe **404** (anti-enumeración), en BFF y en API.
 - Alcance **merchant** en BFF: rutas con `merchantId` en path o query fuerzan/validan contra el claim; métricas globales (`provider-health` → `ops/metrics`) solo **admin**. El proxy añade cabeceras `X-Backoffice-Role` y `X-Backoffice-Merchant-Id` para que `psp-api` vuelva a validar (defensa en profundidad). Las páginas merchant incluyen `/merchants/[merchantId]/finance` con validación en Server Component vía `ensureMerchantPortalRoute`, además del proxy y el BFF.
 - Cabeceras de seguridad globales desde `next.config.ts`: `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`.
