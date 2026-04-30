@@ -50,25 +50,32 @@ describe("mapProxyError", () => {
     expect(payload.bodyPreview?.length).toBeLessThanOrEqual(200);
   });
 
-  it("for upstream 400 with JSON body forwards status and payload", async () => {
+  it("for upstream 400 with JSON body returns safe message and does not echo upstream payload", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
 
     const res = mapProxyError(
-      new ProxyUpstreamError(400, JSON.stringify({ message: "bad", statusCode: 400 })),
+      new ProxyUpstreamError(
+        400,
+        JSON.stringify({ message: "database password=secret", statusCode: 400, details: { raw: true } }),
+      ),
     );
     expect(res.status).toBe(400);
-    const body = (await res.json()) as { message: string; statusCode: number };
-    expect(body.message).toBe("bad");
-    expect(body.statusCode).toBe(400);
+    const body = (await res.json()) as { message: string; upstreamStatus?: number };
+    expect(body.message).toBe("Request rejected by upstream service");
+    expect(body.upstreamStatus).toBe(400);
+    expect(JSON.stringify(body)).not.toContain("password");
+    expect(JSON.stringify(body)).not.toContain("details");
   });
 
-  it("for upstream 400 with non-JSON body returns trimmed text as message", async () => {
+  it("for upstream 404 with non-JSON body returns safe not-found message", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const res = mapProxyError(new ProxyUpstreamError(404, "not found"));
+    const res = mapProxyError(new ProxyUpstreamError(404, "internal merchant id mrc_secret"));
     expect(res.status).toBe(404);
-    const body = (await res.json()) as { message: string };
-    expect(body.message).toBe("not found");
+    const body = (await res.json()) as { message: string; upstreamStatus?: number };
+    expect(body.message).toBe("Resource not found");
+    expect(body.upstreamStatus).toBe(404);
+    expect(JSON.stringify(body)).not.toContain("mrc_secret");
   });
 
   it("maps AbortError to 504 timeout", async () => {

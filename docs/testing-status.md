@@ -1,6 +1,6 @@
 # Estado de tests
 
-Ultima actualizacion: 2026-04-23
+Ultima actualizacion: 2026-04-28
 
 ## Objetivo
 
@@ -27,7 +27,7 @@ La CI del monorepo incluye `api-ci` (lint/test/build API) y `backoffice-ci` (lin
 | `fees` | Si | Si | No | Cubierto | Unit `FeeService` (fixed/percentage/minimum + resolve active rate table) e integración de endpoints internos para rate tables por merchant/currency/provider. |
 | `settlements` | Si | Si | No | Parcial | Unit `SettlementService` (ventanas T+N/WEEKLY, agrupación e idempotencia de payout) e integración `settlements.integration.spec.ts`. Workflow **SettlementRequest** (controller + BFF approve/reject) sin suite dedicada aún. Falta cobertura de chargeback/refund post-payout y estados `SENT/FAILED` del payout. |
 | `fx` | Si | Parcial | No | Parcial | Unit `fx-rates.service.spec.ts`; integration `fx.integration.spec.ts` (salta si falta migración/tabla). |
-| `backoffice BFF` | Si (proxy) | No | No | Parcial | Vitest `backoffice-api.spec.ts` (incl. `requiresBackofficeScopePath`, POST settlements sin scope). Sin e2e browser. |
+| `backoffice BFF` | Si (proxy + guards + login RL) | No | Playwright smoke | Parcial | Vitest: proxy (`backoffice-api.spec.ts`, mensajes 4xx saneados; `PSP_API_BASE_URL` obligatorio fuera de dev), mutación interna (`internal-mutation-guard.spec.ts`), rate limit login (`login-rate-limit.spec.ts`), rutas API (`provider-health`, `payments`, `auth/session`). E2E: `e2e/auth-and-rbac.spec.ts` (redirect login + sesión admin + `/merchants`). Cobertura UI ampliada opcional. |
 | `health` | Si | Si | Si | Cubierto | Unit + integration `/health` + smoke readiness. |
 | `webhooks` | Si | Si | Si | Cubierto | Unit worker/outbox + integration retry interno + smoke backlog/métricas. |
 | `internal endpoints` | Si (guards) | Si | Si | Cubierto | Ops `GET/POST/PATCH` en `/api/v2/payments/ops/*`, `/api/v1/settlements/*`, `/api/v1/merchants/ops/*`: con `X-Internal-Secret` válido exige también `X-Backoffice-Role` (`admin` o `merchant`); rol `merchant` exige `X-Backoffice-Merchant-Id` alineado con path/query (incl. inbox/approve solo admin). Script CI `scripts/ci/check-ops-metrics.mjs` envía `X-Backoffice-Role: admin`. Detalle pago scoped: `404` cross-merchant. Backoffice: proxy fail-closed (`backoffice-api.spec.ts`), middleware por rol, token merchant con `exp`. |
@@ -52,8 +52,16 @@ La CI del monorepo incluye `api-ci` (lint/test/build API) y `backoffice-ci` (lin
 ### Unit backoffice (`apps/psp-backoffice/src`)
 
 - `src/lib/server/internal-route-auth.spec.ts`
+- `src/lib/server/internal-route-scope.spec.ts`
 - `src/lib/server/backoffice-api.spec.ts`
+- `src/lib/server/internal-mutation-guard.spec.ts`
+- `src/lib/server/login-rate-limit.spec.ts`
 - `src/lib/server/merchant-finance-internal-routes.spec.ts`
+- `src/lib/server/auth/session-claims.spec.ts`
+- `src/proxy.spec.ts`
+- `src/app/api/auth/session/route.spec.ts`
+- `src/app/api/internal/provider-health/route.spec.ts`
+- `src/app/api/internal/payments/[paymentId]/route.spec.ts`
 
 ### Unit relevantes API (`apps/psp-api/src`)
 
@@ -73,6 +81,10 @@ La CI del monorepo incluye `api-ci` (lint/test/build API) y `backoffice-ci` (lin
 - `test/smoke/orchestrator.integration.spec.ts`
 - `test/smoke/check-ops-metrics-ci.spec.ts`
 
+### E2E backoffice (`apps/psp-backoffice/e2e`)
+
+- `e2e/auth-and-rbac.spec.ts`
+
 ## Comandos de verificacion
 
 Desde `apps/psp-api`:
@@ -90,6 +102,7 @@ Desde `apps/psp-backoffice`:
 - `npm run typecheck`
 - `npm run test`
 - `npm run build`
+- `npm run test:e2e` (Playwright; requiere Chromium instalado vía `npx playwright install chromium` o CI `npx playwright install --with-deps chromium`)
 
 ## Regla de mantenimiento
 

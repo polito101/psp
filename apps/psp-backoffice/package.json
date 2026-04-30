@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:e2e": "playwright test",
     "gen:api-types": "openapi-typescript http://localhost:3003/api/docs-json -o src/lib/api/generated/openapi.d.ts"
   },
   "dependencies": {
@@ -25,6 +26,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

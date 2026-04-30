@@ -10,6 +10,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 export function SettlementInboxDashboard() {
   const qc = useQueryClient();
   const [flash, setFlash] = useState<string | null>(null);
+  const [pendingReview, setPendingReview] = useState<{
+    row: SettlementRequestRow;
+    action: "approve" | "reject";
+  } | null>(null);
+  const [reviewedNotes, setReviewedNotes] = useState("");
 
   const inboxQuery = useQuery({
     queryKey: ["settlement-inbox"],
@@ -19,22 +24,32 @@ export function SettlementInboxDashboard() {
   });
 
   const approveMut = useMutation({
-    mutationFn: (row: SettlementRequestRow) => approveSettlementRequest(row.id, {}),
+    mutationFn: (args: { row: SettlementRequestRow; reviewedNotes?: string }) =>
+      approveSettlementRequest(args.row.id, { reviewedNotes: args.reviewedNotes }),
     onSuccess: async () => {
       setFlash("Aprobado y payout encolado.");
+      setPendingReview(null);
+      setReviewedNotes("");
       await qc.invalidateQueries({ queryKey: ["settlement-inbox"] });
     },
     onError: (e: Error) => setFlash(e.message),
   });
 
   const rejectMut = useMutation({
-    mutationFn: (row: SettlementRequestRow) => rejectSettlementRequest(row.id, { reviewedNotes: "Rechazado desde inbox" }),
+    mutationFn: (args: { row: SettlementRequestRow; reviewedNotes?: string }) =>
+      rejectSettlementRequest(args.row.id, {
+        reviewedNotes: args.reviewedNotes?.trim() || "Rechazado desde inbox",
+      }),
     onSuccess: async () => {
       setFlash("Solicitud rechazada.");
+      setPendingReview(null);
+      setReviewedNotes("");
       await qc.invalidateQueries({ queryKey: ["settlement-inbox"] });
     },
     onError: (e: Error) => setFlash(e.message),
   });
+
+  const busy = approveMut.isPending || rejectMut.isPending;
 
   return (
     <div className="space-y-6">
@@ -75,10 +90,11 @@ export function SettlementInboxDashboard() {
                     type="button"
                     size="sm"
                     variant="secondary"
-                    disabled={rejectMut.isPending}
+                    disabled={busy}
                     onClick={() => {
                       setFlash(null);
-                      rejectMut.mutate(r);
+                      setPendingReview({ row: r, action: "reject" });
+                      setReviewedNotes("");
                     }}
                   >
                     Rechazar
@@ -86,10 +102,11 @@ export function SettlementInboxDashboard() {
                   <Button
                     type="button"
                     size="sm"
-                    disabled={approveMut.isPending}
+                    disabled={busy}
                     onClick={() => {
                       setFlash(null);
-                      approveMut.mutate(r);
+                      setPendingReview({ row: r, action: "approve" });
+                      setReviewedNotes("");
                     }}
                   >
                     Aprobar
@@ -103,6 +120,63 @@ export function SettlementInboxDashboard() {
           ) : null}
         </CardContent>
       </Card>
+
+      {pendingReview ? (
+        <Card className="border-slate-300">
+          <CardHeader>
+            <CardTitle className="text-base">
+              {pendingReview.action === "approve" ? "Confirmar aprobación" : "Confirmar rechazo"}
+            </CardTitle>
+            <CardDescription>
+              Solicitud {pendingReview.row.id} · {pendingReview.row.currency}{" "}
+              {pendingReview.row.requestedNetMinor} minor
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <textarea
+              value={reviewedNotes}
+              onChange={(e) => setReviewedNotes(e.target.value)}
+              rows={3}
+              maxLength={500}
+              className="min-h-20 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--primary)_20%,transparent)]"
+              placeholder="Nota visible en revisión operativa (opcional al aprobar)"
+              aria-label="Notas de revisión operativa"
+            />
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={busy}
+                onClick={() => {
+                  setPendingReview(null);
+                  setReviewedNotes("");
+                }}
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  if (pendingReview.action === "approve") {
+                    approveMut.mutate({
+                      row: pendingReview.row,
+                      reviewedNotes: reviewedNotes.trim() || undefined,
+                    });
+                  } else {
+                    rejectMut.mutate({
+                      row: pendingReview.row,
+                      reviewedNotes: reviewedNotes.trim() || undefined,
+                    });
+                  }
+                }}
+              >
+                Confirmar
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
     </div>
   );
 }

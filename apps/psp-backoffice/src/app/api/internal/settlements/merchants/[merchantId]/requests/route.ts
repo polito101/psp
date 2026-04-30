@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { SettlementRequestRow, SettlementRequestsListResponse } from "@/lib/api/contracts";
 import { mapProxyError, proxyInternalGet, proxyInternalPost } from "@/lib/server/backoffice-api";
 import { enforceInternalRouteAuth } from "@/lib/server/internal-route-auth";
+import { enforceInternalMutationRequest } from "@/lib/server/internal-mutation-guard";
 import { enforceMerchantScope } from "@/lib/server/internal-route-scope";
 
 type RouteContext = { params: Promise<{ merchantId: string }> };
@@ -41,6 +42,11 @@ export async function GET(request: NextRequest, context: RouteContext) {
 }
 
 export async function POST(request: NextRequest, context: RouteContext) {
+  const mutation = enforceInternalMutationRequest(request);
+  if (!mutation.ok) {
+    return mutation.response;
+  }
+
   const auth = await enforceInternalRouteAuth(request);
   if (!auth.ok) {
     return auth.response;

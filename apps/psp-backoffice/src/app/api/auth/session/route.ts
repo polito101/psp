@@ -11,6 +11,7 @@ import {
   validateAdminTokenForSession,
   validateMerchantPortalLogin,
 } from "@/lib/server/internal-route-auth";
+import { checkLoginRateLimit } from "@/lib/server/login-rate-limit";
 
 const COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 7;
 
@@ -37,6 +38,16 @@ function sessionCookieOptions() {
 }
 
 export async function POST(request: NextRequest) {
+  const forwardedFor = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  const rateLimitKey = forwardedFor || request.headers.get("x-real-ip") || "unknown";
+  const rateLimit = checkLoginRateLimit(rateLimitKey);
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      { message: "Too many login attempts" },
+      { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSec) } },
+    );
+  }
+
   let jwtSecret: string;
   try {
     jwtSecret = getSessionJwtSecret();

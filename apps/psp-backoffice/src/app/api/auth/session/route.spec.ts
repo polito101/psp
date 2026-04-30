@@ -4,11 +4,13 @@ import { NextRequest } from "next/server";
 import { jwtVerify } from "jose";
 import { POST } from "./route";
 import { BACKOFFICE_SESSION_COOKIE_NAME } from "@/lib/server/internal-route-auth";
+import { resetLoginRateLimitForTests } from "@/lib/server/login-rate-limit";
 
 describe("POST /api/auth/session", () => {
   const snapshot = { ...process.env };
 
   beforeEach(() => {
+    resetLoginRateLimitForTests();
     process.env = { ...snapshot };
     process.env.BACKOFFICE_SESSION_JWT_SECRET = "session-jwt-secret-dev-only-32b";
     process.env.BACKOFFICE_ADMIN_SECRET = "admin-secret";

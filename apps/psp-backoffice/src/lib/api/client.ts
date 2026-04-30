@@ -35,6 +35,12 @@ const internalBffInit: RequestInit = {
   cache: "no-store",
 };
 
+/** Cabeceras para mutaciones BFF (`POST`/`PATCH` bajo `/api/internal/*`). */
+const backofficeMutationHeaders = {
+  "Content-Type": "application/json",
+  "X-Backoffice-Mutation": "1",
+} satisfies HeadersInit;
+
 const BFF_CLIENT_TIMEOUT_MIN_MS = 10_000;
 const BFF_CLIENT_TIMEOUT_MAX_MS = 120_000;
 
@@ -470,7 +476,7 @@ export async function createSettlementRequest(
     {
       ...internalBffInit,
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: backofficeMutationHeaders,
       body: JSON.stringify({ notes: options.notes }),
     },
   );
@@ -498,7 +504,7 @@ export async function approveSettlementRequest(
   const response = await internalBffFetch(`/api/internal/settlements/requests/${encoded}/approve`, {
     ...internalBffInit,
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: backofficeMutationHeaders,
     body: JSON.stringify(body),
   });
   return parseResponse<SettlementRequestRow>(response);
@@ -512,7 +518,7 @@ export async function rejectSettlementRequest(
   const response = await internalBffFetch(`/api/internal/settlements/requests/${encoded}/reject`, {
     ...internalBffInit,
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: backofficeMutationHeaders,
     body: JSON.stringify(body),
   });
   return parseResponse<SettlementRequestRow>(response);
@@ -543,7 +549,7 @@ export async function patchMerchantOpsActive(
   const response = await internalBffFetch(`/api/internal/merchants/ops/${encoded}/active`, {
     ...internalBffInit,
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: backofficeMutationHeaders,
     body: JSON.stringify(body),
   });
   return parseResponse<MerchantsOpsMerchantSummary>(response);
@@ -581,7 +587,7 @@ export async function patchMerchantPaymentMethod(
     {
       ...internalBffInit,
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: backofficeMutationHeaders,
       body: JSON.stringify(body),
     },
   );
