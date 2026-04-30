@@ -3,6 +3,8 @@ import {
   isPaymentsV2OpsPath,
   mapProxyError,
   proxyInternalGet,
+  proxyPublicGet,
+  proxyPublicPost,
   ProxyUpstreamError,
   readResponseTextWithByteLimit,
   requiresBackofficeScopePath,
@@ -194,6 +196,112 @@ describe("proxyInternalGet RBAC", () => {
     const h = new Headers(init.headers as HeadersInit);
     expect(h.get("X-Backoffice-Role")).toBe("merchant");
     expect(h.get("X-Backoffice-Merchant-Id")).toBe("m1");
+  });
+});
+
+describe("public proxy helpers", () => {
+  const envSnapshot = { ...process.env };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    process.env = { ...envSnapshot };
+    process.env.PSP_API_BASE_URL = "http://localhost:3003";
+    process.env.PSP_INTERNAL_API_SECRET = "intsecret";
+  });
+
+  afterEach(() => {
+    process.env = { ...envSnapshot };
+    vi.restoreAllMocks();
+  });
+
+  it("proxyPublicGet uses manual redirects and does not send the internal secret", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await proxyPublicGet<{ ok: boolean }>({
+      path: "/api/v1/merchant-onboarding/tokens/tok_123",
+    });
+
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    const h = new Headers(init.headers as HeadersInit | undefined);
+    expect(init.redirect).toBe("manual");
+    expect(h.get("X-Internal-Secret")).toBeNull();
+  });
+
+  it("proxyPublicPost uses manual redirects and does not send the internal secret", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id: "app_123" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await proxyPublicPost<{ id: string }>({
+      path: "/api/v1/merchant-onboarding/tokens/tok_123/business-profile",
+      body: { tradeName: "Ada Shop" },
+    });
+
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    const h = new Headers(init.headers as HeadersInit);
+    expect(init.redirect).toBe("manual");
+    expect(h.get("X-Internal-Secret")).toBeNull();
+    expect(h.get("Content-Type")).toBe("application/json");
+  });
+
+  it("maps public proxy redirects to a safe browser response without leaking Location", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://evil.example/secret-token" },
+      }),
+    );
+
+    let captured: unknown;
+    try {
+      await proxyPublicGet({ path: "/api/v1/merchant-onboarding/tokens/tok_123" });
+    } catch (error) {
+      captured = error;
+    }
+
+    const res = mapProxyError(captured);
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { message: string };
+    expect(body.message).toBe("Upstream service unavailable");
+    expect(JSON.stringify(body)).not.toContain("evil.example");
+    expect(JSON.stringify(body)).not.toContain("secret-token");
+  });
+
+  it("maps public proxy upstream errors without echoing raw dangerous bodies", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ message: "database password=secret", tokenHash: "hash_123" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    let captured: unknown;
+    try {
+      await proxyPublicPost({
+        path: "/api/v1/merchant-onboarding/tokens/tok_123/business-profile",
+        body: { tradeName: "Ada Shop" },
+      });
+    } catch (error) {
+      captured = error;
+    }
+
+    const res = mapProxyError(captured);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { message: string; upstreamStatus?: number };
+    expect(body.message).toBe("Request rejected by upstream service");
+    expect(body.upstreamStatus).toBe(400);
+    expect(JSON.stringify(body)).not.toContain("password");
+    expect(JSON.stringify(body)).not.toContain("tokenHash");
   });
 });
 
