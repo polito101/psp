@@ -57,6 +57,17 @@ export function requiresBackofficeScopePath(path: string): boolean {
   );
 }
 
+/**
+ * Resuelve `PSP_API_BASE_URL`. Fuera de `NODE_ENV=development` es obligatorio configurarlo;
+ * en desarrollo local puede omitirse y usar `http://localhost:3000`.
+ */
+function getApiBaseUrlRaw(): string {
+  const configured = process.env.PSP_API_BASE_URL?.trim();
+  if (configured) return configured;
+  if (process.env.NODE_ENV === "development") return DEFAULT_API_BASE_URL;
+  throw new Error("Missing PSP_API_BASE_URL in backoffice environment");
+}
+
 function validateAndNormalizeApiOrigin(rawBaseUrl: string): string {
   let parsedBaseUrl: URL;
   try {
@@ -85,8 +96,7 @@ function validateAndNormalizeApiOrigin(rawBaseUrl: string): string {
 }
 
 function getServerConfig() {
-  const apiBaseUrlRaw = process.env.PSP_API_BASE_URL ?? DEFAULT_API_BASE_URL;
-  const apiBaseOrigin = validateAndNormalizeApiOrigin(apiBaseUrlRaw);
+  const apiBaseOrigin = validateAndNormalizeApiOrigin(getApiBaseUrlRaw());
   const internalSecret = process.env.PSP_INTERNAL_API_SECRET;
 
   if (!internalSecret) {
@@ -384,8 +394,13 @@ export async function proxyInternalPatch<T>(options: ProxyWriteOptions): Promise
   return (await response.json()) as T;
 }
 
-/** Tamaño máximo de texto plano cuando el upstream no devuelve JSON válido (evita respuestas enormes). */
-const PROXY_UPSTREAM_MESSAGE_MAX = 500;
+function safeUpstreamClientMessage(status: number): string {
+  if (status === 401 || status === 403) return "Forbidden";
+  if (status === 404) return "Resource not found";
+  if (status === 409) return "Request conflicts with current resource state";
+  if (status === 429) return "Too many requests";
+  return "Request rejected by upstream service";
+}
 
 export function mapProxyError(error: unknown): NextResponse {
   if (error instanceof ProxyUpstreamError) {
@@ -397,16 +412,13 @@ export function mapProxyError(error: unknown): NextResponse {
       bodyPreview: sanitizeSingleLinePreview(error.bodyText, PROXY_UPSTREAM_LOG_PREVIEW_MAX_CHARS),
     });
 
-    const { upstreamStatus, bodyText } = error;
+    const { upstreamStatus } = error;
 
     if (upstreamStatus >= 400 && upstreamStatus < 500) {
-      try {
-        const parsed = JSON.parse(bodyText) as unknown;
-        return NextResponse.json(parsed, { status: upstreamStatus });
-      } catch {
-        const message = bodyText.trim().slice(0, PROXY_UPSTREAM_MESSAGE_MAX);
-        return NextResponse.json({ message }, { status: upstreamStatus });
-      }
+      return NextResponse.json(
+        { message: safeUpstreamClientMessage(upstreamStatus), upstreamStatus },
+        { status: upstreamStatus },
+      );
     }
 
     return NextResponse.json({ message: "Upstream service unavailable" }, { status: 502 });

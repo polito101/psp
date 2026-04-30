@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { MerchantsOpsMerchantSummary } from "@/lib/api/contracts";
 import { mapProxyError, proxyInternalPatch } from "@/lib/server/backoffice-api";
 import { enforceInternalRouteAuth } from "@/lib/server/internal-route-auth";
+import { enforceInternalMutationRequest } from "@/lib/server/internal-mutation-guard";
 import { requireAdminClaims } from "@/lib/server/internal-route-scope";
 
 type RouteContext = { params: Promise<{ merchantId: string }> };
@@ -12,6 +13,11 @@ const bodySchema = z.object({
 });
 
 export async function PATCH(request: NextRequest, context: RouteContext) {
+  const mutation = enforceInternalMutationRequest(request);
+  if (!mutation.ok) {
+    return mutation.response;
+  }
+
   const auth = await enforceInternalRouteAuth(request);
   if (!auth.ok) {
     return auth.response;

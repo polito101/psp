@@ -47,6 +47,7 @@ import {
   type TransactionTableRow,
 } from "@/lib/ops-transaction-display";
 import { cn } from "@/lib/utils";
+import { buildCsvDocument } from "./transactions-export";
 import { StatusBadge } from "./status-badge";
 import { VisaMark } from "./visa-mark";
 
@@ -261,21 +262,6 @@ function applyClientRowFilters(rows: TransactionTableRow[], f: AdvancedFilters):
   });
 }
 
-/** Carácter significativo tras espacios iniciales que Excel/Sheets tratan como inicio de fórmula en CSV. */
-const CSV_FORMULA_TRIGGER = /^\s*[=+\-@]/;
-
-/**
- * Evita CSV injection (fórmulas al abrir en Excel/Sheets) y escapa comillas dobles para el formato RFC 4180.
- *
- * @param value Valor bruto de celda antes de envolver en comillas.
- * @returns Texto seguro para interpolar dentro de `"..."` en una línea CSV.
- */
-function sanitizeCsvCell(value: unknown): string {
-  const raw = value === null || value === undefined ? "" : String(value);
-  const neutralized = CSV_FORMULA_TRIGGER.test(raw) ? `'${raw}` : raw;
-  return neutralized.replaceAll('"', '""');
-}
-
 function exportCsv(rows: TransactionTableRow[]) {
   const headers = [
     "ID",
@@ -288,22 +274,18 @@ function exportCsv(rows: TransactionTableRow[]) {
     "Fecha de reembolso",
     "Motivo",
   ];
-  const lines = rows.map((row) =>
-    [
-      row.id,
-      formatAmountMinor(row.amountMinor, row.currency),
-      STATUS_LABELS_ES[row.status],
-      row.paymentMethodLast4 ? `•••• ${row.paymentMethodLast4}` : "—",
-      row.description || "",
-      row.customer ?? "—",
-      formatShortDateTime(row.createdAt),
-      row.refundedAt ? formatShortDateTime(row.refundedAt) : "—",
-      row.reasonLabel ?? "—",
-    ]
-      .map((cell) => `"${sanitizeCsvCell(cell)}"`)
-      .join(","),
-  );
-  const csv = [headers.map((h) => `"${sanitizeCsvCell(h)}"`).join(","), ...lines].join("\n");
+  const dataRows = rows.map((row) => [
+    row.id,
+    formatAmountMinor(row.amountMinor, row.currency),
+    STATUS_LABELS_ES[row.status],
+    row.paymentMethodLast4 ? `•••• ${row.paymentMethodLast4}` : "—",
+    row.description || "",
+    row.customer ?? "—",
+    formatShortDateTime(row.createdAt),
+    row.refundedAt ? formatShortDateTime(row.refundedAt) : "—",
+    row.reasonLabel ?? "—",
+  ]);
+  const csv = buildCsvDocument(headers, dataRows);
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");

@@ -87,7 +87,7 @@ export default function LoginPage() {
             <div className="relative h-9 w-28">
               <Image
                 src="/finara-logo.png"
-                alt="Finara"
+                alt="PSP Backoffice"
                 fill
                 sizes="112px"
                 className="object-contain object-left"
@@ -110,13 +110,13 @@ export default function LoginPage() {
 
         {/* Main content: 2-column on desktop */}
         <div className="grid flex-1 items-center gap-10 py-10 lg:grid-cols-[1.1fr_minmax(0,1fr)] lg:gap-16 lg:py-16">
-          {/* Left: hero with Finara logo */}
+          {/* Left: hero with logo */}
           <section className="hidden flex-col justify-center lg:flex">
             <div className="relative w-full max-w-lg">
               <div className="relative h-44 w-full">
                 <Image
                   src="/finara-logo.png"
-                  alt="Finara"
+                  alt="PSP Backoffice"
                   fill
                   sizes="(min-width: 1024px) 520px, 100vw"
                   className="object-contain object-left drop-shadow-[0_8px_40px_rgba(217,70,239,0.35)]"
@@ -132,7 +132,7 @@ export default function LoginPage() {
             <h1 className="mt-10 text-balance text-4xl font-semibold leading-tight tracking-tight text-white">
               Bienvenido a{" "}
               <span className="bg-gradient-to-r from-cyan-300 via-fuchsia-300 to-orange-300 bg-clip-text text-transparent">
-                Finara
+                PSP Backoffice
               </span>
             </h1>
             <p className="mt-3 max-w-md text-pretty text-base leading-relaxed text-slate-300">
@@ -172,7 +172,7 @@ export default function LoginPage() {
               <div className="relative h-14 w-44">
                 <Image
                   src="/finara-logo.png"
-                  alt="Finara"
+                  alt="PSP Backoffice"
                   fill
                   sizes="176px"
                   className="object-contain drop-shadow-[0_4px_24px_rgba(217,70,239,0.35)]"
@@ -388,7 +388,7 @@ export default function LoginPage() {
               <span suppressHydrationWarning>
                 {new Date().getUTCFullYear()}
               </span>{" "}
-              Finara · PSP Backoffice
+              PSP Backoffice
             </p>
           </section>
         </div>
