@@ -239,3 +239,56 @@ describe('validateEnv PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS', () => {
     expect(out.PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS).toBe('true');
   });
 });
+
+describe('validateEnv merchant onboarding', () => {
+  const minimalEnv = (): Record<string, string> => ({
+    DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
+    INTERNAL_API_SECRET: 'internal-secret',
+    APP_ENCRYPTION_KEY: '01234567890123456789012345678901',
+    NODE_ENV: 'development',
+  });
+
+  it('normaliza onboarding base URL al origin', () => {
+    const out = validateEnv({
+      ...minimalEnv(),
+      MERCHANT_ONBOARDING_BASE_URL: 'https://backoffice.example.com/onboarding',
+    });
+
+    expect(out.MERCHANT_ONBOARDING_BASE_URL).toBe('https://backoffice.example.com');
+  });
+
+  it('acepta el default localhost en NODE_ENV=test', () => {
+    const out = validateEnv({
+      ...minimalEnv(),
+      NODE_ENV: 'test',
+      PAYMENTS_PROVIDER_ORDER: 'acme',
+    });
+
+    expect(out.MERCHANT_ONBOARDING_BASE_URL).toBe('http://localhost:3005');
+  });
+
+  it('rechaza onboarding base URL con userinfo', () => {
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        MERCHANT_ONBOARDING_BASE_URL: 'https://user:pass@backoffice.example.com',
+      }),
+    ).toThrow(/must not include userinfo/);
+  });
+
+  it('rechaza onboarding base URL con query o hash', () => {
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        MERCHANT_ONBOARDING_BASE_URL: 'https://backoffice.example.com?token=secret',
+      }),
+    ).toThrow(/must not include query or hash/);
+
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        MERCHANT_ONBOARDING_BASE_URL: 'https://backoffice.example.com#secret',
+      }),
+    ).toThrow(/must not include query or hash/);
+  });
+});

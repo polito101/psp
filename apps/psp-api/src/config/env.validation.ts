@@ -125,8 +125,10 @@ export function validateEnv(input: EnvInput): EnvInput {
   env.ONBOARDING_EMAIL_FROM = getString(env.ONBOARDING_EMAIL_FROM) ?? '';
   const merchantOnboardingBaseUrl =
     getString(env.MERCHANT_ONBOARDING_BASE_URL) ?? 'http://localhost:3005';
-  validateMerchantOnboardingBaseUrl(merchantOnboardingBaseUrl, nodeEnv);
-  env.MERCHANT_ONBOARDING_BASE_URL = merchantOnboardingBaseUrl;
+  env.MERCHANT_ONBOARDING_BASE_URL = normalizeMerchantOnboardingBaseUrl(
+    merchantOnboardingBaseUrl,
+    nodeEnv,
+  );
   env.MERCHANT_ONBOARDING_TOKEN_TTL_HOURS = String(
     parseIntegerRange(
       getString(env.MERCHANT_ONBOARDING_TOKEN_TTL_HOURS),
@@ -395,10 +397,10 @@ function getString(value: unknown): string | undefined {
 }
 
 /**
- * Valida que el link público de onboarding apunte a un origen desplegado seguro,
- * manteniendo `localhost` para desarrollo local.
+ * Normaliza la URL pública de onboarding a su origin, evitando credenciales
+ * embebidas o componentes que puedan mezclarse con tokens del flujo.
  */
-function validateMerchantOnboardingBaseUrl(value: string, nodeEnv: string): void {
+function normalizeMerchantOnboardingBaseUrl(value: string, nodeEnv: string): string {
   let url: URL;
   try {
     url = new URL(value);
@@ -406,16 +408,25 @@ function validateMerchantOnboardingBaseUrl(value: string, nodeEnv: string): void
     throw new Error('MERCHANT_ONBOARDING_BASE_URL must be an absolute URL');
   }
 
-  if (url.protocol === 'https:') {
-    return;
+  if (url.username !== '' || url.password !== '') {
+    throw new Error('MERCHANT_ONBOARDING_BASE_URL must not include userinfo');
   }
 
-  if (nodeEnv === 'development' && url.protocol === 'http:' && url.hostname === 'localhost') {
-    return;
+  if (url.search !== '' || url.hash !== '') {
+    throw new Error('MERCHANT_ONBOARDING_BASE_URL must not include query or hash');
+  }
+
+  if (url.protocol === 'https:') {
+    return url.origin;
+  }
+
+  const allowsLocalhostHttp = nodeEnv === 'development' || nodeEnv === 'test';
+  if (allowsLocalhostHttp && url.protocol === 'http:' && url.hostname === 'localhost') {
+    return url.origin;
   }
 
   throw new Error(
-    'MERCHANT_ONBOARDING_BASE_URL must use https (http://localhost is allowed in development)',
+    'MERCHANT_ONBOARDING_BASE_URL must use https (http://localhost is allowed in development and test)',
   );
 }
 

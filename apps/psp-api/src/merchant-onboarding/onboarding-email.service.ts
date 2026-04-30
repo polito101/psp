@@ -47,10 +47,9 @@ export class OnboardingEmailService {
     });
 
     if (!response.ok) {
-      const preview = (await response.text()).slice(0, 200);
-      this.logger.warn(
-        `merchant_onboarding.email_failed status=${response.status} body=${preview}`,
-      );
+      const requestId = response.headers.get('x-request-id');
+      const requestIdSuffix = requestId ? ` request_id=${requestId}` : '';
+      this.logger.warn(`merchant_onboarding.email_failed status=${response.status}${requestIdSuffix}`);
       return { ok: false, errorMessage: `Resend responded ${response.status}` };
     }
 
