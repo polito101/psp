@@ -39,29 +39,62 @@ export function normalizeClientIp(raw: string): string | null {
 type NextRequestWithIp = NextRequest & { ip?: string };
 
 /**
+ * Recorre segmentos separados por comas (orden típico cliente → proxies) y devuelve
+ * la primera IP normalizable. Evita descartar cabeceras cuando solo el primer hop es inválido.
+ */
+function firstValidIpFromForwardedList(headerValue: string | null): string | null {
+  if (!headerValue) return null;
+  for (const segment of headerValue.split(",")) {
+    const normalized = normalizeClientIp(segment);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+/**
+ * Clave de rate limit cuando no hay IP cliente normalizable. Agrupa intentos sin IP
+ * resoluble (no es una IP real); evita bypass del límite por cabeceras inválidas o vacías.
+ * No sustituye WAF/edge; en multi-instancia el bucket es local al proceso.
+ */
+export const LOGIN_RATE_LIMIT_UNRESOLVED_KEY = "__psp_bo_login_rl_unresolved__";
+
+/**
  * Resuelve la IP del cliente para rate limit best-effort.
- * Prioriza valores típicamente establecidos por el runtime/plataforma sobre `X-Forwarded-For`.
- * Si no hay ninguna IP válida, devuelve `null` (no usar una clave global compartida).
+ * Prioriza valores típicamente establecidos por el runtime/plataforma; en `X-Forwarded-For` y
+ * `X-Vercel-Forwarded-For` se consideran **todos** los hops, no solo el primero.
+ * Si no hay ninguna IP válida, devuelve `null` (usar `resolveLoginRateLimitKey` para no saltar el RL).
  */
 export function resolveLoginRateLimitClientIp(request: NextRequest): string | null {
   const req = request as NextRequestWithIp;
-  const candidates: string[] = [];
-
-  if (typeof req.ip === "string") candidates.push(req.ip);
-
-  const vercelIp = request.headers.get("x-vercel-forwarded-for")?.split(",")[0]?.trim();
-  if (vercelIp) candidates.push(vercelIp);
-
-  const realIp = request.headers.get("x-real-ip")?.trim();
-  if (realIp) candidates.push(realIp);
-
-  const xff = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  if (xff) candidates.push(xff);
-
-  for (const c of candidates) {
-    const normalized = normalizeClientIp(c);
-    if (normalized) return normalized;
+  if (typeof req.ip === "string") {
+    const n = normalizeClientIp(req.ip);
+    if (n) return n;
   }
 
-  return null;
+  const fromVercel = firstValidIpFromForwardedList(
+    request.headers.get("x-vercel-forwarded-for"),
+  );
+  if (fromVercel) return fromVercel;
+
+  const realIp = request.headers.get("x-real-ip");
+  if (realIp) {
+    const n = normalizeClientIp(realIp);
+    if (n) return n;
+  }
+
+  const cfIp = request.headers.get("cf-connecting-ip");
+  if (cfIp) {
+    const n = normalizeClientIp(cfIp);
+    if (n) return n;
+  }
+
+  return firstValidIpFromForwardedList(request.headers.get("x-forwarded-for"));
+}
+
+/**
+ * Clave estable para `checkLoginRateLimit`: IP normalizada o `LOGIN_RATE_LIMIT_UNRESOLVED_KEY`
+ * si no se pudo resolver ninguna (siempre aplica throttling en `POST /api/auth/session`).
+ */
+export function resolveLoginRateLimitKey(request: NextRequest): string {
+  return resolveLoginRateLimitClientIp(request) ?? LOGIN_RATE_LIMIT_UNRESOLVED_KEY;
 }

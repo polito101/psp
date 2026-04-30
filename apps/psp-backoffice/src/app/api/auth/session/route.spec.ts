@@ -64,17 +64,26 @@ describe("POST /api/auth/session (admin portal)", () => {
     expect(res.status).toBe(404);
   });
 
-  it("does not apply shared rate limit when no client IP can be resolved", async () => {
-    for (let i = 0; i < 12; i += 1) {
+  it("returns 429 after too many login attempts when no client IP is resolvable (shared key)", async () => {
+    const body = JSON.stringify({ mode: "admin", token: "admin-secret" });
+    for (let i = 0; i < 10; i += 1) {
       const res = await POST(
         new NextRequest("http://localhost:3005/api/auth/session", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mode: "admin", token: "admin-secret" }),
+          body,
         }),
       );
       expect(res.status).toBe(200);
     }
+    const resBlocked = await POST(
+      new NextRequest("http://localhost:3005/api/auth/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      }),
+    );
+    expect(resBlocked.status).toBe(429);
   });
 
   it("returns 429 after too many login attempts from the same resolved IP", async () => {
