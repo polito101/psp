@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import type { MerchantOnboardingTokenResponse } from "@/lib/api/contracts";
 import { Button } from "@/components/ui/button";
@@ -25,11 +25,15 @@ const invalidTokenStatuses = new Set([400, 401, 403, 404, 410]);
 export function MerchantOnboardingForm({ token }: MerchantOnboardingFormProps) {
   const [tokenState, setTokenState] = useState<TokenState>({ status: "loading" });
   const [submitState, setSubmitState] = useState<SubmitState>("idle");
+  const submitAbortRef = useRef<AbortController | null>(null);
 
   const encodedToken = useMemo(() => encodeURIComponent(token), [token]);
 
   useEffect(() => {
     const controller = new AbortController();
+    setSubmitState("idle");
+    submitAbortRef.current?.abort();
+    submitAbortRef.current = null;
 
     async function validateToken() {
       setTokenState({ status: "loading" });
@@ -59,6 +63,8 @@ export function MerchantOnboardingForm({ token }: MerchantOnboardingFormProps) {
 
     return () => {
       controller.abort();
+      submitAbortRef.current?.abort();
+      submitAbortRef.current = null;
     };
   }, [encodedToken]);
 
@@ -79,12 +85,21 @@ export function MerchantOnboardingForm({ token }: MerchantOnboardingFormProps) {
     };
 
     setSubmitState("submitting");
+    submitAbortRef.current?.abort();
+    const submitController = new AbortController();
+    submitAbortRef.current = submitController;
+
     try {
       const response = await fetch(`/api/public/onboarding/${encodedToken}/business-profile`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal: submitController.signal,
       });
+
+      if (submitAbortRef.current !== submitController) {
+        return;
+      }
 
       if (!response.ok) {
         setSubmitState("error");
@@ -92,8 +107,15 @@ export function MerchantOnboardingForm({ token }: MerchantOnboardingFormProps) {
       }
 
       setSubmitState("success");
-    } catch {
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
       setSubmitState("error");
+    } finally {
+      if (submitAbortRef.current === submitController) {
+        submitAbortRef.current = null;
+      }
     }
   }
 

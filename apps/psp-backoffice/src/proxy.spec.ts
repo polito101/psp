@@ -160,6 +160,12 @@ describe("proxy (admin portal)", () => {
     expect(res?.status).toBe(200);
   });
 
+  it("allows public onboarding pages without session", async () => {
+    const req = new NextRequest(new URL("http://localhost:3005/onboarding/tok_123"));
+    const res = await proxy(req);
+    expect(res?.status).toBe(200);
+  });
+
   it("redirects authenticated admin away from /admin/login", async () => {
     const jwt = await signSession({ sub: "a", role: "admin" }, process.env.BACKOFFICE_SESSION_JWT_SECRET!);
     const req = new NextRequest(new URL("http://localhost:3005/admin/login"));
