@@ -141,6 +141,55 @@ export function computeLoginRateLimitKeyWithoutClientIp(
 }
 
 /**
+ * Nombres de cabeceras de IP de cliente presentes en la petición pero **no** utilizadas por la
+ * política de confianza actual (solo nombres; no valores, para evitar filtrar IPs en logs).
+ */
+function collectIgnoredProxyClientIpHeaderNames(request: NextRequest): string[] {
+  const names: string[] = [];
+  if (!trustProxyForwardedClientHeaders()) {
+    if (request.headers.get("x-forwarded-for")) names.push("x-forwarded-for");
+    if (request.headers.get("x-real-ip")) names.push("x-real-ip");
+  }
+  if (!trustVercelForwardedForHeader() && request.headers.get("x-vercel-forwarded-for")) {
+    names.push("x-vercel-forwarded-for");
+  }
+  if (!trustCfConnectingIpHeader() && request.headers.get("cf-connecting-ip")) {
+    names.push("cf-connecting-ip");
+  }
+  return [...new Set(names)];
+}
+
+/** Evita spam en logs bajo tráfico repetido; una línea ~por minuto por proceso. */
+const LOGIN_RL_IGNORED_PROXY_HEADERS_LOG_COOLDOWN_MS = 60_000;
+let lastLoginRlIgnoredProxyHeadersLogAt = 0;
+
+function logIgnoredProxyClientIpHeaders(headerNames: string[]): void {
+  if (headerNames.length === 0) return;
+  const now = Date.now();
+  if (now - lastLoginRlIgnoredProxyHeadersLogAt < LOGIN_RL_IGNORED_PROXY_HEADERS_LOG_COOLDOWN_MS) {
+    return;
+  }
+  lastLoginRlIgnoredProxyHeadersLogAt = now;
+  const sorted = [...headerNames].sort();
+  console.warn(
+    `[psp-backoffice] login rate limit: client IP unresolved; ignoring incoming proxy/platform IP headers (${sorted.join(", ")}) because trust flags are off. Behind a trusted reverse proxy, set TRUST_X_FORWARDED_FOR=true for X-Forwarded-For/X-Real-IP; on Vercel/Cloudflare use their runtime or TRUST_PLATFORM_IP_HEADERS / TRUST_VERCEL_IP_HEADERS / TRUST_CLOUDFLARE_IP_HEADERS.`,
+  );
+}
+
+/** Evita spam en logs bajo tráfico repetido; una línea ~por minuto por proceso. */
+const LOGIN_RL_SENTINEL_LOG_COOLDOWN_MS = 60_000;
+let lastLoginRlSentinelLogAt = 0;
+
+function logLoginRateLimitSentinelNoFingerprint(): void {
+  const now = Date.now();
+  if (now - lastLoginRlSentinelLogAt < LOGIN_RL_SENTINEL_LOG_COOLDOWN_MS) return;
+  lastLoginRlSentinelLogAt = now;
+  console.warn(
+    "[psp-backoffice] login rate limit: client IP unresolved and no User-Agent/Accept-Language; using global unresolved bucket (TRUST_X_FORWARDED_FOR=true only behind a trusted proxy for XFF/X-Real-IP; TRUST_PLATFORM_IP_HEADERS / TRUST_VERCEL_IP_HEADERS / TRUST_CLOUDFLARE_IP_HEADERS or deploy on Vercel/CF Pages for platform client-IP headers)",
+  );
+}
+
+/**
  * Resuelve la IP del cliente para rate limit best-effort.
  *
  * Orden: `request.ip`; si hay confianza en cabeceras Vercel (runtime `VERCEL=1` o
@@ -154,6 +203,9 @@ export function computeLoginRateLimitKeyWithoutClientIp(
  * acotadas a señales de runtime u opt-in explícito (igual que XFF con `TRUST_X_FORWARDED_FOR`).
  *
  * Si no hay ninguna IP válida, devuelve `null` (usar `resolveLoginRateLimitKey` para no saltar el RL).
+ * Si en esa situación la petición trae `x-forwarded-for` / `x-real-ip` o cabeceras de plataforma
+ * no confiables, se emite un `console.warn` throttled (~1 min) con **solo nombres** de cabecera
+ * (no valores), para detectar despliegue detrás de proxy sin `TRUST_*` configurado.
  */
 export function resolveLoginRateLimitClientIp(request: NextRequest): string | null {
   const req = request as NextRequestWithIp;
@@ -190,6 +242,7 @@ export function resolveLoginRateLimitClientIp(request: NextRequest): string | nu
     return firstValidIpFromForwardedList(request.headers.get("x-forwarded-for"));
   }
 
+  logIgnoredProxyClientIpHeaders(collectIgnoredProxyClientIpHeaderNames(request));
   return null;
 }
 
@@ -213,17 +266,4 @@ export function resolveLoginRateLimitKey(request: NextRequest): string[] {
   }
 
   return [key, LOGIN_RATE_LIMIT_UNRESOLVED_KEY];
-}
-
-/** Evita spam en logs bajo tráfico repetido; una línea ~por minuto por proceso. */
-const LOGIN_RL_SENTINEL_LOG_COOLDOWN_MS = 60_000;
-let lastLoginRlSentinelLogAt = 0;
-
-function logLoginRateLimitSentinelNoFingerprint(): void {
-  const now = Date.now();
-  if (now - lastLoginRlSentinelLogAt < LOGIN_RL_SENTINEL_LOG_COOLDOWN_MS) return;
-  lastLoginRlSentinelLogAt = now;
-  console.warn(
-    "[psp-backoffice] login rate limit: client IP unresolved and no User-Agent/Accept-Language; using global unresolved bucket (TRUST_X_FORWARDED_FOR=true only behind a trusted proxy for XFF/X-Real-IP; TRUST_PLATFORM_IP_HEADERS / TRUST_VERCEL_IP_HEADERS / TRUST_CLOUDFLARE_IP_HEADERS or deploy on Vercel/CF Pages for platform client-IP headers)",
-  );
 }

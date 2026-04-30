@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { NextRequest } from "next/server";
 import {
   normalizeClientIp,
@@ -43,10 +43,12 @@ describe("resolveLoginRateLimitClientIp", () => {
   beforeEach(() => {
     process.env = { ...snapshot };
     clearLoginRlIpEnv();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
   afterEach(() => {
     process.env = { ...snapshot };
+    vi.restoreAllMocks();
   });
 
   it("ignores x-forwarded-for when TRUST_X_FORWARDED_FOR is not set (anti-spoof)", () => {
@@ -178,10 +180,12 @@ describe("resolveLoginRateLimitKey", () => {
   beforeEach(() => {
     process.env = { ...snapshot };
     clearLoginRlIpEnv();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
   afterEach(() => {
     process.env = { ...snapshot };
+    vi.restoreAllMocks();
   });
 
   it("uses unresolved sentinel when no IP and no fingerprint headers", () => {
@@ -258,5 +262,101 @@ describe("computeLoginRateLimitKeyWithoutClientIp", () => {
     const a = computeLoginRateLimitKeyWithoutClientIp(null, "en-US");
     const b = computeLoginRateLimitKeyWithoutClientIp(null, "es-ES");
     expect(a).not.toBe(b);
+  });
+});
+
+/**
+ * Va al final del archivo: `vi.resetModules()` invalida el caché del módulo y estos tests usan
+ * `import()` dinámico para estado fresco (cooldown de logs entre tests).
+ */
+describe("ignored proxy header warnings (client-ip)", () => {
+  const snapshot = { ...process.env };
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.env = { ...snapshot };
+    clearLoginRlIpEnv();
+  });
+
+  afterEach(() => {
+    process.env = { ...snapshot };
+  });
+
+  it("warns once when x-forwarded-for is present but TRUST is off", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { resolveLoginRateLimitClientIp } = await import("./client-ip");
+    const req = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({ "x-forwarded-for": "198.51.100.99" }),
+    });
+    expect(resolveLoginRateLimitClientIp(req)).toBeNull();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0][0])).toContain("x-forwarded-for");
+    expect(String(warnSpy.mock.calls[0][0])).toContain("TRUST_X_FORWARDED_FOR");
+    warnSpy.mockRestore();
+  });
+
+  it("includes x-real-ip in the message when both XFF headers are present without TRUST", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { resolveLoginRateLimitClientIp } = await import("./client-ip");
+    const req = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({
+        "x-forwarded-for": "198.51.100.1",
+        "x-real-ip": "198.51.100.2",
+      }),
+    });
+    resolveLoginRateLimitClientIp(req);
+    const msg = String(warnSpy.mock.calls[0][0]);
+    expect(msg).toContain("x-forwarded-for");
+    expect(msg).toContain("x-real-ip");
+    warnSpy.mockRestore();
+  });
+
+  it("warns for ignored platform headers without runtime/opt-in", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { resolveLoginRateLimitClientIp } = await import("./client-ip");
+    const req = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({
+        "x-vercel-forwarded-for": "203.0.113.20",
+        "cf-connecting-ip": "203.0.113.30",
+      }),
+    });
+    resolveLoginRateLimitClientIp(req);
+    const msg = String(warnSpy.mock.calls[0][0]);
+    expect(msg).toContain("x-vercel-forwarded-for");
+    expect(msg).toContain("cf-connecting-ip");
+    warnSpy.mockRestore();
+  });
+
+  it("does not warn when no proxy/platform IP headers are present", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { resolveLoginRateLimitClientIp } = await import("./client-ip");
+    const req = new NextRequest("http://localhost/api/auth/session");
+    expect(resolveLoginRateLimitClientIp(req)).toBeNull();
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it("does not warn when TRUST reads x-forwarded-for but no segment is a valid IP", async () => {
+    process.env.TRUST_X_FORWARDED_FOR = "true";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { resolveLoginRateLimitClientIp } = await import("./client-ip");
+    const req = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({ "x-forwarded-for": "not-an-ip, also-bogus" }),
+    });
+    expect(resolveLoginRateLimitClientIp(req)).toBeNull();
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it("throttles repeated ignored-header warnings within the cooldown window", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { resolveLoginRateLimitClientIp } = await import("./client-ip");
+    const req = new NextRequest("http://localhost/api/auth/session", {
+      headers: new Headers({ "x-forwarded-for": "198.51.100.99" }),
+    });
+    resolveLoginRateLimitClientIp(req);
+    resolveLoginRateLimitClientIp(req);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
   });
 });
