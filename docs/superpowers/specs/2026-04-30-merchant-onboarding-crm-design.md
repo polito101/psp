@@ -91,6 +91,15 @@ Estados iniciales:
 - `rejected`
 - `active`
 
+Transiciones iniciales:
+
+1. `account_created`: se crea el merchant inactivo y el expediente.
+2. `documentation_pending`: se genera el link de onboarding y queda pendiente el formulario de negocio.
+3. `in_review`: el merchant completa los datos del link.
+4. `approved`: un admin aprueba el expediente dentro de la transacción de activación.
+5. `active`: el merchant queda activado.
+6. `rejected`: un admin rechaza el expediente y el merchant permanece inactivo.
+
 ### MerchantOnboardingChecklistItem
 
 Checklist visible en CRM para saber qué falta o qué ya ocurrió.
@@ -214,7 +223,7 @@ Al enviar, el backoffice llama a la API para guardar esos datos y mover el exped
 
 Se añade una sección CRM al portal admin de `apps/psp-backoffice`.
 
-Rutas propuestas:
+Rutas admin:
 
 - `/crm/onboarding`
 - `/crm/onboarding/[applicationId]`
@@ -260,14 +269,14 @@ El rechazo debe:
 1. Marcar expediente como `rejected`.
 2. Guardar `rejectionReason`.
 3. Mantener `Merchant.active=false`.
-4. Marcar checklist `approval_decision` como completado o bloqueado, según implementación.
+4. Marcar checklist `approval_decision` como `blocked`.
 5. Registrar `application_rejected`.
 
 ## API Y BFF
 
 ### Endpoints Públicos
 
-Endpoints candidatos en `psp-api`:
+Endpoints públicos en `psp-api`:
 
 - `POST /api/v1/merchant-onboarding/applications`
 - `GET /api/v1/merchant-onboarding/tokens/:token`
@@ -277,7 +286,7 @@ Estos endpoints no usan sesión backoffice. Deben tener validación DTO, rate li
 
 ### Endpoints Internos Admin
 
-Endpoints candidatos:
+Endpoints internos admin:
 
 - `GET /api/v1/merchant-onboarding/ops/applications`
 - `GET /api/v1/merchant-onboarding/ops/applications/:applicationId`
@@ -289,7 +298,7 @@ Estos endpoints se protegen con `InternalSecretGuard`. El BFF del backoffice añ
 
 ### BFF Backoffice
 
-Rutas candidatas en `apps/psp-backoffice`:
+Rutas BFF en `apps/psp-backoffice`:
 
 - `GET /api/public/onboarding/[token]`
 - `POST /api/public/onboarding/[token]/business-profile`
@@ -311,7 +320,7 @@ Las rutas públicas no requieren cookie de sesión. Las rutas internas siguen el
 
 `psp-api` añade un servicio de email con interfaz interna para no acoplar el caso de uso a Resend directamente.
 
-Variables de entorno candidatas:
+Variables de entorno:
 
 - `RESEND_API_KEY`
 - `ONBOARDING_EMAIL_FROM`
@@ -390,9 +399,10 @@ Documentación viva:
 - Al rechazar, el merchant permanece inactivo.
 - Checklist e historial existen desde el primer expediente.
 
-## Preguntas Pendientes Para Implementación
+## Decisiones Cerradas Para Implementación
 
-- Nombre final de rutas públicas: `/merchant-signup` y `/onboarding/[token]` quedan como propuesta.
-- Tiempo exacto de expiración del token: recomendado 7 días.
-- Política ante email duplicado: recomendado mensaje neutro y no revelar si ya existe.
-- Template exacto del email de Resend: puede definirse en implementación con copy simple.
+- La ruta pública de captación en `apps/web-finara` será `/merchant-signup`.
+- La ruta pública de onboarding en `apps/psp-backoffice` será `/onboarding/[token]`.
+- La expiración inicial del token será de 7 días, configurable por `MERCHANT_ONBOARDING_TOKEN_TTL_HOURS`.
+- Ante email duplicado, la respuesta pública será neutra y no revelará si ya existe una solicitud o merchant.
+- El email de Resend usará un template simple en texto/HTML con saludo, explicación breve y botón/enlace de onboarding.
