@@ -1,10 +1,10 @@
-# Render Blueprint: psp-api (Docker) + psp-backoffice (Node) + Postgres + Key-Value (Redis/Valkey).
+# Render Blueprint: psp-api (Docker) + web-finara + psp-backoffice (Node) + Postgres + Key-Value (Redis/Valkey).
 # Aplicar: https://dashboard.render.com/blueprint/new
 #
 # Migraciones: el Dockerfile de psp-api ejecuta `prisma migrate deploy` en el entrypoint antes de `node dist/main`.
 #
-# Ajusta las URLs https://psp-api.onrender.com y https://psp-backoffice.onrender.com si Render
-# te asigna otro dominio al crear el Blueprint (nombre de servicio ocupado globalmente).
+# Ajusta las URLs públicas (psp-api, web-finara, psp-backoffice) si Render te asigna otro dominio
+# al crear el Blueprint (nombre de servicio ocupado globalmente).
 
 services:
   - type: keyvalue
@@ -50,9 +50,25 @@ services:
         value: "*"
       - key: ENABLE_SWAGGER
         value: "false"
-      # Origen del panel (ajústalo si tu dominio público del backoffice cambia).
+      # Orígenes del panel y sitio marketing (ajústalos si cambian los dominios en Render).
       - key: CORS_ALLOWED_ORIGINS
-        value: https://psp-backoffice.onrender.com
+        value: https://psp-backoffice.onrender.com,https://web-finara.onrender.com
+
+  - type: web
+    name: web-finara
+    runtime: node
+    plan: free
+    region: oregon
+    branch: main
+    rootDir: apps/web-finara
+    buildCommand: npm ci --include=dev && npm run build && npm prune --omit=dev
+    startCommand: npm run start
+    buildFilter:
+      paths:
+        - apps/web-finara/**
+    envVars:
+      - key: NODE_ENV
+        value: production
 
   - type: web
     name: psp-backoffice

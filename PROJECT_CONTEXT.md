@@ -1,6 +1,6 @@
 # PROJECT_CONTEXT
 
-Ultima actualizacion: 2026-04-23
+Ultima actualizacion: 2026-04-30
 
 ## 1) Resumen del proyecto
 
@@ -15,6 +15,7 @@ La API esta construida con NestJS y expone REST versionado por URI, con foco ope
 - health checks
 
 Ademas del servicio API, el repo incluye:
+- sitio marketing Next.js (landing Finara) en `apps/web-finara` (deploy Render: servicio `web-finara` en `render.yaml`)
 - panel administrativo Next.js en `apps/psp-backoffice` (detalle en **`apps/psp-backoffice/BACKOFFICE_CONTEXT.md`**; aqui solo el resumen operativo)
 - infraestructura en `infra/terraform`
 - entorno local con PostgreSQL + Redis via `docker-compose.yml` (Postgres expuesto en el host en **5433** para no chocar con un PostgreSQL local en 5432; credenciales `psp` / `psp_dev_password` / DB `psp`)
@@ -26,6 +27,7 @@ Ademas del servicio API, el repo incluye:
 - Lenguaje: TypeScript estricto (`noImplicitAny`, `strictNullChecks`)
 - Framework backend: NestJS 11
 - Framework frontend administrativo: Next.js 16 (App Router)
+- Sitio marketing (landing): Next.js 16 en `apps/web-finara` (Tailwind 4, sin BFF)
 - ORM/acceso a datos: Prisma ORM 7 + `@prisma/adapter-pg` + `pg`
 - Base de datos principal: PostgreSQL
 - Cache/soporte operativo: Redis (`ioredis`)
@@ -77,6 +79,9 @@ C:/AA psp/
 │   │   ├── prisma.config.ts
 │   │   ├── nest-cli.json
 │   │   └── README.md
+│   ├── web-finara/
+│   │   ├── app/, components/, lib/   (landing Next.js 16; Analytics Vercel opcional)
+│   │   └── package.json
 │   └── psp-backoffice/
 │       ├── src/
 │       │   ├── app/ (Next: `/`, `/transactions`, `/merchants/*`, `/operations`, `/monitor`, `/payments/[paymentId]`; BFF `/api/internal/*` incl. settlements y merchants ops)
@@ -96,7 +101,7 @@ C:/AA psp/
 └── prisma_migration_v7
 ```
 
-- **npm (raíz):** el `package.json` de la raíz es solo metadatos (`private`, sin dependencias de aplicación). Las dependencias y sus `package-lock.json` viven en `apps/psp-api` y `apps/psp-backoffice`; la CI incluye `api-ci` y `sandbox-deploy` con `npm ci` desde `apps/psp-api/package-lock.json`, y **`backoffice-ci`** (lint, typecheck, test Vitest, Playwright `npm run test:e2e`, build) con caché npm sobre `apps/psp-backoffice/package-lock.json`.
+- **npm (raíz):** el `package.json` de la raíz es solo metadatos (`private`, sin dependencias de aplicación). Las dependencias y sus `package-lock.json` viven en `apps/psp-api`, `apps/psp-backoffice` y `apps/web-finara`; la CI incluye `api-ci` y `sandbox-deploy` con `npm ci` desde `apps/psp-api/package-lock.json`, **`backoffice-ci`** (lint, typecheck, test Vitest, Playwright `npm run test:e2e` contra `psp-api` real levantado en el job con Postgres/Redis + migraciones, build del panel), y **`web-finara-ci`** (solo `npm ci` + `npm run build` del sitio marketing) con caché npm por `package-lock.json` de cada app.
 
 En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc`, `testing-status.mdc`, **`psp-backoffice-context.mdc`** (al editar `apps/psp-backoffice/**`) y **`agent-behavior.mdc`**: guías de comportamiento del agente (aclarar supuestos ante ambigüedad, simplicidad, cambios mínimos, criterios de éxito verificables) y mantenimiento vivo de cobertura de tests.
 
@@ -122,7 +127,7 @@ En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc`, `te
 - Endpoint interno `GET /api/v2/payments/ops/transactions/volume-hourly`: serie horaria UTC (24 buckets) de volumen acumulado (`amount_minor`) de pagos `succeeded` para **hoy vs ayer**, agrupando por **`succeeded_at`** (captura/éxito), no por `created_at`; filtros opcionales `merchantId`, `provider`, `currency` (default EUR). Los acumulados y totales se serializan como **strings decimales** (enteros en minor) para no perder precisión al superar `Number.MAX_SAFE_INTEGER`. Expuesto al panel vía BFF `GET /api/internal/transactions/volume-hourly`.
 - Endpoint interno `GET /api/v2/payments/ops/payments/:paymentId`: detalle operativo de un pago por id interno con hasta **200** `PaymentAttempt` más recientes (orden cronológico ascendente en payload), más `attemptsTotal` y `attemptsTruncated` cuando el historial supera ese tope. Metadatos: `idempotencyKey`, `paymentLinkId`, `rail`, timestamps. Por defecto los intentos **no** incluyen `responsePayload` (menos volumen y evita filtrar metadata cruda de proveedor al cliente). Query opcional `includePayload=true` restaura ese campo por intento solo para depuración. Consumido por el backoffice vía BFF `GET /api/internal/payments/:paymentId` (el BFF reenvía `includePayload` solo cuando vale `true`).
 - Backoffice MVP en `apps/psp-backoffice`: arquitectura BFF con route handlers (`/api/internal/*`) que inyectan `X-Internal-Secret` en server-side y evitan exponer secretos al navegador. Copy de ayuda al comercio aclara que el ruteo de proveedor en create v2 es del PSP, no un campo del POST merchant.
-- Hardening backoffice: `/api/internal/*` requiere auth explícita por request (`Authorization: Bearer BACKOFFICE_ADMIN_SECRET` o cookie HttpOnly `backoffice_admin_token`) y devuelve `401/403` en ausencia/credencial inválida; si la configuración de secretos es inválida (falta `BACKOFFICE_ADMIN_SECRET` o coincide con `PSP_INTERNAL_API_SECRET`), responde `500` (fail-closed) en cualquier entorno. El proxy BFF no reenvía al navegador JSON 4xx crudo del upstream: mensajes seguros en cliente y preview acotado en logs (`console.error`). Mutaciones `POST`/`PATCH` bajo `/api/internal/*` exigen cabecera `X-Backoffice-Mutation: 1` y mismo `Origin` cuando aplica; `POST /api/auth/session` incluye rate limit best-effort por IP. `BACKOFFICE_ADMIN_SECRET` debe ser distinto de `PSP_INTERNAL_API_SECRET` para defensa en profundidad.
+- Hardening backoffice: `/api/internal/*` requiere auth explícita por request (`Authorization: Bearer BACKOFFICE_ADMIN_SECRET` o cookie HttpOnly `backoffice_admin_token`) y devuelve `401/403` en ausencia/credencial inválida; si la configuración de secretos es inválida (falta `BACKOFFICE_ADMIN_SECRET` o coincide con `PSP_INTERNAL_API_SECRET`), responde `500` (fail-closed) en cualquier entorno. El proxy BFF no reenvía al navegador JSON 4xx crudo del upstream: mensajes seguros en cliente y preview acotado en logs (`console.error`). Mutaciones `POST`/`PATCH` bajo `/api/internal/*` exigen cabecera `X-Backoffice-Mutation: 1` y mismo `Origin` cuando aplica; `POST /api/auth/session` incluye rate limit best-effort por IP validada (sin clave compartida cuando no hay IP); buckets acotados + barrido de expirados en proceso. `BACKOFFICE_ADMIN_SECRET` debe ser distinto de `PSP_INTERNAL_API_SECRET` para defensa en profundidad.
 - El script CI de readiness operativo `scripts/ci/check-ops-metrics.mjs` endurece seguridad: valida `SMOKE_BASE_URL` (https, o http solo localhost), usa `origin` al construir URL final y rechaza redirects para no reenviar `X-Internal-Secret` fuera del host esperado.
 - Nuevo modelo `PaymentAttempt` para trazabilidad por operacion/proveedor (`create/capture/cancel/refund`) con status, error taxonomy, latencia y payload de respuesta.
 - `PaymentAttempt.attemptNo` se asigna de forma atomica con `MAX(attemptNo)+1` dentro de transaccion serializable y retry para `P2002`/`P2034`, manteniendo `@@unique([paymentId, operation, attemptNo])`.
@@ -144,7 +149,7 @@ En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc`, `te
 
 ## 5) Estado actual (que estamos haciendo ahora)
 
-- Se consolidó CI en `.github/workflows/ci.yml`: `api-ci` (lint/test/build/Docker API), `backoffice-ci` (lint/typecheck/test Vitest/Playwright e2e/build del panel), `terraform-validate`, y en rama `sandbox` deploy + migrate + readiness estricto de `/health` [status/db/redis en `ok`] + gate de métricas operativas en `/api/v2/payments/ops/metrics` + smoke.
+- Se consolidó CI en `.github/workflows/ci.yml`: `api-ci` (lint/test/build/Docker API), `backoffice-ci` (lint/typecheck/test Vitest/Playwright e2e contra `psp-api` local en el job + build del panel), `web-finara-ci` (build del sitio marketing en `apps/web-finara`), `terraform-validate`, y en rama `sandbox` deploy + migrate + readiness estricto de `/health` [status/db/redis en `ok`] + gate de métricas operativas en `/api/v2/payments/ops/metrics` + smoke.
 - `api-ci` ahora trata `test:integration:critical` como bloqueante, agrega `test:ci:ops-metrics` para hardening del gate de métricas internas y valida build Docker (`psp-api:ci`) en cada corrida.
 - `sandbox-deploy` define umbrales explícitos de readiness operativo (`READINESS_*`) para reducir falsos verdes y alinear promoción con SLO operativo de canary.
 - Se agrego contenedorizacion de API (`Dockerfile`, `.dockerignore`) para ejecucion reproducible; en produccion el entrypoint (`docker-entrypoint.sh`) ejecuta `prisma migrate deploy` antes de `node dist/main` para que Postgres tenga tablas como `WebhookDelivery` al levantar el servicio. Los reintentos ante fallos transitorios y el tiempo maximo total estan acotados por variables `PRISMA_MIGRATE_*` (ver comentarios en el script); errores de migracion no recuperables (p. ej. P3009/P3018) cortan sin esperar el maximo de tiempo.

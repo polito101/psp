@@ -1,6 +1,6 @@
 # BACKOFFICE_CONTEXT — PSP Backoffice
 
-Ultima actualizacion: 2026-04-28
+Ultima actualizacion: 2026-04-30
 
 Documento **local** del app `apps/psp-backoffice` (nombre distinto de `PROJECT_CONTEXT.md` en la raíz para evitar confusion). El monorepo mantiene visión global y API en **`PROJECT_CONTEXT.md`** (raíz); aquí se detalla solo el panel administrativo.
 
@@ -106,7 +106,7 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 - Detalle de pago: `GET /api/internal/payments/:paymentId` hace proxy a `.../ops/payments/:id`. Por defecto **no** se incluye `responsePayload` por intento (menos payload y menos metadata de proveedor en el navegador). Solo si la peticion al BFF lleva `?includePayload=true` se reenvia ese flag a la API (uso depuracion).
 - Sesión: cookie HttpOnly `backoffice_session` con JWT (claims `role: admin` o `merchant` y `merchantId` si aplica). El BFF acepta también `Authorization: Bearer <JWT>` (p. ej. tests). Sin sesión válida: `401`/`403`. Faltan `BACKOFFICE_SESSION_JWT_SECRET` o conflictos con otros secretos → `500` (fail-closed).
 - Mutaciones BFF (`POST`/`PATCH` bajo `/api/internal/*`): el navegador debe enviar cabecera `X-Backoffice-Mutation: 1`; si existe cabecera `Origin`, debe coincidir con el origen del propio backoffice. La sesión/RBAC sigue aplicándose después.
-- Login: `POST /api/auth/session` con `{ "mode": "admin", "token": "<BACKOFFICE_ADMIN_SECRET>" }` o `{ "mode": "merchant", "merchantId": "...", "merchantToken": "<expUnix>:<hmac_hex>" }` (HMAC de ``merchantId.exp`` con caducidad). Ver `README.md`. Rate limit best-effort en proceso por IP derivada de `X-Forwarded-For`/`X-Real-IP` (429 + `Retry-After`); en producción complementar con límite en edge/WAF si hay varias instancias.
+- Login: `POST /api/auth/session` con `{ "mode": "admin", "token": "<BACKOFFICE_ADMIN_SECRET>" }` o `{ "mode": "merchant", "merchantId": "...", "merchantToken": "<expUnix>:<hmac_hex>" }` (HMAC de ``merchantId.exp`` con caducidad). Ver `README.md`. Rate limit best-effort en proceso solo cuando hay una IP cliente válida (`request.ip` si existe, luego `x-vercel-forwarded-for`, `x-real-ip`, primer hop de `x-forwarded-for`; normalización con `node:net`/`isIP`). Sin IP resoluble **no** se aplica RL (evita lockout global). Map de buckets con barrido de ventanas expiradas y tope de entradas; en producción complementar con límite en edge/WAF si hay varias instancias.
 - Navegación: rol **merchant** no ve `/monitor` ni `/merchants/lookup`; enlaces a **Mi comercio** (`/merchants/{id}/overview` y subrutas) y **Finanzas**. Admin ve **Merchants**, **Operaciones**, monitor y lookup financiero.
 - Detalle de pago: un merchant que pida un `paymentId` de otro comercio recibe **404** (anti-enumeración), en BFF y en API.
 - Alcance **merchant** en BFF: rutas con `merchantId` en path o query fuerzan/validan contra el claim; métricas globales (`provider-health` → `ops/metrics`) solo **admin**. El proxy añade cabeceras `X-Backoffice-Role` y `X-Backoffice-Merchant-Id` para que `psp-api` vuelva a validar (defensa en profundidad). Las páginas merchant incluyen `/merchants/[merchantId]/finance` con validación en Server Component vía `ensureMerchantPortalRoute`, además del proxy y el BFF.
@@ -129,10 +129,13 @@ npm run dev          # http://localhost:3005
 npm run lint
 npm run typecheck
 npm run test         # Vitest (libs servidor)
-npm run test:e2e     # Playwright (redirect login + sesión admin; ver `playwright.config.ts`)
+npm run playwright:install   # Chromium para Playwright (también lo usa CI)
+npm run test:e2e     # Playwright; el smoke de merchants exige BFF→API (levantar `psp-api` en `PSP_API_BASE_URL`, p. ej. :3003)
 npm run build
 npm run gen:api-types   # requiere API + Swagger
 ```
+
+En **GitHub Actions**, el job `backoffice-ci` arranca servicios Postgres/Redis, aplica migraciones de `psp-api`, ejecuta `npm run start:prod` en el puerto **3003** y luego Playwright, de modo que el listado `/merchants` no puede quedar verde si el proxy interno falla.
 
 ## 10) Lecturas relacionadas
 

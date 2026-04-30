@@ -71,13 +71,41 @@ jobs:
     defaults:
       run:
         working-directory: apps/psp-backoffice
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: psp
+          POSTGRES_PASSWORD: psp_test
+          POSTGRES_DB: psp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U psp -d psp_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://psp:psp_test@localhost:5432/psp_test?schema=public
+      REDIS_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: apps/psp-backoffice/package-lock.json
+          cache-dependency-path: |
+            apps/psp-backoffice/package-lock.json
+            apps/psp-api/package-lock.json
       - name: Install dependencies
         run: npm ci
       - name: Lint
@@ -87,7 +115,40 @@ jobs:
       - name: Unit tests (Vitest)
         run: npm run test
       - name: Install Playwright (Chromium)
-        run: npx playwright install --with-deps chromium
+        run: npm run playwright:install
+      - name: Install psp-api dependencies (E2E BFF integration)
+        working-directory: apps/psp-api
+        run: npm ci
+      - name: Prisma generate + migrate (psp-api, E2E DB)
+        working-directory: apps/psp-api
+        run: |
+          npx prisma generate
+          npx prisma migrate deploy
+      - name: Build psp-api (E2E)
+        working-directory: apps/psp-api
+        run: npm run build
+      - name: Start psp-api (background, port 3003)
+        working-directory: apps/psp-api
+        env:
+          INTERNAL_API_SECRET: internal-only
+          APP_ENCRYPTION_KEY: test-encryption-key-32-characters!!
+          PORT: "3003"
+          NODE_ENV: development
+        run: |
+          nohup npm run start:prod > /tmp/psp-api-e2e.log 2>&1 &
+          for i in $(seq 1 60); do
+            health_json="$(curl -fsS --connect-timeout 2 --max-time 4 "http://127.0.0.1:3003/health" 2>/dev/null || true)"
+            if [ -n "$health_json" ]; then
+              if HEALTH_JSON="$health_json" node -e "const d=JSON.parse(process.env.HEALTH_JSON||'{}'); process.exit(d?.status==='ok' && d?.checks?.db?.status==='ok' ? 0 : 1)"; then
+                echo "psp-api ready"
+                exit 0
+              fi
+            fi
+            sleep 2
+          done
+          echo "psp-api failed to become ready; log tail:"
+          tail -n 200 /tmp/psp-api-e2e.log || true
+          exit 1
       - name: E2E (Playwright)
         env:
           NODE_ENV: development
@@ -97,6 +158,23 @@ jobs:
           PSP_INTERNAL_API_SECRET: internal-only
           PSP_API_BASE_URL: http://127.0.0.1:3003
         run: npm run test:e2e
+      - name: Build
+        run: npm run build
+
+  web-finara-ci:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web-finara
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web-finara/package-lock.json
+      - name: Install dependencies
+        run: npm ci
       - name: Build
         run: npm run build
 

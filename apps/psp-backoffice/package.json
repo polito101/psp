@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "playwright:install": "playwright install --with-deps chromium",
     "test:e2e": "playwright test",
     "gen:api-types": "openapi-typescript http://localhost:3003/api/docs-json -o src/lib/api/generated/openapi.d.ts"
   },
