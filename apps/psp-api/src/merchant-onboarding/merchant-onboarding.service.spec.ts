@@ -10,6 +10,7 @@ describe('MerchantOnboardingService', () => {
 
   beforeEach(() => {
     process.env.APP_ENCRYPTION_KEY = 'test-encryption-key-with-at-least-32-chars';
+    process.env.NODE_ENV = 'test';
   });
 
   const createTx = () => ({
@@ -62,6 +63,9 @@ describe('MerchantOnboardingService', () => {
         },
         merchantOnboardingToken: {
           findUnique: jest.fn(),
+        },
+        merchantOnboardingEvent: {
+          create: jest.fn().mockResolvedValue({ id: 'evt_root_1' }),
         },
         $transaction: jest.fn(async <T>(callback: (transaction: typeof tx) => Promise<T>) =>
           callback(tx),
@@ -181,6 +185,89 @@ describe('MerchantOnboardingService', () => {
     jest.useRealTimers();
   });
 
+  it('records sent email event after creation without exposing the link in production-like environments', async () => {
+    const { service, prisma } = createService();
+
+    const result = await service.createApplication({
+      name: 'Ada Lovelace',
+      email: 'ada@example.com',
+      phone: '+34600000000',
+    });
+
+    expect(prisma.merchantOnboardingEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        applicationId: 'app_1',
+        type: 'onboarding_email_sent',
+        actorType: 'SYSTEM',
+        metadata: { providerMessageId: 'email_1' },
+      }),
+    });
+    expect(result).not.toHaveProperty('onboardingUrl');
+  });
+
+  it('records failed email event without rolling back the onboarding records', async () => {
+    const { service, tx, prisma, emailService } = createService();
+    emailService.sendOnboardingLink.mockResolvedValueOnce({
+      ok: false,
+      errorMessage: 'Resend is not configured',
+    });
+
+    const result = await service.createApplication({
+      name: 'Ada Lovelace',
+      email: 'ada@example.com',
+      phone: '+34600000000',
+    });
+
+    expect(tx.merchant.create).toHaveBeenCalled();
+    expect(tx.merchantOnboardingApplication.create).toHaveBeenCalled();
+    expect(tx.merchantOnboardingToken.create).toHaveBeenCalled();
+    expect(tx.merchantOnboardingChecklistItem.createMany).toHaveBeenCalled();
+    expect(prisma.merchantOnboardingEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        applicationId: 'app_1',
+        type: 'onboarding_email_failed',
+        actorType: 'SYSTEM',
+        metadata: { errorMessage: 'Resend is not configured' },
+      }),
+    });
+    expect(result).toEqual({
+      ok: true,
+      message: 'If the email can receive onboarding links, we will send next steps shortly.',
+    });
+  });
+
+  it('includes onboardingUrl in public creation responses for development and sandbox', async () => {
+    const { service } = createService();
+    process.env.NODE_ENV = 'development';
+
+    await expect(
+      service.createApplication({
+        name: 'Ada Lovelace',
+        email: 'ada@example.com',
+        phone: '+34600000000',
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      message: 'If the email can receive onboarding links, we will send next steps shortly.',
+      onboardingUrl: 'https://onboarding.example.com/onboarding/merchant/plain_token',
+    });
+
+    const sandboxContext = createService();
+    process.env.NODE_ENV = 'sandbox';
+
+    await expect(
+      sandboxContext.service.createApplication({
+        name: 'Grace Hopper',
+        email: 'grace@example.com',
+        phone: '+34600000001',
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      message: 'If the email can receive onboarding links, we will send next steps shortly.',
+      onboardingUrl: 'https://onboarding.example.com/onboarding/merchant/plain_token',
+    });
+  });
+
   it('returns neutral success for duplicate public emails without exposing records', async () => {
     const { service, prisma, tx, emailService } = createService();
     prisma.merchantOnboardingApplication.findFirst.mockResolvedValue({ id: 'existing_app' });
@@ -255,7 +342,7 @@ describe('MerchantOnboardingService', () => {
     jest.useRealTimers();
   });
 
-  it('rejects expired or used tokens', async () => {
+  it('rejects expired, used, or revoked tokens', async () => {
     const { service, prisma } = createService();
     prisma.merchantOnboardingToken.findUnique.mockResolvedValueOnce({
       id: 'tok_expired',
@@ -276,6 +363,16 @@ describe('MerchantOnboardingService', () => {
       application: { id: 'app_1', status: 'DOCUMENTATION_PENDING' },
     });
     await expect(service.validateToken('used_token')).rejects.toBeInstanceOf(BadRequestException);
+
+    prisma.merchantOnboardingToken.findUnique.mockResolvedValueOnce({
+      id: 'tok_revoked',
+      applicationId: 'app_1',
+      expiresAt: new Date('2026-05-01T10:00:00.000Z'),
+      usedAt: null,
+      revokedAt: now,
+      application: { id: 'app_1', status: 'DOCUMENTATION_PENDING' },
+    });
+    await expect(service.validateToken('revoked_token')).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('approves application and activates merchant atomically', async () => {
@@ -295,18 +392,28 @@ describe('MerchantOnboardingService', () => {
 
     const result = await service.approveApplication('app_1');
 
-    expect(tx.merchantOnboardingApplication.update).toHaveBeenCalledWith({
+    expect(tx.merchantOnboardingApplication.update).toHaveBeenNthCalledWith(1, {
       where: { id: 'app_1' },
       data: {
-        status: 'ACTIVE',
+        status: 'APPROVED',
         reviewedAt: now,
         approvedAt: now,
-        activatedAt: now,
         rejectionReason: null,
       },
     });
+    expect(tx.merchantOnboardingApplication.update).toHaveBeenNthCalledWith(2, {
+      where: { id: 'app_1' },
+      data: {
+        status: 'ACTIVE',
+        activatedAt: now,
+      },
+    });
     expect(tx.merchantOnboardingChecklistItem.updateMany).toHaveBeenCalledWith({
-      where: { applicationId: 'app_1', key: { in: ['internal_review', 'approval_decision', 'merchant_activation'] } },
+      where: { applicationId: 'app_1', key: { in: ['internal_review', 'approval_decision'] } },
+      data: { status: 'COMPLETED', completedAt: now },
+    });
+    expect(tx.merchantOnboardingChecklistItem.updateMany).toHaveBeenCalledWith({
+      where: { applicationId: 'app_1', key: 'merchant_activation' },
       data: { status: 'COMPLETED', completedAt: now },
     });
     expect(tx.merchant.update).toHaveBeenCalledWith({
@@ -316,7 +423,14 @@ describe('MerchantOnboardingService', () => {
     expect(tx.merchantOnboardingEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         applicationId: 'app_1',
-        type: 'APPLICATION_APPROVED',
+        type: 'application_approved',
+        actorType: 'ADMIN',
+      }),
+    });
+    expect(tx.merchantOnboardingEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        applicationId: 'app_1',
+        type: 'merchant_activated',
         actorType: 'ADMIN',
       }),
     });
@@ -354,8 +468,12 @@ describe('MerchantOnboardingService', () => {
     });
     expect(tx.merchant.update).not.toHaveBeenCalled();
     expect(tx.merchantOnboardingChecklistItem.updateMany).toHaveBeenCalledWith({
-      where: { applicationId: 'app_1', key: { in: ['internal_review', 'approval_decision'] } },
+      where: { applicationId: 'app_1', key: 'internal_review' },
       data: { status: 'COMPLETED', completedAt: now },
+    });
+    expect(tx.merchantOnboardingChecklistItem.updateMany).toHaveBeenCalledWith({
+      where: { applicationId: 'app_1', key: 'approval_decision' },
+      data: { status: 'BLOCKED', completedAt: now },
     });
     expect(result.status).toBe('REJECTED');
     jest.useRealTimers();

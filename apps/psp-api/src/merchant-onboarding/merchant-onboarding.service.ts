@@ -32,6 +32,9 @@ const PUBLIC_RESEND_MESSAGE =
   'If the application can receive onboarding links, we will send next steps shortly.';
 
 type OnboardingTransaction = Prisma.TransactionClient;
+type EmailDeliveryResult =
+  | { ok: true; providerMessageId: string | null }
+  | { ok: false; errorMessage: string };
 
 @Injectable()
 export class MerchantOnboardingService {
@@ -59,11 +62,12 @@ export class MerchantOnboardingService {
 
     const now = new Date();
     const token = await this.createTokenValues(now);
+    const onboardingUrl = this.buildOnboardingUrl(token.plain);
     const webhookSecretPlain = `whsec_${randomBytes(24).toString('base64url')}`;
     const webhookSecretCiphertext = encryptUtf8(webhookSecretPlain);
     const placeholderHash = await bcrypt.hash(randomBytes(16).toString('hex'), 12);
 
-    await this.prisma.$transaction(async (tx) => {
+    const applicationId = await this.prisma.$transaction(async (tx) => {
       const merchant = await tx.merchant.create({
         data: {
           name: dto.name,
@@ -127,15 +131,18 @@ export class MerchantOnboardingService {
           message: 'Link de onboarding generado.',
         },
       });
+
+      return application.id;
     });
 
-    await this.emailService.sendOnboardingLink({
+    const emailResult = await this.sendOnboardingEmail({
       to: contactEmail,
       contactName: dto.name,
-      onboardingUrl: this.buildOnboardingUrl(token.plain),
+      onboardingUrl,
     });
+    await this.recordEmailDeliveryEvent(applicationId, emailResult);
 
-    return this.publicCreateResponse();
+    return this.publicCreateResponse(onboardingUrl);
   }
 
   /**
@@ -266,13 +273,12 @@ export class MerchantOnboardingService {
     const now = new Date();
 
     return this.prisma.$transaction(async (tx) => {
-      const updated = await tx.merchantOnboardingApplication.update({
+      await tx.merchantOnboardingApplication.update({
         where: { id: application.id },
         data: {
-          status: MerchantOnboardingStatus.ACTIVE,
+          status: MerchantOnboardingStatus.APPROVED,
           reviewedAt: now,
           approvedAt: now,
-          activatedAt: now,
           rejectionReason: null,
         },
       });
@@ -280,7 +286,7 @@ export class MerchantOnboardingService {
       await tx.merchantOnboardingChecklistItem.updateMany({
         where: {
           applicationId: application.id,
-          key: { in: ['internal_review', 'approval_decision', 'merchant_activation'] },
+          key: { in: ['internal_review', 'approval_decision'] },
         },
         data: {
           status: MerchantOnboardingChecklistStatus.COMPLETED,
@@ -288,12 +294,30 @@ export class MerchantOnboardingService {
         },
       });
 
+      await this.createDecisionEvent(tx, application.id, 'application_approved', 'Solicitud aprobada.');
+
       await tx.merchant.update({
         where: { id: application.merchantId },
         data: { isActive: true, deactivatedAt: null },
       });
 
-      await this.createDecisionEvent(tx, application.id, 'APPLICATION_APPROVED', 'Solicitud aprobada.');
+      const updated = await tx.merchantOnboardingApplication.update({
+        where: { id: application.id },
+        data: {
+          status: MerchantOnboardingStatus.ACTIVE,
+          activatedAt: now,
+        },
+      });
+
+      await tx.merchantOnboardingChecklistItem.updateMany({
+        where: { applicationId: application.id, key: 'merchant_activation' },
+        data: {
+          status: MerchantOnboardingChecklistStatus.COMPLETED,
+          completedAt: now,
+        },
+      });
+
+      await this.createDecisionEvent(tx, application.id, 'merchant_activated', 'Merchant activado.');
 
       return updated;
     });
@@ -318,17 +342,22 @@ export class MerchantOnboardingService {
       });
 
       await tx.merchantOnboardingChecklistItem.updateMany({
-        where: {
-          applicationId: application.id,
-          key: { in: ['internal_review', 'approval_decision'] },
-        },
+        where: { applicationId: application.id, key: 'internal_review' },
         data: {
           status: MerchantOnboardingChecklistStatus.COMPLETED,
           completedAt: now,
         },
       });
 
-      await this.createDecisionEvent(tx, application.id, 'APPLICATION_REJECTED', dto.reason);
+      await tx.merchantOnboardingChecklistItem.updateMany({
+        where: { applicationId: application.id, key: 'approval_decision' },
+        data: {
+          status: MerchantOnboardingChecklistStatus.BLOCKED,
+          completedAt: now,
+        },
+      });
+
+      await this.createDecisionEvent(tx, application.id, 'application_rejected', dto.reason);
 
       return updated;
     });
@@ -397,8 +426,56 @@ export class MerchantOnboardingService {
     return { ok: true, message: PUBLIC_RESEND_MESSAGE };
   }
 
-  private publicCreateResponse() {
-    return { ok: true, message: PUBLIC_CREATE_MESSAGE };
+  private publicCreateResponse(onboardingUrl?: string) {
+    return {
+      ok: true,
+      message: PUBLIC_CREATE_MESSAGE,
+      ...(onboardingUrl && this.shouldExposeOnboardingUrl() ? { onboardingUrl } : {}),
+    };
+  }
+
+  private shouldExposeOnboardingUrl(): boolean {
+    return process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'sandbox';
+  }
+
+  private async sendOnboardingEmail(input: {
+    to: string;
+    contactName: string;
+    onboardingUrl: string;
+  }): Promise<EmailDeliveryResult> {
+    try {
+      return await this.emailService.sendOnboardingLink(input);
+    } catch (error) {
+      return { ok: false, errorMessage: getErrorMessage(error) };
+    }
+  }
+
+  private async recordEmailDeliveryEvent(
+    applicationId: string,
+    emailResult: EmailDeliveryResult,
+  ): Promise<void> {
+    if (emailResult.ok) {
+      await this.prisma.merchantOnboardingEvent.create({
+        data: {
+          applicationId,
+          type: 'onboarding_email_sent',
+          actorType: MerchantOnboardingActorType.SYSTEM,
+          message: 'Email de onboarding enviado.',
+          metadata: { providerMessageId: emailResult.providerMessageId },
+        },
+      });
+      return;
+    }
+
+    await this.prisma.merchantOnboardingEvent.create({
+      data: {
+        applicationId,
+        type: 'onboarding_email_failed',
+        actorType: MerchantOnboardingActorType.SYSTEM,
+        message: 'No se pudo enviar el email de onboarding.',
+        metadata: { errorMessage: emailResult.errorMessage },
+      },
+    });
   }
 
   private async createTokenValues(now: Date) {
@@ -451,7 +528,7 @@ export class MerchantOnboardingService {
   private async createDecisionEvent(
     tx: OnboardingTransaction,
     applicationId: string,
-    type: 'APPLICATION_APPROVED' | 'APPLICATION_REJECTED',
+    type: 'application_approved' | 'application_rejected' | 'merchant_activated',
     message: string,
   ): Promise<void> {
     await tx.merchantOnboardingEvent.create({
@@ -467,4 +544,8 @@ export class MerchantOnboardingService {
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'Unknown onboarding email error';
 }
