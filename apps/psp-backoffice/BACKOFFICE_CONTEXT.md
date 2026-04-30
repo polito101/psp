@@ -31,6 +31,7 @@ src/
 │   ├── admin/login/page.tsx          # `/admin/login` portal **admin**
 │   ├── transactions/page.tsx         # `/transactions` listado ops
 │   ├── operations/page.tsx           # `/operations` inbox settlements (admin)
+│   ├── onboarding/[token]/page.tsx   # formulario público de onboarding merchant
 │   ├── merchants/page.tsx            # directorio merchants (admin)
 │   ├── merchants/[merchantId]/overview|payments|settlements|payment-methods|admin|finance/page.tsx
 │   ├── monitor/page.tsx              # `/monitor`
@@ -96,6 +97,7 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 
 - **`/login`** — Solo **portal merchant** (`BACKOFFICE_PORTAL_MODE=merchant`): formulario merchant ID + token temporal; no admin.
 - **`/admin/login`** — Solo **portal admin** (`BACKOFFICE_PORTAL_MODE=admin`): formulario mínimo con secreto admin.
+- **`/onboarding/[token]`** — Página pública de onboarding merchant; valida el token vía `/api/public/onboarding/:token` y envía el perfil de negocio a `/api/public/onboarding/:token/business-profile`.
 - **`/`** — Inicio: **admin** — bloque **Resumen** (intervalo/comparador vía `GET /api/internal/transactions/summary`), tarjetas UTC + volumen EUR + card volumen **USD** (`/ops/dashboard/volume-usd` vía BFF) + accesos a `/merchants` y `/operations`. **Merchant** — resumen scoped + enlaces al portal.
 - **`/transactions`** — Dashboard de transacciones (lista ops, filtros, export CSV de pagina visible, conteos por estado, cursores). Filtros extendidos (país, método, weekday, `merchantActive`) se reenvían al BFF.
 - **`/merchants`** — Directorio merchants (solo admin); desde aquí **Ver** → overview, **Admin** → panel activación / admin-enabled métodos.
@@ -123,7 +125,7 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 - Detalle de pago: un merchant que pida un `paymentId` de otro comercio recibe **404** (anti-enumeración), en BFF y en API.
 - Alcance **merchant** en BFF: rutas con `merchantId` en path o query fuerzan/validan contra el claim; métricas globales (`provider-health` → `ops/metrics`) solo **admin**. El proxy añade cabeceras `X-Backoffice-Role` y `X-Backoffice-Merchant-Id` para que `psp-api` vuelva a validar (defensa en profundidad). Las páginas merchant incluyen `/merchants/[merchantId]/finance` con validación en Server Component vía `ensureMerchantPortalRoute`, además del proxy y el BFF.
 - Cabeceras de seguridad globales desde `next.config.ts`: `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`.
-- Proxy HTTP de páginas (`src/proxy.ts`, Next.js 16 “Proxy Middleware”): sin sesión válida para el portal actual redirige a **`/login`** (merchant) o **`/admin/login`** (admin); bloquea `/admin/*` en portal merchant sin sesión (redirección al login merchant); fuerza **`/login` → `/admin/login`** cuando no hay sesión en portal admin. Rutas **`/api/*`** no redirigen (el BFF responde `401`/`403`).
+- Proxy HTTP de páginas (`src/proxy.ts`, Next.js 16 “Proxy Middleware”): sin sesión válida para el portal actual redirige a **`/login`** (merchant) o **`/admin/login`** (admin); bloquea `/admin/*` en portal merchant sin sesión (redirección al login merchant); fuerza **`/login` → `/admin/login`** cuando no hay sesión en portal admin. Rutas **`/api/*`** y **`/onboarding/*`** no redirigen (el BFF responde `401`/`403` donde aplique).
 - Errores del proxy hacia `psp-api`: el servidor registra un preview acotado del cuerpo upstream en logs; el navegador recibe mensajes seguros (`message` + opcional `upstreamStatus`) y **no** se reenvía el JSON 4xx crudo del upstream.
 - No leer secretos desde `NEXT_PUBLIC_*` salvo decision documentada; **`NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE`** es la excepción acordada para alinear UI con `BACKOFFICE_PORTAL_MODE` sin exponer secretos.
 

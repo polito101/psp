@@ -31,6 +31,12 @@ describe("proxy (merchant portal)", () => {
     expect(res?.status).toBe(200);
   });
 
+  it("allows public onboarding pages without session", async () => {
+    const req = new NextRequest(new URL("http://localhost:3005/onboarding/tok_123"));
+    const res = await proxy(req);
+    expect(res?.status).toBe(200);
+  });
+
   it("redirects /admin/login without session to /login", async () => {
     const req = new NextRequest(new URL("http://localhost:3005/admin/login"));
     const res = await proxy(req);
