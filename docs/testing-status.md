@@ -1,6 +1,6 @@
 # Estado de tests
 
-Ultima actualizacion: 2026-04-30
+Ultima actualizacion: 2026-05-01
 
 ## Objetivo
 
@@ -22,6 +22,7 @@ La CI del monorepo incluye `api-ci` (lint/test/build API), `backoffice-ci` (lint
 | --- | --- | --- | --- | --- | --- |
 | `payments-v2` | Si | Si | Si | Cubierto | Unit `payments-v2.service.spec`: mocks `merchant.findUnique` + `merchantPaymentMethod` tras `clearAllMocks`; idempotencia 3DS espera `nextAction` mínimo `{ type: '3ds' }`; asserts `ConflictException.getResponse()` toleran cuerpo objeto Nest; `onApplicationBootstrap` legacy stripe usa doble `$queryRaw`. Create v2 sin `provider` en body: ruteo vía `PAYMENTS_PROVIDER_ORDER` + registry inyectable (`PAYMENT_PROVIDERS`); integration setup con `mock`. Flujos create/get/capture/cancel/refund + idempotencia + `paymentLink` + ops. Unit: `ProviderRegistryService`, adapter Acme stub, CB v2 (Redis/fallback, half-open NX con validación env solo si `PAYMENTS_PROVIDER_CB_HALF_OPEN` + `REDIS_URL`, snapshot `circuitState`/`halfOpen`, backoff), reintento transitorio unit valida ms vía spy de `sleep` (no wall-clock `Date.now`); cuota merchant (`payments-v2-merchant-rate-limit*.spec.ts`, `PaymentsV2MerchantRateLimitService`; incluye deduplicación heap/indice por bucket), correlación HTTP (`src/common/correlation/correlation-id.spec.ts`, cabeceras `X-Request-Id`/`X-Correlation-Id`). Integration `jest.integration.setup` fuerza `PAYMENTS_PROVIDER_RETRY_BASE_MS=0`. Integration `volume-hourly`: totales/serie como string. Integration dedicada `payments-v2-merchant-rate-limit.integration.spec.ts` (429 + idempotencia sin consumo extra; incluida en `test:integration:critical`). Integration `payments-v2.integration.spec.ts`: aserciones de cabecera `X-Request-Id` en create. |
 | `merchants` | No | Si | Parcial | Parcial | Integration cubre create+guard y ciclo revoke/rotate via servicio. Falta spec unitario del controller/service. |
+| `merchant-onboarding` | Si (email) | No | No | Parcial | Unit `onboarding-email.service.spec.ts`: fetch con `AbortSignal.timeout`, `try/catch` de red → `{ ok: false }`; env `ONBOARDING_EMAIL_RESEND_FETCH_TIMEOUT_MS` normalizada en `validateEnv`. |
 | `payment-links` | No | Si | No | Parcial | Sin endpoint HTTP activo; cobertura via `PaymentLinksService.findForMerchant`. |
 | `ledger` | Si | Si | Si | Cubierto | Unit de servicio + integration/smoke de `/api/v1/balance`, incluyendo transición `pending/available` y compatibilidad con asientos legacy `available`. |
 | `fees` | Si | Si | No | Cubierto | Unit `FeeService` (fixed/percentage/minimum + resolve active rate table) e integración de endpoints internos para rate tables por merchant/currency/provider. |
@@ -76,6 +77,7 @@ La CI del monorepo incluye `api-ci` (lint/test/build API), `backoffice-ci` (lint
 - `src/fees/fee.service.spec.ts`
 - `src/ledger/ledger.service.spec.ts`
 - `src/settlements/settlement.service.spec.ts`
+- `src/merchant-onboarding/onboarding-email.service.spec.ts`
 
 ### Smoke (`test/smoke`)
 

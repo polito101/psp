@@ -146,6 +146,7 @@ Invoke-RestMethod -Method Get "http://localhost:3000/api/v1/balance" `
 - Throttling global activo.
 - Límite especifico:
   - `POST /api/v2/payments`: 30 requests / 60s.
+- Tras un reverse proxy que envía la IP del cliente en `X-Forwarded-For` / `X-Real-IP` (p. ej. `web-finara` → `psp-api`), configura `TRUST_PROXY=true` en la API para que el límite sea por visitante y no por la IP del proxy.
 
 ## Docker (sandbox)
 

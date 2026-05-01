@@ -1,6 +1,6 @@
 # PROJECT_CONTEXT
 
-Ultima actualizacion: 2026-04-30
+Ultima actualizacion: 2026-05-01
 
 ## 1) Resumen del proyecto
 
@@ -15,7 +15,7 @@ La API esta construida con NestJS y expone REST versionado por URI, con foco ope
 - health checks
 
 Ademas del servicio API, el repo incluye:
-- sitio marketing Next.js (landing Finara) en `apps/web-finara` (deploy Render: servicio `web-finara` en `render.yaml`); los CTAs de acceso cliente apuntan al login merchant público (`NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL` → mismo código `psp-backoffice` en modo merchant). Esa env se valida en `getMerchantBackofficeLoginUrl` (URL absoluta, solo `https`, sin credenciales en userinfo, path normalizado a `/login`; si falla, fallback `https://psp-backoffice.onrender.com/login` y un único `console.warn`).
+- sitio marketing Next.js (landing Finara) en `apps/web-finara` (deploy Render: servicio `web-finara` en `render.yaml`); los CTAs de acceso cliente apuntan al login merchant público (`NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL` → mismo código `psp-backoffice` en modo merchant). Esa env se valida en `getMerchantBackofficeLoginUrl` (URL absoluta, solo `https`, sin credenciales en userinfo, path normalizado a `/login`; si falla, fallback `https://psp-backoffice.onrender.com/login` y un único `console.warn`). El onboarding público puede usar la ruta App Router `POST /api/merchant-onboarding/applications`, que hace proxy a `psp-api` con rate limit por IP (o fingerprint) y reenvío controlado de `X-Forwarded-For` / `X-Real-IP` hacia la API; en Render `RENDER=true` habilita la lectura segura de cabeceras de borde. La API debe tener `TRUST_PROXY=true` (p. ej. en `render.yaml`) para que el `ThrottlerGuard` use esa IP.
 - panel PSP en `apps/psp-backoffice`: **dos despliegues** del mismo app (merchant vs admin) vía `BACKOFFICE_PORTAL_MODE`/`NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE` (`/login` vs `/admin/login`); detalle en **`apps/psp-backoffice/BACKOFFICE_CONTEXT.md`** y **`render.yaml`** (`psp-backoffice`, `psp-backoffice-admin`).
 - infraestructura en `infra/terraform`
 - entorno local con PostgreSQL + Redis via `docker-compose.yml` (Postgres expuesto en el host en **5433** para no chocar con un PostgreSQL local en 5432; credenciales `psp` / `psp_dev_password` / DB `psp`)
@@ -27,7 +27,7 @@ Ademas del servicio API, el repo incluye:
 - Lenguaje: TypeScript estricto (`noImplicitAny`, `strictNullChecks`)
 - Framework backend: NestJS 11
 - Framework frontend administrativo: Next.js 16 (App Router)
-- Sitio marketing (landing): Next.js 16 en `apps/web-finara` (Tailwind 4, sin BFF)
+- Sitio marketing (landing): Next.js 16 en `apps/web-finara` (Tailwind 4; BFF mínimo `POST /api/merchant-onboarding/applications` → `psp-api` con RL e identidad de cliente)
 - ORM/acceso a datos: Prisma ORM 7 + `@prisma/adapter-pg` + `pg`
 - Base de datos principal: PostgreSQL
 - Cache/soporte operativo: Redis (`ioredis`)
