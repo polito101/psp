@@ -17,7 +17,8 @@ Ultima actualizacion: 2026-05-01
 - Marketing (`web-finara`): captacion publica `/merchant-signup` con proxy server `POST /api/merchant-onboarding` → `psp-api` (`PSP_API_BASE_URL`).
 - Documentacion transversal: `PROJECT_CONTEXT.md`, `apps/psp-api/README.md` y `.env.example` (API/backoffice/web-finara) alineados con onboarding.
 - Verificacion automatica (rama actual): `npm run lint` en `psp-api`; `npm run typecheck` en `psp-backoffice` y `web-finara`; tests Jest `merchant-onboarding/*.spec.ts` (25 tests).
-- Pendiente (opcional): smoke manual end-to-end en entorno integrado (docker + tres apps).
+- Smoke manual local (2026-05-01): Postgres Docker (`compose` solo servicio `postgres`, Redis usando instancia ya escuchando en `6379`); `psp-api` en `:3003` con `NODE_ENV=development` y `MERCHANT_ONBOARDING_BASE_URL=http://localhost:3005`; `GET /health` OK (db/redis OK); `POST /api/v1/merchant-onboarding/applications` OK (respuesta con `onboardingUrl` en dev); `web-finara` en `:3006` con `PSP_API_BASE_URL` → `POST /api/merchant-onboarding` OK; `psp-backoffice` en `:3005` → `GET /onboarding/<token>` HTTP 200.
+- Pendiente (opcional): repetir smoke en entorno tipo Render o CI con URLs HTTPS reales.
 
 ## Proximas extensiones fuera de esta fase
 
