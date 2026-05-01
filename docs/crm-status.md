@@ -1,6 +1,6 @@
 # CRM Status
 
-Ultima actualizacion: 2026-04-30
+Ultima actualizacion: 2026-05-01
 
 ## Alcance actual
 
@@ -12,7 +12,10 @@ Ultima actualizacion: 2026-04-30
 
 - Diseno aprobado: `docs/superpowers/specs/2026-04-30-merchant-onboarding-crm-design.md`.
 - Plan aprobado: `docs/superpowers/plans/2026-04-30-merchant-onboarding-crm.md`.
-- Implementacion: en progreso.
+- API (`psp-api`): onboarding publico (POST aplicaciones, token, perfil negocio) + ops internos + CRM listado/detalle/acciones.
+- Backoffice (`psp-backoffice`): onboarding por token `/onboarding/[token]`; CRM admin `/crm/onboarding` y detalle.
+- Marketing (`web-finara`): captacion publica `/merchant-signup` con proxy server `POST /api/merchant-onboarding` → `psp-api` (`PSP_API_BASE_URL`).
+- Pendiente: revision final de documentacion transversal (`PROJECT_CONTEXT.md`, README/env) y verificacion e2e del flujo completo.
 
 ## Proximas extensiones fuera de esta fase
 

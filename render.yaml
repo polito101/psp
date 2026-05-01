@@ -71,6 +71,8 @@ services:
         value: production
       - key: NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL
         value: https://psp-backoffice.onrender.com/login
+      - key: PSP_API_BASE_URL
+        value: https://psp-api.onrender.com
 
   - type: web
     name: psp-backoffice
