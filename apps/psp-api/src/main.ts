@@ -8,6 +8,14 @@ import { parseCorsAllowedOrigins } from './config/env.validation';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
 
+  const trustProxyRaw = process.env.TRUST_PROXY?.trim();
+  if (trustProxyRaw === 'true' || trustProxyRaw === '1') {
+    const httpAdapter = app.getHttpAdapter();
+    if (httpAdapter.getType() === 'express') {
+      httpAdapter.getInstance().set('trust proxy', trustProxyRaw === '1' ? 1 : true);
+    }
+  }
+
   app.use(helmet({ contentSecurityPolicy: false }));
   const nodeEnv = process.env.NODE_ENV ?? 'development';
   const corsAllowList = parseCorsAllowedOrigins(process.env.CORS_ALLOWED_ORIGINS ?? '');

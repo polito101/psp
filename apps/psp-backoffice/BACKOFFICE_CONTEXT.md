@@ -1,6 +1,6 @@
 # BACKOFFICE_CONTEXT — PSP Backoffice
 
-Ultima actualizacion: 2026-04-30
+Ultima actualizacion: 2026-05-01
 
 Documento **local** del app `apps/psp-backoffice` (nombre distinto de `PROJECT_CONTEXT.md` en la raíz para evitar confusion). El monorepo mantiene visión global y API en **`PROJECT_CONTEXT.md`** (raíz); aquí se detalla solo el panel administrativo.
 
@@ -38,17 +38,20 @@ src/
 │   ├── merchants/[merchantId]/overview|payments|settlements|payment-methods|admin|finance/page.tsx
 │   ├── monitor/page.tsx              # `/monitor`
 │   ├── payments/[paymentId]/page.tsx # detalle pago
-│   └── api/internal/                 # BFF (solo servidor)
-│       ├── transactions/route.ts
-│       ├── transactions/counts/route.ts
-│       ├── transactions/summary/route.ts
-│       ├── transactions/volume-hourly/route.ts
-│       ├── transactions/dashboard-volume-usd/route.ts
-│       ├── settlements/...
-│       ├── merchants/ops/...
-│       ├── merchants/[merchantId]/finance/...
-│       ├── payments/[paymentId]/route.ts
-│       └── provider-health/route.ts
+│   └── api/
+│       ├── public/onboarding/[token]/    # proxy público merchant-onboarding (sin cookie)
+│       └── internal/                       # BFF (solo servidor)
+│           ├── transactions/route.ts
+│           ├── transactions/counts/route.ts
+│           ├── transactions/summary/route.ts
+│           ├── transactions/volume-hourly/route.ts
+│           ├── transactions/dashboard-volume-usd/route.ts
+│           ├── crm/onboarding/...          # CRM expedientes (admin + proxy ops)
+│           ├── settlements/...
+│           ├── merchants/ops/...
+│           ├── merchants/[merchantId]/finance/...
+│           ├── payments/[paymentId]/route.ts
+│           └── provider-health/route.ts
 ├── components/                       # UI por feature (home/, merchant-portal/, settlements/, merchants/, crm/)
 └── lib/                              # clientes API, utilidades
 ```
@@ -118,8 +121,7 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 ## 7) BFF y seguridad
 
 - El merchant **no** envía proveedor en `POST /api/v2/payments` (ruteo del PSP en API); los filtros por `provider` en este panel son solo operativos sobre datos ya persistidos. Los valores permitidos en BFF/UI siguen `OPS_PAYMENT_PROVIDERS` en `src/lib/api/payment-providers.ts` (debe mantenerse alineado con `PAYMENT_PROVIDER_NAMES` en `psp-api`).
-- Las rutas `app/api/internal/*` reenvian a endpoints internos de Nest (`/api/v2/payments/ops/...`, `/api/v1/settlements/...`, `/api/v1/merchants/ops/...`, `/api/v1/merchant-onboarding/ops/...`, health, etc.) con `X-Internal-Secret` solo en servidor. El listado ops va a `.../ops/transactions`; los conteos agregados por estado del dashboard a `.../ops/transactions/counts` (`GET /api/internal/transactions/counts`); el resumen comparativo (payments, bruto, neto, errores) a `.../ops/transactions/summary` (`GET /api/internal/transactions/summary`); la serie de volumen horario a `.../ops/transactions/volume-hourly` (`GET /api/internal/transactions/volume-hourly`); volumen agregado en USD a `.../ops/dashboard/volume-usd` (`GET /api/internal/transactions/dashboard-volume-usd`). Finanzas por merchant (resumen gross/fee/net, filas por `PaymentFeeQuote`, payouts): `GET /api/internal/merchants/:merchantId/finance/summary|transactions|payouts` → `.../ops/merchants/:merchantId/finance/...`. Settlements: `.../internal/settlements/merchants/:id/available-balance`, `.../requests` (GET/POST), inbox y approve/reject. Merchants ops: `.../internal/merchants/ops/directory`, `.../ops/:id/detail|active|payment-methods`. CRM onboarding: `GET /api/internal/crm/onboarding`, `GET /api/internal/crm/onboarding/:applicationId`, y mutaciones `approve|reject|resend-link` hacia `.../merchant-onboarding/ops/applications/...`. El proxy (`lib/server/backoffice-api.ts`) exige `backofficeScope` en cualquier ruta payments ops **o** settlements **o** `merchants/ops` **o** `merchant-onboarding/ops` (RBAC fail-closed alineado con `InternalSecretGuard` en API). Soporta `proxyInternalPost` / `proxyInternalPatch` para cuerpos JSON.
-- Las rutas públicas de onboarding (`/api/public/onboarding/:token` y `/api/public/onboarding/:token/business-profile`) usan `PSP_API_BASE_URL`, rechazan redirects y **no** inyectan `X-Internal-Secret`; son BFF público hacia `GET/POST /api/v1/merchant-onboarding/tokens/:token`.
+- Las rutas `app/api/internal/*` reenvían a endpoints internos de Nest (`/api/v2/payments/ops/...`, `/api/v1/settlements/...`, `/api/v1/merchants/ops/...`, `/api/v1/merchant-onboarding/ops/...`, health, etc.) con `X-Internal-Secret` solo en servidor. El listado ops va a `.../ops/transactions`; los conteos agregados por estado del dashboard a `.../ops/transactions/counts` (`GET /api/internal/transactions/counts`); el resumen comparativo (payments, bruto, neto, errores) a `.../ops/transactions/summary` (`GET /api/internal/transactions/summary`); la serie de volumen horario a `.../ops/transactions/volume-hourly` (`GET /api/internal/transactions/volume-hourly`); volumen agregado en USD a `.../ops/dashboard/volume-usd` (`GET /api/internal/transactions/dashboard-volume-usd`). Finanzas por merchant (resumen gross/fee/net, filas por `PaymentFeeQuote`, payouts): `GET /api/internal/merchants/:merchantId/finance/summary|transactions|payouts` → `.../ops/merchants/:merchantId/finance/...`. Settlements: `.../internal/settlements/merchants/:id/available-balance`, `.../requests` (GET/POST), inbox y approve/reject. Merchants ops: `.../internal/merchants/ops/directory`, `.../ops/:id/detail|active|payment-methods`. CRM onboarding: `GET /api/internal/crm/onboarding`, `GET /api/internal/crm/onboarding/:applicationId`, y mutaciones `approve|reject|resend-link` hacia `.../merchant-onboarding/ops/applications/...`. Rutas **públicas** sin cookie (`/api/public/onboarding/:token` y `.../business-profile`) proxean vía `PSP_API_BASE_URL` con `proxyPublicGet` / `proxyPublicPost`, rechazan redirects y **no** inyectan `X-Internal-Secret`; segmentos con percent-encoding inválido → **400** (`tryDecodeRoutePathSegment`) antes del fetch upstream. El proxy (`lib/server/backoffice-api.ts`) exige `backofficeScope` en cualquier ruta payments ops **o** settlements **o** `merchants/ops` **o** `merchant-onboarding/ops` (RBAC fail-closed alineado con `InternalSecretGuard` en API). Soporta `proxyInternalPost` / `proxyInternalPatch` para cuerpos JSON.
 - Detalle de pago: `GET /api/internal/payments/:paymentId` hace proxy a `.../ops/payments/:id`. Por defecto **no** se incluye `responsePayload` por intento (menos payload y menos metadata de proveedor en el navegador). Solo si la peticion al BFF lleva `?includePayload=true` se reenvia ese flag a la API (uso depuracion).
 - Sesión: cookie HttpOnly `backoffice_session` con JWT (claims `role: admin` o `merchant` y `merchantId` si aplica). El BFF acepta también `Authorization: Bearer <JWT>` (p. ej. tests). Sin sesión válida: `401`/`403`. Faltan `BACKOFFICE_SESSION_JWT_SECRET` o conflictos con otros secretos → `500` (fail-closed).
 - Alcance portal en BFF (`enforceInternalRouteAuth`): JWT verificado pero con **rol incompatible** con `BACKOFFICE_PORTAL_MODE` → **`403`** (p. ej. cookie admin en deploy merchant).

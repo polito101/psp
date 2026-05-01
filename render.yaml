@@ -53,6 +53,9 @@ services:
       # Orígenes del panel merchant, panel admin interno y sitio marketing.
       - key: CORS_ALLOWED_ORIGINS
         value: https://psp-backoffice.onrender.com,https://psp-backoffice-admin.onrender.com,https://web-finara.onrender.com
+      # `req.ip` / throttler usan X-Forwarded-For cuando el proxy de confianza (p. ej. web-finara) reenvía la IP del visitante.
+      - key: TRUST_PROXY
+        value: "true"
 
   - type: web
     name: web-finara
@@ -71,8 +74,11 @@ services:
         value: production
       - key: NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL
         value: https://psp-backoffice.onrender.com/login
+      # Misma URL pública que el BFF del backoffice (`POST /api/merchant-onboarding` → psp-api).
       - key: PSP_API_BASE_URL
         value: https://psp-api.onrender.com
+      - key: PSP_API_PROXY_TIMEOUT_MS
+        value: "60000"
 
   - type: web
     name: psp-backoffice

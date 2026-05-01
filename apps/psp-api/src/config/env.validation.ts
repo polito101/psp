@@ -328,6 +328,15 @@ export function validateEnv(input: EnvInput): EnvInput {
   env.FX_AUTO_REFRESH_ENABLED = String(
     parseBoolean(getString(env.FX_AUTO_REFRESH_ENABLED), true, 'FX_AUTO_REFRESH_ENABLED'),
   );
+  env.ONBOARDING_EMAIL_RESEND_FETCH_TIMEOUT_MS = String(
+    parseIntegerRange(
+      getString(env.ONBOARDING_EMAIL_RESEND_FETCH_TIMEOUT_MS),
+      10_000,
+      1_000,
+      120_000,
+      'ONBOARDING_EMAIL_RESEND_FETCH_TIMEOUT_MS',
+    ),
+  );
   {
     const raw = getString(env.FX_AUTO_REFRESH_INTERVAL_MS);
     const defaultIntervalMs = 6 * 60 * 60 * 1000;
