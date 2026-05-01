@@ -87,6 +87,54 @@ export class MerchantsService {
   }
 
   /**
+   * Crea un merchant inactivo (onboarding público) dentro de una transacción existente:
+   * API key, tarifas EUR por defecto y métodos mock, igual que `create` pero sin exponer secretos.
+   */
+  async createInactiveShellForOnboarding(tx: Prisma.TransactionClient, name: string): Promise<{ id: string }> {
+    const webhookSecretPlain = `whsec_${randomBytes(24).toString('base64url')}`;
+    const webhookSecretCiphertext = encryptUtf8(webhookSecretPlain);
+    const placeholderHash = await bcrypt.hash(randomBytes(16).toString('hex'), 12);
+    const now = new Date();
+
+    const merchant = await tx.merchant.create({
+      data: {
+        name,
+        apiKeyHash: placeholderHash,
+        webhookUrl: null,
+        webhookSecretCiphertext,
+        isActive: false,
+        deactivatedAt: now,
+      },
+    });
+
+    const apiKeyPlain = `psp.${merchant.id}.${randomBytes(32).toString('base64url')}`;
+    const apiKeyHash = await bcrypt.hash(apiKeyPlain, 12);
+
+    await tx.merchant.update({
+      where: { id: merchant.id },
+      data: { apiKeyHash },
+    });
+
+    await tx.merchantRateTable.createMany({
+      data: PAYMENT_PROVIDER_NAMES.map((provider) => ({
+        merchantId: merchant.id,
+        currency: 'EUR',
+        provider,
+        percentageBps: merchant.feeBps,
+        fixedMinor: 0,
+        minimumMinor: 0,
+        settlementMode: SettlementMode.NET,
+        payoutScheduleType: PayoutScheduleType.T_PLUS_N,
+        payoutScheduleParam: 1,
+      })),
+    });
+
+    await this.ensureMockPaymentMethodsForMerchant(tx, merchant.id);
+
+    return { id: merchant.id };
+  }
+
+  /**
    * Genera una nueva API key para el merchant e invalida la anterior.
    * Si se especifica keyTtlDays, la nueva key tendrá esa validez.
    * @returns La nueva apiKey en texto plano (mostrar solo una vez).

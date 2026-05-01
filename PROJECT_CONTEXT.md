@@ -65,6 +65,7 @@ C:/AA psp/
 │   │   │   ├── prisma/
 │   │   │   ├── redis/
 │   │   │   ├── merchants/
+│   │   │   ├── merchant-onboarding/
 │   │   │   ├── payment-links/
 │   │   │   ├── ledger/
 │   │   │   ├── webhooks/
@@ -115,6 +116,7 @@ En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc`, `te
 - Guardias reutilizables (`ApiKeyGuard`, `InternalSecretGuard`) y decorador `CurrentMerchant`.
 - Prisma centralizado en `PrismaService` y cliente generado en `src/generated/prisma`.
 - Convencion Prisma: modelos en PascalCase y mapeo SQL snake_case mediante `@map`/`@@map`.
+- Onboarding CRM (merchants): modelos `MerchantOnboardingApplication` / `MerchantOnboardingToken` / checklist / eventos; **unicidad** en `contact_email` (email normalizado en servicio) para serializar creaciones concurrentes; `createApplication` interpreta `P2002` sobre ese campo como éxito neutral (misma forma que un alta válida) y no filtra estado interno.
 - Modulo `RedisModule/RedisService` para responsabilidades de cache e idempotencia.
 - Payments V2 (`/api/v2/payments`) introduce orquestacion multi-proveedor con **registry inyectable**: el token Nest `PAYMENT_PROVIDERS` recibe los adapters registrados en `PaymentsV2Module` (`useFactory`: `mock` y opcionalmente `acme` si `PAYMENTS_ACME_ENABLED=true`). `ProviderRegistryService` valida al arranque que cada entrada de `PAYMENTS_PROVIDER_ORDER` exista en ese conjunto. Los códigos de proveedor tipados viven en `PAYMENT_PROVIDER_NAMES` / `PaymentProviderName` (`apps/psp-api/src/payments-v2/domain/payment-provider-names.ts`, SSOT compartido con `env.validation` para el CSV). Retries acotados y circuit breaker por proveedor con estado compartido en Redis (HASH `payv2:cb:{provider}`: campos `failures`, `openedUntil` ms; sin `REDIS_URL` el servicio degrada a Map en proceso y registra una vez por proceso Node `payments_v2.circuit_breaker_redis_unavailable`). Opcionalmente, con Redis y `PAYMENTS_PROVIDER_CB_HALF_OPEN=true`, tras el cooldown solo una petición a la vez obtiene la sonda `SET payv2:cb:{provider}:probe NX` (mitiga thundering herd en recuperación); con el flag en false el comportamiento es el anterior. Entre reintentos internos del mismo adapter ante `transientError`, backoff exponencial acotado con jitter (`PAYMENTS_PROVIDER_RETRY_BASE_MS` default 100, `0` = sin espera; `PAYMENTS_PROVIDER_RETRY_MAX_MS` default 3000; si `MAX < BASE` se normaliza `MAX` a `BASE`).
 - Hardening providers: `PAYMENTS_PROVIDER_ORDER` se valida fail-fast contra `PAYMENT_PROVIDER_NAMES` (sin vacíos, no puede quedar vacío). `mock` queda restringido a `NODE_ENV=sandbox|development` salvo flag explícito `PAYMENTS_ALLOW_MOCK=true`.

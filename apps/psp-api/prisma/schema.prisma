@@ -434,3 +434,85 @@ model WebhookDelivery {
   @@index([merchantId, status])
   @@index([status, scheduledAt])
 }
+
+model MerchantOnboardingApplication {
+  id              String                   @id @default(cuid())
+  merchantId      String                   @map("merchant_id")
+  status          MerchantOnboardingStatus @default(ACCOUNT_CREATED)
+  contactName     String                   @map("contact_name") @db.VarChar(160)
+  /// Email normalizado (lower+trim) en creación; unicidad DB evita carreras en `createApplication`.
+  contactEmail    String                   @unique @map("contact_email") @db.VarChar(320)
+  contactPhone    String                   @map("contact_phone") @db.VarChar(64)
+  tradeName       String?                  @map("trade_name") @db.VarChar(160)
+  legalName       String?                  @map("legal_name") @db.VarChar(200)
+  country         String?                  @db.VarChar(2)
+  website         String?                  @db.VarChar(2048)
+  businessType    String?                  @map("business_type") @db.VarChar(120)
+  rejectionReason String?                  @map("rejection_reason") @db.Text
+  submittedAt     DateTime?                @map("submitted_at")
+  reviewedAt      DateTime?                @map("reviewed_at")
+  approvedAt      DateTime?                @map("approved_at")
+  rejectedAt      DateTime?                @map("rejected_at")
+  activatedAt     DateTime?                @map("activated_at")
+  createdAt       DateTime                 @default(now()) @map("created_at")
+  updatedAt       DateTime                 @updatedAt @map("updated_at")
+
+  merchant       Merchant                            @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  checklistItems MerchantOnboardingChecklistItem[]
+  events         MerchantOnboardingEvent[]
+  tokens         MerchantOnboardingToken[]
+
+  @@index([status, createdAt])
+  @@index([merchantId])
+  @@map("merchant_onboarding_applications")
+}
+
+model MerchantOnboardingChecklistItem {
+  id              String                            @id @default(cuid())
+  applicationId   String                            @map("application_id")
+  key             String                            @db.VarChar(80)
+  label           String                            @db.VarChar(160)
+  status          MerchantOnboardingChecklistStatus @default(PENDING)
+  completedAt     DateTime?                         @map("completed_at")
+  createdAt       DateTime                          @default(now()) @map("created_at")
+  updatedAt       DateTime                          @updatedAt @map("updated_at")
+
+  application MerchantOnboardingApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@unique([applicationId, key])
+  @@index([applicationId, status])
+  @@map("merchant_onboarding_checklist_items")
+}
+
+model MerchantOnboardingEvent {
+  id            String                      @id @default(cuid())
+  applicationId String                      @map("application_id")
+  type          String                      @db.VarChar(80)
+  actorType     MerchantOnboardingActorType @map("actor_type")
+  actorId       String?                     @map("actor_id") @db.VarChar(160)
+  message       String                      @db.Text
+  metadata      Json?
+  createdAt     DateTime                    @default(now()) @map("created_at")
+
+  application MerchantOnboardingApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId, createdAt])
+  @@index([type, createdAt])
+  @@map("merchant_onboarding_events")
+}
+
+model MerchantOnboardingToken {
+  id            String    @id @default(cuid())
+  applicationId String    @map("application_id")
+  tokenHash     String    @unique @map("token_hash") @db.VarChar(64)
+  expiresAt     DateTime  @map("expires_at")
+  usedAt        DateTime? @map("used_at")
+  revokedAt     DateTime? @map("revoked_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  application MerchantOnboardingApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId, createdAt])
+  @@index([expiresAt])
+  @@map("merchant_onboarding_tokens")
+}
