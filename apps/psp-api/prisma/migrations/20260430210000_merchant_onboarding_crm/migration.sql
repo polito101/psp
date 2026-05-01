@@ -77,7 +77,7 @@ CREATE TABLE "merchant_onboarding_tokens" (
 CREATE INDEX "merchant_onboarding_applications_status_created_at_idx" ON "merchant_onboarding_applications"("status", "created_at");
 
 -- CreateIndex
-CREATE INDEX "merchant_onboarding_applications_contact_email_idx" ON "merchant_onboarding_applications"("contact_email");
+CREATE UNIQUE INDEX "merchant_onboarding_applications_contact_email_key" ON "merchant_onboarding_applications"("contact_email");
 
 -- CreateIndex
 CREATE INDEX "merchant_onboarding_applications_merchant_id_idx" ON "merchant_onboarding_applications"("merchant_id");
