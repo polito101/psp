@@ -1,4 +1,8 @@
-import { parseCorsAllowedOrigins, validateEnv } from './env.validation';
+import {
+  normalizeMerchantOnboardingBaseUrl,
+  parseCorsAllowedOrigins,
+  validateEnv,
+} from './env.validation';
 
 describe('parseCorsAllowedOrigins', () => {
   it('normalizes trailing slash to origin', () => {
@@ -218,6 +222,61 @@ describe('validateEnv payments v2 merchant rate limit', () => {
   });
 });
 
+describe('normalizeMerchantOnboardingBaseUrl', () => {
+  it('acepta http://127.0.0.1:3005 en NODE_ENV=test', () => {
+    expect(normalizeMerchantOnboardingBaseUrl('http://127.0.0.1:3005', 'test')).toBe(
+      'http://127.0.0.1:3005',
+    );
+  });
+
+  it('acepta http://[::1]:3005 en NODE_ENV=test (hostname WHATWG en Node)', () => {
+    expect(normalizeMerchantOnboardingBaseUrl('http://[::1]:3005', 'test')).toBe('http://[::1]:3005');
+  });
+
+  it('rechaza http://127.0.0.1 en production', () => {
+    expect(() => normalizeMerchantOnboardingBaseUrl('http://127.0.0.1:3005', 'production')).toThrow(
+      /MERCHANT_ONBOARDING_BASE_URL must use https/,
+    );
+  });
+});
+
+describe('validateEnv MERCHANT_ONBOARDING_BASE_URL', () => {
+  const minimalEnv = (): Record<string, string> => ({
+    DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
+    INTERNAL_API_SECRET: 'internal-secret',
+    APP_ENCRYPTION_KEY: '01234567890123456789012345678901',
+    NODE_ENV: 'test',
+    PAYMENTS_PROVIDER_ORDER: 'acme',
+  });
+
+  it('normaliza http://127.0.0.1:3005 en NODE_ENV=test', () => {
+    const out = validateEnv({
+      ...minimalEnv(),
+      MERCHANT_ONBOARDING_BASE_URL: 'http://127.0.0.1:3005/',
+    });
+    expect(out.MERCHANT_ONBOARDING_BASE_URL).toBe('http://127.0.0.1:3005');
+  });
+
+  it('normaliza http://[::1]:3005 en NODE_ENV=test', () => {
+    const out = validateEnv({
+      ...minimalEnv(),
+      MERCHANT_ONBOARDING_BASE_URL: 'http://[::1]:3005',
+    });
+    expect(out.MERCHANT_ONBOARDING_BASE_URL).toBe('http://[::1]:3005');
+  });
+
+  it('rechaza http loopback en production', () => {
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.example.com',
+        MERCHANT_ONBOARDING_BASE_URL: 'http://127.0.0.1:3005',
+      }),
+    ).toThrow(/MERCHANT_ONBOARDING_BASE_URL must use https/);
+  });
+});
+
 describe('validateEnv PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS', () => {
   const minimalEnv = (): Record<string, string> => ({
     DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
@@ -237,5 +296,58 @@ describe('validateEnv PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS', () => {
       PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS: 'true',
     });
     expect(out.PAYMENTS_V2_ASSERT_NO_LEGACY_STRIPE_ROWS).toBe('true');
+  });
+});
+
+describe('validateEnv merchant onboarding', () => {
+  const minimalEnv = (): Record<string, string> => ({
+    DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
+    INTERNAL_API_SECRET: 'internal-secret',
+    APP_ENCRYPTION_KEY: '01234567890123456789012345678901',
+    NODE_ENV: 'development',
+  });
+
+  it('normaliza onboarding base URL al origin', () => {
+    const out = validateEnv({
+      ...minimalEnv(),
+      MERCHANT_ONBOARDING_BASE_URL: 'https://backoffice.example.com/onboarding',
+    });
+
+    expect(out.MERCHANT_ONBOARDING_BASE_URL).toBe('https://backoffice.example.com');
+  });
+
+  it('acepta el default localhost en NODE_ENV=test', () => {
+    const out = validateEnv({
+      ...minimalEnv(),
+      NODE_ENV: 'test',
+      PAYMENTS_PROVIDER_ORDER: 'acme',
+    });
+
+    expect(out.MERCHANT_ONBOARDING_BASE_URL).toBe('http://localhost:3005');
+  });
+
+  it('rechaza onboarding base URL con userinfo', () => {
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        MERCHANT_ONBOARDING_BASE_URL: 'https://user:pass@backoffice.example.com',
+      }),
+    ).toThrow(/must not include userinfo/);
+  });
+
+  it('rechaza onboarding base URL con query o hash', () => {
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        MERCHANT_ONBOARDING_BASE_URL: 'https://backoffice.example.com?token=secret',
+      }),
+    ).toThrow(/must not include query or hash/);
+
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        MERCHANT_ONBOARDING_BASE_URL: 'https://backoffice.example.com#secret',
+      }),
+    ).toThrow(/must not include query or hash/);
   });
 });

@@ -74,7 +74,7 @@ services:
         value: production
       - key: NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL
         value: https://psp-backoffice.onrender.com/login
-      # Misma URL pública que el BFF del backoffice (`POST /api/merchant-onboarding/applications` → psp-api).
+      # Misma URL pública que el BFF del backoffice (`POST /api/merchant-onboarding` → psp-api).
       - key: PSP_API_BASE_URL
         value: https://psp-api.onrender.com
       - key: PSP_API_PROXY_TIMEOUT_MS

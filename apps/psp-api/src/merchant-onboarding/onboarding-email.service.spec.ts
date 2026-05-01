@@ -10,73 +10,35 @@ describe('OnboardingEmailService', () => {
     jest.restoreAllMocks();
   });
 
-  function makeConfig(overrides: Record<string, string | undefined> = {}): ConfigService {
-    const map: Record<string, string | undefined> = {
-      RESEND_API_KEY: 're_test_key',
-      ONBOARDING_EMAIL_FROM: 'onboarding@example.com',
-      ONBOARDING_EMAIL_RESEND_FETCH_TIMEOUT_MS: '10000',
-      ...overrides,
-    };
-    return {
-      get: (k: string) => map[k],
-    } as ConfigService;
-  }
-
-  it('returns { ok: false } when fetch rejects (e.g. ECONNRESET)', async () => {
-    global.fetch = jest.fn().mockRejectedValue(new Error('ECONNRESET'));
-    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-
-    const svc = new OnboardingEmailService(makeConfig());
-    const r = await svc.sendOnboardingLink({
-      to: 'merchant@test.com',
-      contactName: 'María',
-      onboardingUrl: 'https://backoffice.example/onboarding/token',
-    });
-
-    expect(r).toEqual({ ok: false, errorMessage: 'Resend request failed' });
-    expect(global.fetch).toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledWith(
-      JSON.stringify({
-        event: 'merchant_onboarding.resend_fetch_failed',
-        error: 'ECONNRESET',
-      }),
-    );
-
-    warn.mockRestore();
-  });
-
-  it('returns ok true with provider id on HTTP 200', async () => {
+  it('does not read or log the Resend error response body', async () => {
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    const text = jest.fn().mockResolvedValue('token=https://example.com/onboarding/secret');
     global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ id: 'msg_123' }),
-    });
+      ok: false,
+      status: 500,
+      headers: new Headers({ 'x-request-id': 'req_123' }),
+      text,
+    } as unknown as Response);
 
-    const svc = new OnboardingEmailService(makeConfig());
-    const r = await svc.sendOnboardingLink({
-      to: 'merchant@test.com',
-      contactName: 'Test',
-      onboardingUrl: 'https://example.com/o/t',
-    });
-
-    expect(r).toEqual({ ok: true, providerMessageId: 'msg_123' });
-    expect(global.fetch).toHaveBeenCalledWith(
-      'https://api.resend.com/emails',
-      expect.objectContaining({
-        method: 'POST',
-        signal: expect.any(AbortSignal),
+    const config = {
+      get: jest.fn((key: string) => {
+        if (key === 'RESEND_API_KEY') return 'resend-key';
+        if (key === 'ONBOARDING_EMAIL_FROM') return 'Finara <onboarding@example.com>';
+        return undefined;
       }),
-    );
-  });
+    } as unknown as ConfigService;
+    const service = new OnboardingEmailService(config);
 
-  it('returns { ok: false } when Resend is not configured', async () => {
-    const svc = new OnboardingEmailService(
-      makeConfig({ RESEND_API_KEY: '', ONBOARDING_EMAIL_FROM: 'x@y.com' }),
-    );
-    const r = await svc.sendOnboardingLink({
-      to: 'a@b.com',
-      contactName: 'X',
-      onboardingUrl: 'https://x',
+    const result = await service.sendOnboardingLink({
+      to: 'merchant@example.com',
+      contactName: 'Ada',
+      onboardingUrl: 'https://example.com/onboarding/secret',
     });
-    expect(r).toEqual({ ok: false, errorMessage: 'Resend is not configured' });
+
+    expect(result).toEqual({ ok: false, errorMessage: 'Resend responded 500' });
+    expect(text).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      'merchant_onboarding.email_failed status=500 request_id=req_123',
+    );
   });
 });

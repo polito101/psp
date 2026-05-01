@@ -61,7 +61,13 @@ export class InternalSecretGuard implements CanActivate {
 
   private assertBackofficeScopeForRequest(req: Request): void {
     const path = req.path ?? '';
-    if (this.isPaymentsV2OpsPath(path) || this.isSettlementsOpsPath(path) || this.isMerchantsOpsPath(path)) {
+    if (this.isMerchantOnboardingOpsPath(path)) {
+      this.assertAdminOnlyOpsRequest(req, 'merchant onboarding ops endpoints');
+    } else if (
+      this.isPaymentsV2OpsPath(path) ||
+      this.isSettlementsOpsPath(path) ||
+      this.isMerchantsOpsPath(path)
+    ) {
       this.assertPaymentsOpsFailClosed(req);
     } else {
       this.assertLegacyOptionalMerchantScope(req);
@@ -74,6 +80,10 @@ export class InternalSecretGuard implements CanActivate {
 
   private isMerchantsOpsPath(path: string): boolean {
     return path.includes('/merchants/ops/');
+  }
+
+  private isMerchantOnboardingOpsPath(path: string): boolean {
+    return path.includes('/merchant-onboarding/ops/');
   }
 
   /**
@@ -91,6 +101,14 @@ export class InternalSecretGuard implements CanActivate {
       return;
     }
     this.assertMerchantScopeOnOpsRequest(req);
+  }
+
+  private assertAdminOnlyOpsRequest(req: Request, endpointLabel: string): void {
+    const roleRaw = this.getHeader(req, 'x-backoffice-role');
+    const role = roleRaw?.toLowerCase().trim();
+    if (role !== 'admin') {
+      throw new ForbiddenException(`X-Backoffice-Role admin is required for ${endpointLabel}`);
+    }
   }
 
   /**

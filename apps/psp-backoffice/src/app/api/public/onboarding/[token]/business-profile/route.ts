@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import type { MerchantOnboardingApplicationListItem } from "@/lib/api/contracts";
 import { mapProxyError, proxyPublicPost } from "@/lib/server/backoffice-api";
-import { tryDecodeRoutePathSegment } from "@/lib/server/decode-route-path-segment";
 
 type RouteContext = { params: Promise<{ token: string }> };
 
@@ -9,19 +9,13 @@ const businessProfileSchema = z.object({
   tradeName: z.string().min(2).max(160),
   legalName: z.string().min(2).max(200),
   country: z.string().length(2).transform((v) => v.toUpperCase()),
-  website: z
-    .union([z.literal(""), z.string().url().max(2048)])
-    .optional()
-    .transform((v) => (v === "" || v === undefined ? undefined : v)),
+  website: z.string().url().max(2048).optional().or(z.literal("").transform(() => undefined)),
   businessType: z.string().min(2).max(120),
 });
 
 export async function POST(request: NextRequest, context: RouteContext) {
   const { token: rawToken } = await context.params;
-  const decoded = tryDecodeRoutePathSegment(rawToken);
-  if (!decoded.ok) {
-    return NextResponse.json({ message: "Invalid token" }, { status: 400 });
-  }
+  const token = decodeURIComponent(rawToken);
 
   let json: unknown;
   try {
@@ -39,11 +33,10 @@ export async function POST(request: NextRequest, context: RouteContext) {
   }
 
   try {
-    const encoded = encodeURIComponent(decoded.value);
-    const data = await proxyPublicPost<unknown>(
-      `/api/v1/merchant-onboarding/tokens/${encoded}/business-profile`,
-      bodyParse.data,
-    );
+    const data = await proxyPublicPost<MerchantOnboardingApplicationListItem>({
+      path: `/api/v1/merchant-onboarding/tokens/${encodeURIComponent(token)}/business-profile`,
+      body: bodyParse.data,
+    });
     return NextResponse.json(data);
   } catch (error) {
     return mapProxyError(error);

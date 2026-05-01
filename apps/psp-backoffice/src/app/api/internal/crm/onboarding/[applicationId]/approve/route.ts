@@ -1,14 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
 import { mapProxyError, proxyInternalPost } from "@/lib/server/backoffice-api";
-import { tryDecodeRoutePathSegment } from "@/lib/server/decode-route-path-segment";
-import { enforceInternalRouteAuth } from "@/lib/server/internal-route-auth";
 import { enforceInternalMutationRequest } from "@/lib/server/internal-mutation-guard";
+import { enforceInternalRouteAuth } from "@/lib/server/internal-route-auth";
 import { requireAdminClaims } from "@/lib/server/internal-route-scope";
 
 type RouteContext = { params: Promise<{ applicationId: string }> };
-
-const bodySchema = z.object({});
 
 export async function POST(request: NextRequest, context: RouteContext) {
   const mutation = enforceInternalMutationRequest(request);
@@ -26,31 +22,12 @@ export async function POST(request: NextRequest, context: RouteContext) {
     return adminBlock;
   }
 
-  const { applicationId: rawId } = await context.params;
-  const decoded = tryDecodeRoutePathSegment(rawId);
-  if (!decoded.ok) {
-    return NextResponse.json({ message: "Invalid application id" }, { status: 400 });
-  }
-
-  let json: unknown;
-  try {
-    json = await request.json();
-  } catch {
-    json = {};
-  }
-  const bodyParse = bodySchema.safeParse(json);
-  if (!bodyParse.success) {
-    return NextResponse.json(
-      { message: "Invalid body", issues: bodyParse.error.issues },
-      { status: 400 },
-    );
-  }
+  const { applicationId: rawApplicationId } = await context.params;
+  const applicationId = decodeURIComponent(rawApplicationId);
 
   try {
-    const encoded = encodeURIComponent(decoded.value);
     const data = await proxyInternalPost<unknown>({
-      path: `/api/v1/merchant-onboarding/ops/applications/${encoded}/approve`,
-      body: bodyParse.data,
+      path: `/api/v1/merchant-onboarding/ops/applications/${encodeURIComponent(applicationId)}/approve`,
       backofficeScope: auth.claims,
     });
     return NextResponse.json(data);

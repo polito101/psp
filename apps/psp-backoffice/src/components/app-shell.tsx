@@ -12,6 +12,7 @@ import {
   LayoutDashboard,
   LogIn,
   LogOut,
+  UserPlus,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { LayoutSession } from "@/lib/session-types";
@@ -76,6 +77,12 @@ function buildNavItems(session: LayoutSession | null): NavItem[] {
       id: "operations",
       label: "Operaciones",
       icon: ClipboardList,
+    },
+    {
+      href: "/crm/onboarding",
+      id: "crm-onboarding",
+      label: "CRM onboarding",
+      icon: UserPlus,
     },
     {
       href: financeHref,

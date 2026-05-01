@@ -62,6 +62,7 @@ export async function proxy(req: NextRequest) {
 
   if (
     pathname.startsWith("/api/") ||
+    pathname.startsWith("/onboarding/") ||
     pathname.startsWith("/_next") ||
     pathname.startsWith("/favicon") ||
     /\.(ico|png|jpg|jpeg|gif|svg|webp|css|js|txt|map)$/.test(pathname)

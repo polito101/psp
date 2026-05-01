@@ -63,6 +63,55 @@ function normalizeCorsOriginEntry(segment: string): string {
 }
 
 /**
+ * Hostnames de loopback para permitir `http:` en `development`/`test`.
+ * Node WHATWG URL usa `hostname === '[::1]'` para literales IPv6 con corchetes.
+ */
+function isLoopbackHostname(hostname: string): boolean {
+  return (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1' ||
+    hostname === '[::1]'
+  );
+}
+
+/**
+ * Normaliza `MERCHANT_ONBOARDING_BASE_URL`: origen absoluto `https:`, o `http:` solo
+ * en `development`/`test` si el host es loopback (`localhost`, `127.0.0.1`, `::1` / `[::1]`).
+ *
+ * @param raw URL absoluta (p. ej. desde env).
+ * @param nodeEnv Valor de `NODE_ENV` ya normalizado.
+ * @returns Origen WHATWG (`scheme://host[:port]`).
+ * @throws {Error} Si la URL es inválida o el esquema no está permitido.
+ */
+export function normalizeMerchantOnboardingBaseUrl(raw: string, nodeEnv: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error('MERCHANT_ONBOARDING_BASE_URL is not a valid URL');
+  }
+  if (url.username !== '' || url.password !== '') {
+    throw new Error('MERCHANT_ONBOARDING_BASE_URL must not include userinfo');
+  }
+  if (url.search !== '' || url.hash !== '') {
+    throw new Error('MERCHANT_ONBOARDING_BASE_URL must not include query or hash');
+  }
+  if (url.pathname !== '/') {
+    throw new Error('MERCHANT_ONBOARDING_BASE_URL must be an origin without path (trailing slash only)');
+  }
+  const isLoopback = isLoopbackHostname(url.hostname);
+  const allowHttp =
+    (nodeEnv === 'development' || nodeEnv === 'test') && isLoopback && url.protocol === 'http:';
+  if (url.protocol !== 'https:' && !allowHttp) {
+    throw new Error(
+      'MERCHANT_ONBOARDING_BASE_URL must use https, or http only for loopback hosts in development/test',
+    );
+  }
+  return url.origin;
+}
+
+/**
  * Normaliza y valida variables de entorno críticas para evitar fallos tardíos.
  *
  * @param input Variables de entorno crudas.
@@ -120,6 +169,24 @@ export function validateEnv(input: EnvInput): EnvInput {
 
   const httpLogSkipPrefixes = getString(env.HTTP_LOG_SKIP_PATH_PREFIXES) ?? '';
   env.HTTP_LOG_SKIP_PATH_PREFIXES = httpLogSkipPrefixes;
+
+  env.RESEND_API_KEY = getString(env.RESEND_API_KEY) ?? '';
+  env.ONBOARDING_EMAIL_FROM = getString(env.ONBOARDING_EMAIL_FROM) ?? '';
+  const merchantOnboardingBaseUrl =
+    getString(env.MERCHANT_ONBOARDING_BASE_URL) ?? 'http://localhost:3005';
+  env.MERCHANT_ONBOARDING_BASE_URL = normalizeMerchantOnboardingBaseUrl(
+    merchantOnboardingBaseUrl,
+    nodeEnv,
+  );
+  env.MERCHANT_ONBOARDING_TOKEN_TTL_HOURS = String(
+    parseIntegerRange(
+      getString(env.MERCHANT_ONBOARDING_TOKEN_TTL_HOURS),
+      168,
+      1,
+      24 * 30,
+      'MERCHANT_ONBOARDING_TOKEN_TTL_HOURS',
+    ),
+  );
 
   env.PAYMENTS_V2_ENABLED_MERCHANTS = getString(env.PAYMENTS_V2_ENABLED_MERCHANTS) ?? '';
   env.PAYMENTS_ALLOW_MOCK = String(
@@ -292,6 +359,11 @@ export function validateEnv(input: EnvInput): EnvInput {
     env.REDIS_URL = redisUrl;
   }
 
+  env.MERCHANT_ONBOARDING_BASE_URL = normalizeMerchantOnboardingBaseUrl(
+    getString(env.MERCHANT_ONBOARDING_BASE_URL) ?? 'http://localhost:3005',
+    nodeEnv,
+  );
+
   // Mantener compatibilidad con consumidores que aún lean `process.env` directamente.
   // Importante: `getString()` ya trata "" como unset; aquí reflejamos los valores normalizados.
   for (const [key, value] of Object.entries(env)) {
@@ -385,6 +457,40 @@ function getString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Normaliza la URL pública de onboarding a su origin, evitando credenciales
+ * embebidas o componentes que puedan mezclarse con tokens del flujo.
+ */
+function normalizeMerchantOnboardingBaseUrl(value: string, nodeEnv: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('MERCHANT_ONBOARDING_BASE_URL must be an absolute URL');
+  }
+
+  if (url.username !== '' || url.password !== '') {
+    throw new Error('MERCHANT_ONBOARDING_BASE_URL must not include userinfo');
+  }
+
+  if (url.search !== '' || url.hash !== '') {
+    throw new Error('MERCHANT_ONBOARDING_BASE_URL must not include query or hash');
+  }
+
+  if (url.protocol === 'https:') {
+    return url.origin;
+  }
+
+  const allowsLocalhostHttp = nodeEnv === 'development' || nodeEnv === 'test';
+  if (allowsLocalhostHttp && url.protocol === 'http:' && url.hostname === 'localhost') {
+    return url.origin;
+  }
+
+  throw new Error(
+    'MERCHANT_ONBOARDING_BASE_URL must use https (http://localhost is allowed in development and test)',
+  );
 }
 
 function parseBoolean(value: string | undefined, defaultValue: boolean, envName: string): boolean {

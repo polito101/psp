@@ -82,14 +82,15 @@ function validateAndNormalizeApiOrigin(rawBaseUrl: string): string {
   const isLocalhostException =
     parsedBaseUrl.hostname === "localhost" ||
     parsedBaseUrl.hostname === "127.0.0.1" ||
-    parsedBaseUrl.hostname === "::1";
+    parsedBaseUrl.hostname === "::1" ||
+    parsedBaseUrl.hostname === "[::1]";
 
   if (
     parsedBaseUrl.protocol !== "https:" &&
     !(parsedBaseUrl.protocol === "http:" && isLocalhostException)
   ) {
     throw new Error(
-      `Refusing PSP_API_BASE_URL with protocol "${parsedBaseUrl.protocol}". Use https, or http only for localhost/127.0.0.1/::1.`,
+      `Refusing PSP_API_BASE_URL with protocol "${parsedBaseUrl.protocol}". Use https, or http only for localhost/127.0.0.1/::1/[::1].`,
     );
   }
 
@@ -105,6 +106,11 @@ function getServerConfig() {
   }
 
   return { apiBaseOrigin, internalSecret, proxyTimeoutMs: parseProxyTimeoutMs() };
+}
+
+function getPublicServerConfig() {
+  const apiBaseOrigin = validateAndNormalizeApiOrigin(getApiBaseUrlRaw());
+  return { apiBaseOrigin, proxyTimeoutMs: parseProxyTimeoutMs() };
 }
 
 function mergeUint8Arrays(parts: readonly Uint8Array[]): Uint8Array {
@@ -395,19 +401,15 @@ export async function proxyInternalPatch<T>(options: ProxyWriteOptions): Promise
   return (await response.json()) as T;
 }
 
-function getPublicProxyRuntime(): { apiBaseOrigin: string; proxyTimeoutMs: number } {
-  return {
-    apiBaseOrigin: validateAndNormalizeApiOrigin(getApiBaseUrlRaw()),
-    proxyTimeoutMs: parseProxyTimeoutMs(),
-  };
-}
+export async function proxyPublicGet<T>(options: ProxyRequestOptions): Promise<T> {
+  const { apiBaseOrigin, proxyTimeoutMs } = getPublicServerConfig();
+  const url = new URL(options.path, apiBaseOrigin);
+  if (options.searchParams) {
+    options.searchParams.forEach((value, key) => {
+      url.searchParams.set(key, value);
+    });
+  }
 
-/**
- * GET público hacia `psp-api` sin `X-Internal-Secret` (endpoints merchant-onboarding públicos).
- */
-export async function proxyPublicGet<T>(path: string): Promise<T> {
-  const { apiBaseOrigin, proxyTimeoutMs } = getPublicProxyRuntime();
-  const url = new URL(path, apiBaseOrigin);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), proxyTimeoutMs);
 
@@ -425,7 +427,9 @@ export async function proxyPublicGet<T>(path: string): Promise<T> {
 
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("location") ?? "<missing>";
-    throw new Error(`PSP API returned redirect (${response.status}) to "${location}".`);
+    throw new Error(
+      `PSP API returned redirect (${response.status}) to "${location}". Redirects are not allowed for public proxy requests.`,
+    );
   }
 
   if (!response.ok) {
@@ -439,21 +443,24 @@ export async function proxyPublicGet<T>(path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-/**
- * POST público hacia `psp-api` sin cabecera interna (p. ej. business profile de onboarding).
- */
-export async function proxyPublicPost<T>(path: string, body: unknown): Promise<T> {
-  const { apiBaseOrigin, proxyTimeoutMs } = getPublicProxyRuntime();
-  const url = new URL(path, apiBaseOrigin);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), proxyTimeoutMs);
+export async function proxyPublicPost<T>(options: ProxyWriteOptions): Promise<T> {
+  const { apiBaseOrigin, proxyTimeoutMs } = getPublicServerConfig();
+  const url = new URL(options.path, apiBaseOrigin);
+  if (options.searchParams) {
+    options.searchParams.forEach((value, key) => {
+      url.searchParams.set(key, value);
+    });
+  }
 
   const bodyPayload =
-    body === undefined
+    options.body === undefined
       ? undefined
-      : typeof body === "string"
-        ? body
-        : JSON.stringify(body);
+      : typeof options.body === "string"
+        ? options.body
+        : JSON.stringify(options.body);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), proxyTimeoutMs);
 
   let response: Response;
   try {
@@ -471,7 +478,9 @@ export async function proxyPublicPost<T>(path: string, body: unknown): Promise<T
 
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("location") ?? "<missing>";
-    throw new Error(`PSP API returned redirect (${response.status}) to "${location}".`);
+    throw new Error(
+      `PSP API returned redirect (${response.status}) to "${location}". Redirects are not allowed for public proxy requests.`,
+    );
   }
 
   if (!response.ok) {

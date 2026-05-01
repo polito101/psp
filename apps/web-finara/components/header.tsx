@@ -69,7 +69,7 @@ export function Header() {
               Log in
             </Link>
             <Link
-              href={merchantPortalLoginUrl}
+              href="/merchant-signup"
               className="btn-brand-gradient text-sm font-semibold px-5 py-2 rounded-full transition-opacity duration-200"
             >
               Create account
@@ -106,7 +106,7 @@ export function Header() {
                     Log in
                   </Link>
                   <Link
-                    href={merchantPortalLoginUrl}
+                    href="/merchant-signup"
                     className="btn-brand-gradient text-center py-2 px-4 rounded-full text-sm font-semibold"
                   >
                     Create account

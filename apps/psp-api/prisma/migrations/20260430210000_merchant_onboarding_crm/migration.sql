@@ -83,10 +83,10 @@ CREATE INDEX "merchant_onboarding_applications_contact_email_idx" ON "merchant_o
 CREATE INDEX "merchant_onboarding_applications_merchant_id_idx" ON "merchant_onboarding_applications"("merchant_id");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "merchant_onboarding_checklist_items_application_id_key_key" ON "merchant_onboarding_checklist_items"("application_id", "key");
+CREATE INDEX "merchant_onboarding_checklist_items_application_id_status_idx" ON "merchant_onboarding_checklist_items"("application_id", "status");
 
 -- CreateIndex
-CREATE INDEX "merchant_onboarding_checklist_items_application_id_status_idx" ON "merchant_onboarding_checklist_items"("application_id", "status");
+CREATE UNIQUE INDEX "merchant_onboarding_checklist_items_application_id_key_key" ON "merchant_onboarding_checklist_items"("application_id", "key");
 
 -- CreateIndex
 CREATE INDEX "merchant_onboarding_events_application_id_created_at_idx" ON "merchant_onboarding_events"("application_id", "created_at");

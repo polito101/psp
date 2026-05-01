@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { MerchantOnboardingApplicationDetail } from "@/lib/api/contracts";
 import { mapProxyError, proxyInternalGet } from "@/lib/server/backoffice-api";
-import { tryDecodeRoutePathSegment } from "@/lib/server/decode-route-path-segment";
 import { enforceInternalRouteAuth } from "@/lib/server/internal-route-auth";
 import { requireAdminClaims } from "@/lib/server/internal-route-scope";
 
@@ -17,16 +17,12 @@ export async function GET(request: NextRequest, context: RouteContext) {
     return adminBlock;
   }
 
-  const { applicationId: rawId } = await context.params;
-  const decoded = tryDecodeRoutePathSegment(rawId);
-  if (!decoded.ok) {
-    return NextResponse.json({ message: "Invalid application id" }, { status: 400 });
-  }
+  const { applicationId: rawApplicationId } = await context.params;
+  const applicationId = decodeURIComponent(rawApplicationId);
 
   try {
-    const encoded = encodeURIComponent(decoded.value);
-    const data = await proxyInternalGet<unknown>({
-      path: `/api/v1/merchant-onboarding/ops/applications/${encoded}`,
+    const data = await proxyInternalGet<MerchantOnboardingApplicationDetail>({
+      path: `/api/v1/merchant-onboarding/ops/applications/${encodeURIComponent(applicationId)}`,
       backofficeScope: auth.claims,
     });
     return NextResponse.json(data);
