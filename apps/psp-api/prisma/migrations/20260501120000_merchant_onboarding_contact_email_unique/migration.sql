@@ -1,5 +1,5 @@
--- Drop non-unique index on contact_email (replaced by unique constraint for concurrency-safe dedup).
+-- Drop legacy non-unique index (environments that applied 20260430210000 before it was corrected).
 DROP INDEX IF EXISTS "merchant_onboarding_applications_contact_email_idx";
 
--- Unique contact email: serializes concurrent `createApplication` for the same address.
-CREATE UNIQUE INDEX "merchant_onboarding_applications_contact_email_key" ON "merchant_onboarding_applications"("contact_email");
+-- Ensure unique contact_email (no-op if 20260430210000 already created this index).
+CREATE UNIQUE INDEX IF NOT EXISTS "merchant_onboarding_applications_contact_email_key" ON "merchant_onboarding_applications"("contact_email");

@@ -1,5 +1,6 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { PrismaClientKnownRequestError } from '@prisma/client/runtime/client';
 import { randomBytes } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import { encryptUtf8 } from '../crypto/secret-box';
@@ -35,6 +36,47 @@ const PUBLIC_CREATE_MESSAGE =
 const PUBLIC_RESEND_MESSAGE =
   'If the application can receive onboarding links, we will send next steps shortly.';
 
+/** Índice único en DB (`20260501120000_merchant_onboarding_contact_email_unique`). */
+const CONTACT_EMAIL_UNIQUE_INDEX_NAME = 'merchant_onboarding_applications_contact_email_key';
+
+/**
+ * P2002 de unicidad sobre el email de contacto del expediente (carrera tras `findFirst`).
+ */
+function isContactEmailUniqueViolation(error: unknown): boolean {
+  const code =
+    error instanceof PrismaClientKnownRequestError ? error.code : (error as { code?: string })?.code;
+  if (code !== 'P2002') {
+    return false;
+  }
+  const meta =
+    error instanceof PrismaClientKnownRequestError
+      ? (error.meta as { target?: unknown; modelName?: unknown } | undefined)
+      : (error as { meta?: { target?: unknown; modelName?: unknown } })?.meta;
+
+  const rawTarget = meta?.target;
+  const targetParts: string[] = Array.isArray(rawTarget)
+    ? rawTarget.filter((t): t is string => typeof t === 'string')
+    : typeof rawTarget === 'string'
+      ? [rawTarget]
+      : [];
+
+  const hitsEmailConstraint = targetParts.some(
+    (t) =>
+      t === 'contact_email' ||
+      t === 'contactEmail' ||
+      t === CONTACT_EMAIL_UNIQUE_INDEX_NAME,
+  );
+  if (!hitsEmailConstraint) {
+    return false;
+  }
+
+  const modelName = meta?.modelName;
+  if (typeof modelName === 'string' && modelName !== 'MerchantOnboardingApplication') {
+    return false;
+  }
+  return true;
+}
+
 type OnboardingTransaction = Prisma.TransactionClient;
 type EmailDeliveryResult =
   | { ok: true; providerMessageId: string | null }
@@ -52,6 +94,8 @@ type ApplicationWithMerchant = {
 
 @Injectable()
 export class MerchantOnboardingService {
+  private readonly logger = new Logger(MerchantOnboardingService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly tokenService: OnboardingTokenService,
@@ -62,10 +106,11 @@ export class MerchantOnboardingService {
   /**
    * Crea una solicitud pública de onboarding sin revelar si el email ya existe.
    * El merchant queda inactivo hasta que el backoffice apruebe la aplicación.
+   * Carreras concurrentes: violación de unicidad en `contact_email` (P2002) → misma respuesta neutral que un duplicado visible en lectura.
    */
   async createApplication(dto: CreateMerchantOnboardingApplicationDto) {
     const contactEmail = normalizeEmail(dto.email);
-    // Neutralidad best-effort: sin constraint único, la regla definitiva queda en producto/DB.
+    // Atajo idempotente; la unicidad real es la de DB (`contact_email`) para carreras concurrentes.
     const existing = await this.prisma.merchantOnboardingApplication.findFirst({
       where: { contactEmail },
       select: { id: true },
@@ -82,73 +127,82 @@ export class MerchantOnboardingService {
     const webhookSecretCiphertext = encryptUtf8(webhookSecretPlain);
     const placeholderHash = await bcrypt.hash(randomBytes(16).toString('hex'), 12);
 
-    const applicationId = await this.prisma.$transaction(async (tx) => {
-      const merchant = await tx.merchant.create({
-        data: {
-          name: dto.name,
-          apiKeyHash: placeholderHash,
-          webhookSecretCiphertext,
-          isActive: false,
-          deactivatedAt: now,
-        },
-      });
+    let applicationId: string;
+    try {
+      applicationId = await this.prisma.$transaction(async (tx) => {
+        const merchant = await tx.merchant.create({
+          data: {
+            name: dto.name,
+            apiKeyHash: placeholderHash,
+            webhookSecretCiphertext,
+            isActive: false,
+            deactivatedAt: now,
+          },
+        });
 
-      const application = await tx.merchantOnboardingApplication.create({
-        data: {
-          merchantId: merchant.id,
-          contactName: dto.name,
-          contactEmail,
-          contactPhone: dto.phone,
-          status: MerchantOnboardingStatus.ACCOUNT_CREATED,
-        },
-      });
+        const application = await tx.merchantOnboardingApplication.create({
+          data: {
+            merchantId: merchant.id,
+            contactName: dto.name,
+            contactEmail,
+            contactPhone: dto.phone,
+            status: MerchantOnboardingStatus.ACCOUNT_CREATED,
+          },
+        });
 
-      await tx.merchantOnboardingChecklistItem.createMany({
-        data: CHECKLIST_ITEMS.map((item) => ({
-          applicationId: application.id,
-          key: item.key,
-          label: item.label,
-          status:
-            item.key === 'basic_contact_created'
-              ? MerchantOnboardingChecklistStatus.COMPLETED
-              : MerchantOnboardingChecklistStatus.PENDING,
-          completedAt: item.key === 'basic_contact_created' ? now : null,
-        })),
-      });
+        await tx.merchantOnboardingChecklistItem.createMany({
+          data: CHECKLIST_ITEMS.map((item) => ({
+            applicationId: application.id,
+            key: item.key,
+            label: item.label,
+            status:
+              item.key === 'basic_contact_created'
+                ? MerchantOnboardingChecklistStatus.COMPLETED
+                : MerchantOnboardingChecklistStatus.PENDING,
+            completedAt: item.key === 'basic_contact_created' ? now : null,
+          })),
+        });
 
-      await tx.merchantOnboardingToken.create({
-        data: {
-          applicationId: application.id,
-          tokenHash: token.hash,
-          expiresAt: token.expiresAt,
-        },
-      });
+        await tx.merchantOnboardingToken.create({
+          data: {
+            applicationId: application.id,
+            tokenHash: token.hash,
+            expiresAt: token.expiresAt,
+          },
+        });
 
-      await tx.merchantOnboardingApplication.update({
-        where: { id: application.id },
-        data: { status: MerchantOnboardingStatus.DOCUMENTATION_PENDING },
-      });
+        await tx.merchantOnboardingApplication.update({
+          where: { id: application.id },
+          data: { status: MerchantOnboardingStatus.DOCUMENTATION_PENDING },
+        });
 
-      await tx.merchantOnboardingEvent.create({
-        data: {
-          applicationId: application.id,
-          type: 'APPLICATION_CREATED',
-          actorType: MerchantOnboardingActorType.SYSTEM,
-          message: 'Solicitud de onboarding creada.',
-        },
-      });
+        await tx.merchantOnboardingEvent.create({
+          data: {
+            applicationId: application.id,
+            type: 'APPLICATION_CREATED',
+            actorType: MerchantOnboardingActorType.SYSTEM,
+            message: 'Solicitud de onboarding creada.',
+          },
+        });
 
-      await tx.merchantOnboardingEvent.create({
-        data: {
-          applicationId: application.id,
-          type: 'ONBOARDING_LINK_SENT',
-          actorType: MerchantOnboardingActorType.SYSTEM,
-          message: 'Link de onboarding generado.',
-        },
-      });
+        await tx.merchantOnboardingEvent.create({
+          data: {
+            applicationId: application.id,
+            type: 'ONBOARDING_LINK_SENT',
+            actorType: MerchantOnboardingActorType.SYSTEM,
+            message: 'Link de onboarding generado.',
+          },
+        });
 
-      return application.id;
-    });
+        return application.id;
+      });
+    } catch (error) {
+      if (isContactEmailUniqueViolation(error)) {
+        this.logger.debug('merchant_onboarding.create_application.duplicate_contact_email');
+        return this.publicCreateResponse();
+      }
+      throw error;
+    }
 
     const emailResult = await this.sendOnboardingEmail({
       to: contactEmail,

@@ -1,5 +1,6 @@
-import { ConfigService } from '@nestjs/config';
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { PrismaClientKnownRequestError } from '@prisma/client/runtime/client';
 import { MerchantOnboardingService } from './merchant-onboarding.service';
 import { OnboardingEmailService } from './onboarding-email.service';
 import { OnboardingTokenService } from './onboarding-token.service';
@@ -291,6 +292,50 @@ describe('MerchantOnboardingService', () => {
       ok: true,
       message: 'If the email can receive onboarding links, we will send next steps shortly.',
     });
+  });
+
+  it('returns neutral success when DB unique constraint on contact_email races past findFirst', async () => {
+    const dupError = new PrismaClientKnownRequestError(
+      'Unique constraint failed on the fields: (`contact_email`)',
+      {
+        code: 'P2002',
+        clientVersion: 'test',
+        meta: { modelName: 'MerchantOnboardingApplication', target: ['contact_email'] },
+      },
+    );
+    const { service, prisma, tx, emailService } = createService();
+    prisma.$transaction.mockRejectedValueOnce(dupError);
+
+    const result = await service.createApplication({
+      name: 'Ada Lovelace',
+      email: 'ada@example.com',
+      phone: '+34600000000',
+    });
+
+    expect(tx.merchant.create).not.toHaveBeenCalled();
+    expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      ok: true,
+      message: 'If the email can receive onboarding links, we will send next steps shortly.',
+    });
+  });
+
+  it('rethrows P2002 that is not the onboarding contact_email unique violation', async () => {
+    const err = new PrismaClientKnownRequestError('Unique constraint failed', {
+      code: 'P2002',
+      clientVersion: 'test',
+      meta: { modelName: 'MerchantOnboardingToken', target: ['token_hash'] },
+    });
+    const { service, prisma } = createService();
+    prisma.$transaction.mockRejectedValueOnce(err);
+
+    await expect(
+      service.createApplication({
+        name: 'Ada',
+        email: 'ada@example.com',
+        phone: '+34',
+      }),
+    ).rejects.toBe(err);
   });
 
   it('submits business profile with a valid token and moves to IN_REVIEW', async () => {
