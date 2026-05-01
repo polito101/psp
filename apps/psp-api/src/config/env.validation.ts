@@ -63,6 +63,55 @@ function normalizeCorsOriginEntry(segment: string): string {
 }
 
 /**
+ * Hostnames de loopback para permitir `http:` en `development`/`test`.
+ * Node WHATWG URL usa `hostname === '[::1]'` para literales IPv6 con corchetes.
+ */
+function isLoopbackHostname(hostname: string): boolean {
+  return (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1' ||
+    hostname === '[::1]'
+  );
+}
+
+/**
+ * Normaliza `MERCHANT_ONBOARDING_BASE_URL`: origen absoluto `https:`, o `http:` solo
+ * en `development`/`test` si el host es loopback (`localhost`, `127.0.0.1`, `::1` / `[::1]`).
+ *
+ * @param raw URL absoluta (p. ej. desde env).
+ * @param nodeEnv Valor de `NODE_ENV` ya normalizado.
+ * @returns Origen WHATWG (`scheme://host[:port]`).
+ * @throws {Error} Si la URL es inválida o el esquema no está permitido.
+ */
+export function normalizeMerchantOnboardingBaseUrl(raw: string, nodeEnv: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error('MERCHANT_ONBOARDING_BASE_URL is not a valid URL');
+  }
+  if (url.username !== '' || url.password !== '') {
+    throw new Error('MERCHANT_ONBOARDING_BASE_URL must not include userinfo');
+  }
+  if (url.search !== '' || url.hash !== '') {
+    throw new Error('MERCHANT_ONBOARDING_BASE_URL must not include query or hash');
+  }
+  if (url.pathname !== '/') {
+    throw new Error('MERCHANT_ONBOARDING_BASE_URL must be an origin without path (trailing slash only)');
+  }
+  const isLoopback = isLoopbackHostname(url.hostname);
+  const allowHttp =
+    (nodeEnv === 'development' || nodeEnv === 'test') && isLoopback && url.protocol === 'http:';
+  if (url.protocol !== 'https:' && !allowHttp) {
+    throw new Error(
+      'MERCHANT_ONBOARDING_BASE_URL must use https, or http only for loopback hosts in development/test',
+    );
+  }
+  return url.origin;
+}
+
+/**
  * Normaliza y valida variables de entorno críticas para evitar fallos tardíos.
  *
  * @param input Variables de entorno crudas.
@@ -300,6 +349,11 @@ export function validateEnv(input: EnvInput): EnvInput {
     }
     env.REDIS_URL = redisUrl;
   }
+
+  env.MERCHANT_ONBOARDING_BASE_URL = normalizeMerchantOnboardingBaseUrl(
+    getString(env.MERCHANT_ONBOARDING_BASE_URL) ?? 'http://localhost:3005',
+    nodeEnv,
+  );
 
   // Mantener compatibilidad con consumidores que aún lean `process.env` directamente.
   // Importante: `getString()` ya trata "" como unset; aquí reflejamos los valores normalizados.

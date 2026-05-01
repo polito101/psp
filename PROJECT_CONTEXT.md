@@ -110,7 +110,7 @@ En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc`, `te
 - Arquitectura por dominio NestJS: cada dominio separa `module/controller/service/dto`.
 - Controladores delgados y logica de negocio concentrada en servicios.
 - Validacion global en `main.ts` con `ValidationPipe` (`whitelist`, `forbidNonWhitelisted`, `transform`).
-- Validacion de entorno centralizada con `ConfigModule.forRoot({ validate })` para fail-fast en bootstrap.
+- Validacion de entorno centralizada con `ConfigModule.forRoot({ validate })` para fail-fast en bootstrap (`apps/psp-api/src/config/env.validation.ts`). `MERCHANT_ONBOARDING_BASE_URL` se normaliza siempre (default `http://localhost:3005`): exige origen `https` salvo `http` en loopback (`localhost`, `127.0.0.1`, `::1` o `[::1]` en hostname WHATWG) cuando `NODE_ENV` es `development` o `test`.
 - Prefijo global `api` + versionado URI en v1.
 - Guardias reutilizables (`ApiKeyGuard`, `InternalSecretGuard`) y decorador `CurrentMerchant`.
 - Prisma centralizado en `PrismaService` y cliente generado en `src/generated/prisma`.

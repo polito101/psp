@@ -1,6 +1,6 @@
 # Estado de tests
 
-Ultima actualizacion: 2026-04-30
+Ultima actualizacion: 2026-05-01
 
 ## Objetivo
 
@@ -73,7 +73,7 @@ La CI del monorepo incluye `api-ci` (lint/test/build API), `backoffice-ci` (lint
 - `src/payments-v2/providers/acme/acme-provider.adapter.spec.ts`
 - `src/payments-v2/payments-v2-merchant-rate-limit.spec.ts`
 - `src/payments-v2/payments-v2-merchant-rate-limit.service.spec.ts`
-- `src/config/env.validation.spec.ts`
+- `src/config/env.validation.spec.ts` (incl. `MERCHANT_ONBOARDING_BASE_URL` / loopback `http` en `NODE_ENV=test`)
 - `src/common/guards/internal-secret.guard.spec.ts`
 - `src/common/correlation/correlation-id.spec.ts`
 - `src/merchant-onboarding/merchant-onboarding.controller.spec.ts`

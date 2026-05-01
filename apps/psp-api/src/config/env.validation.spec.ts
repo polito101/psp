@@ -1,4 +1,8 @@
-import { parseCorsAllowedOrigins, validateEnv } from './env.validation';
+import {
+  normalizeMerchantOnboardingBaseUrl,
+  parseCorsAllowedOrigins,
+  validateEnv,
+} from './env.validation';
 
 describe('parseCorsAllowedOrigins', () => {
   it('normalizes trailing slash to origin', () => {
@@ -215,6 +219,61 @@ describe('validateEnv payments v2 merchant rate limit', () => {
         PAYMENTS_ALLOW_MOCK: 'yes',
       }),
     ).toThrow(/PAYMENTS_ALLOW_MOCK must be "true" or "false"/);
+  });
+});
+
+describe('normalizeMerchantOnboardingBaseUrl', () => {
+  it('acepta http://127.0.0.1:3005 en NODE_ENV=test', () => {
+    expect(normalizeMerchantOnboardingBaseUrl('http://127.0.0.1:3005', 'test')).toBe(
+      'http://127.0.0.1:3005',
+    );
+  });
+
+  it('acepta http://[::1]:3005 en NODE_ENV=test (hostname WHATWG en Node)', () => {
+    expect(normalizeMerchantOnboardingBaseUrl('http://[::1]:3005', 'test')).toBe('http://[::1]:3005');
+  });
+
+  it('rechaza http://127.0.0.1 en production', () => {
+    expect(() => normalizeMerchantOnboardingBaseUrl('http://127.0.0.1:3005', 'production')).toThrow(
+      /MERCHANT_ONBOARDING_BASE_URL must use https/,
+    );
+  });
+});
+
+describe('validateEnv MERCHANT_ONBOARDING_BASE_URL', () => {
+  const minimalEnv = (): Record<string, string> => ({
+    DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
+    INTERNAL_API_SECRET: 'internal-secret',
+    APP_ENCRYPTION_KEY: '01234567890123456789012345678901',
+    NODE_ENV: 'test',
+    PAYMENTS_PROVIDER_ORDER: 'acme',
+  });
+
+  it('normaliza http://127.0.0.1:3005 en NODE_ENV=test', () => {
+    const out = validateEnv({
+      ...minimalEnv(),
+      MERCHANT_ONBOARDING_BASE_URL: 'http://127.0.0.1:3005/',
+    });
+    expect(out.MERCHANT_ONBOARDING_BASE_URL).toBe('http://127.0.0.1:3005');
+  });
+
+  it('normaliza http://[::1]:3005 en NODE_ENV=test', () => {
+    const out = validateEnv({
+      ...minimalEnv(),
+      MERCHANT_ONBOARDING_BASE_URL: 'http://[::1]:3005',
+    });
+    expect(out.MERCHANT_ONBOARDING_BASE_URL).toBe('http://[::1]:3005');
+  });
+
+  it('rechaza http loopback en production', () => {
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.example.com',
+        MERCHANT_ONBOARDING_BASE_URL: 'http://127.0.0.1:3005',
+      }),
+    ).toThrow(/MERCHANT_ONBOARDING_BASE_URL must use https/);
   });
 });
 

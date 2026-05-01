@@ -82,14 +82,15 @@ function validateAndNormalizeApiOrigin(rawBaseUrl: string): string {
   const isLocalhostException =
     parsedBaseUrl.hostname === "localhost" ||
     parsedBaseUrl.hostname === "127.0.0.1" ||
-    parsedBaseUrl.hostname === "::1";
+    parsedBaseUrl.hostname === "::1" ||
+    parsedBaseUrl.hostname === "[::1]";
 
   if (
     parsedBaseUrl.protocol !== "https:" &&
     !(parsedBaseUrl.protocol === "http:" && isLocalhostException)
   ) {
     throw new Error(
-      `Refusing PSP_API_BASE_URL with protocol "${parsedBaseUrl.protocol}". Use https, or http only for localhost/127.0.0.1/::1.`,
+      `Refusing PSP_API_BASE_URL with protocol "${parsedBaseUrl.protocol}". Use https, or http only for localhost/127.0.0.1/::1/[::1].`,
     );
   }
 
