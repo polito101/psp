@@ -53,7 +53,8 @@ export function requiresBackofficeScopePath(path: string): boolean {
   return (
     path.includes("/payments/ops/") ||
     path.includes("/settlements/") ||
-    path.includes("/merchants/ops/")
+    path.includes("/merchants/ops/") ||
+    path.includes("/merchant-onboarding/ops/")
   );
 }
 
@@ -104,6 +105,11 @@ function getServerConfig() {
   }
 
   return { apiBaseOrigin, internalSecret, proxyTimeoutMs: parseProxyTimeoutMs() };
+}
+
+function getPublicServerConfig() {
+  const apiBaseOrigin = validateAndNormalizeApiOrigin(getApiBaseUrlRaw());
+  return { apiBaseOrigin, proxyTimeoutMs: parseProxyTimeoutMs() };
 }
 
 function mergeUint8Arrays(parts: readonly Uint8Array[]): Uint8Array {
@@ -380,6 +386,99 @@ export async function proxyInternalPatch<T>(options: ProxyWriteOptions): Promise
     const location = response.headers.get("location") ?? "<missing>";
     throw new Error(
       `PSP API returned redirect (${response.status}) to "${location}". Redirects are not allowed when sending internal secrets.`,
+    );
+  }
+
+  if (!response.ok) {
+    const { text, truncated, measuredBodyBytes } = await readResponseTextWithByteLimit(
+      response,
+      PROXY_UPSTREAM_BODY_READ_MAX_BYTES,
+    );
+    throw new ProxyUpstreamError(response.status, text, truncated, measuredBodyBytes);
+  }
+
+  return (await response.json()) as T;
+}
+
+export async function proxyPublicGet<T>(options: ProxyRequestOptions): Promise<T> {
+  const { apiBaseOrigin, proxyTimeoutMs } = getPublicServerConfig();
+  const url = new URL(options.path, apiBaseOrigin);
+  if (options.searchParams) {
+    options.searchParams.forEach((value, key) => {
+      url.searchParams.set(key, value);
+    });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), proxyTimeoutMs);
+
+  let response: Response;
+  try {
+    response = await fetch(url.toString(), {
+      method: "GET",
+      redirect: "manual",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get("location") ?? "<missing>";
+    throw new Error(
+      `PSP API returned redirect (${response.status}) to "${location}". Redirects are not allowed for public proxy requests.`,
+    );
+  }
+
+  if (!response.ok) {
+    const { text, truncated, measuredBodyBytes } = await readResponseTextWithByteLimit(
+      response,
+      PROXY_UPSTREAM_BODY_READ_MAX_BYTES,
+    );
+    throw new ProxyUpstreamError(response.status, text, truncated, measuredBodyBytes);
+  }
+
+  return (await response.json()) as T;
+}
+
+export async function proxyPublicPost<T>(options: ProxyWriteOptions): Promise<T> {
+  const { apiBaseOrigin, proxyTimeoutMs } = getPublicServerConfig();
+  const url = new URL(options.path, apiBaseOrigin);
+  if (options.searchParams) {
+    options.searchParams.forEach((value, key) => {
+      url.searchParams.set(key, value);
+    });
+  }
+
+  const bodyPayload =
+    options.body === undefined
+      ? undefined
+      : typeof options.body === "string"
+        ? options.body
+        : JSON.stringify(options.body);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), proxyTimeoutMs);
+
+  let response: Response;
+  try {
+    response = await fetch(url.toString(), {
+      method: "POST",
+      redirect: "manual",
+      headers: { "Content-Type": "application/json" },
+      body: bodyPayload,
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get("location") ?? "<missing>";
+    throw new Error(
+      `PSP API returned redirect (${response.status}) to "${location}". Redirects are not allowed for public proxy requests.`,
     );
   }
 

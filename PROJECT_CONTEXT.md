@@ -1,6 +1,6 @@
 # PROJECT_CONTEXT
 
-Ultima actualizacion: 2026-04-30
+Ultima actualizacion: 2026-05-01
 
 ## 1) Resumen del proyecto
 
@@ -15,7 +15,7 @@ La API esta construida con NestJS y expone REST versionado por URI, con foco ope
 - health checks
 
 Ademas del servicio API, el repo incluye:
-- sitio marketing Next.js (landing Finara) en `apps/web-finara` (deploy Render: servicio `web-finara` en `render.yaml`); los CTAs de acceso cliente apuntan al login merchant público (`NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL` → mismo código `psp-backoffice` en modo merchant). Esa env se valida en `getMerchantBackofficeLoginUrl` (URL absoluta, solo `https`, sin credenciales en userinfo, path normalizado a `/login`; si falla, fallback `https://psp-backoffice.onrender.com/login` y un único `console.warn`).
+- sitio marketing Next.js (landing Finara) en `apps/web-finara` (deploy Render: servicio `web-finara` en `render.yaml`). El CTA «Create account» enlaza a **`/merchant-signup`** (formulario que llama al Route Handler `POST /api/merchant-onboarding`, proxy servidor → `POST {PSP_API_BASE_URL}/api/v1/merchant-onboarding/applications`). El login merchant público sigue en `NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL` (mismo código `psp-backoffice` en modo merchant). Esa URL se valida en `getMerchantBackofficeLoginUrl` (absoluta, solo `https`, sin credenciales en userinfo, path normalizado a `/login`; si falla, fallback `https://psp-backoffice.onrender.com/login` y un único `console.warn`).
 - panel PSP en `apps/psp-backoffice`: **dos despliegues** del mismo app (merchant vs admin) vía `BACKOFFICE_PORTAL_MODE`/`NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE` (`/login` vs `/admin/login`); detalle en **`apps/psp-backoffice/BACKOFFICE_CONTEXT.md`** y **`render.yaml`** (`psp-backoffice`, `psp-backoffice-admin`).
 - infraestructura en `infra/terraform`
 - entorno local con PostgreSQL + Redis via `docker-compose.yml` (Postgres expuesto en el host en **5433** para no chocar con un PostgreSQL local en 5432; credenciales `psp` / `psp_dev_password` / DB `psp`)
@@ -80,11 +80,11 @@ C:/AA psp/
 │   │   ├── nest-cli.json
 │   │   └── README.md
 │   ├── web-finara/
-│   │   ├── app/, components/, lib/   (landing Next.js 16; Analytics Vercel opcional)
+│   │   ├── app/, components/, lib/   (landing Next.js 16; `/merchant-signup`, `POST /api/merchant-onboarding`; Analytics Vercel opcional)
 │   │   └── package.json
 │   └── psp-backoffice/
 │       ├── src/
-│       │   ├── app/ (Next: `/`, `/transactions`, `/merchants/*`, `/operations`, `/monitor`, `/payments/[paymentId]`; `/login` merchant portal, `/admin/login` admin portal; BFF `/api/internal/*` incl. settlements y merchants ops)
+│       │   ├── app/ (Next: `/`, `/transactions`, `/merchants/*`, `/operations`, `/monitor`, `/payments/[paymentId]`, `/onboarding/[token]` (onboarding público por token), `/crm/onboarding` y `/crm/onboarding/[applicationId]` (CRM admin); `/login` merchant portal, `/admin/login` admin portal; BFF `/api/internal/*` incl. settlements, merchants ops y CRM onboarding)
 │       │   ├── components/
 │       │   └── lib/
 │       ├── package.json

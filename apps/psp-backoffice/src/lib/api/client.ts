@@ -1,4 +1,6 @@
 import type {
+  MerchantOnboardingApplicationDetail,
+  MerchantOnboardingApplicationsResponse,
   MerchantFinancePayoutsFilters,
   MerchantFinancePayoutsResponse,
   MerchantFinanceSummaryFilters,
@@ -592,4 +594,57 @@ export async function patchMerchantPaymentMethod(
     },
   );
   return parseResponse<MerchantPaymentMethodRow>(response);
+}
+
+export async function fetchMerchantOnboardingApplications(): Promise<MerchantOnboardingApplicationsResponse> {
+  const response = await internalBffFetch("/api/internal/crm/onboarding", {
+    ...internalBffInit,
+    method: "GET",
+  });
+  return parseResponse<MerchantOnboardingApplicationsResponse>(response);
+}
+
+export async function fetchMerchantOnboardingApplication(
+  applicationId: string,
+): Promise<MerchantOnboardingApplicationDetail> {
+  const encoded = encodeURIComponent(applicationId);
+  const response = await internalBffFetch(`/api/internal/crm/onboarding/${encoded}`, {
+    ...internalBffInit,
+    method: "GET",
+  });
+  return parseResponse<MerchantOnboardingApplicationDetail>(response);
+}
+
+export async function approveMerchantOnboardingApplication(applicationId: string): Promise<unknown> {
+  const encoded = encodeURIComponent(applicationId);
+  const response = await internalBffFetch(`/api/internal/crm/onboarding/${encoded}/approve`, {
+    ...internalBffInit,
+    method: "POST",
+    headers: backofficeMutationHeaders,
+  });
+  return parseResponse<unknown>(response);
+}
+
+export async function rejectMerchantOnboardingApplication(
+  applicationId: string,
+  body: { reason: string },
+): Promise<unknown> {
+  const encoded = encodeURIComponent(applicationId);
+  const response = await internalBffFetch(`/api/internal/crm/onboarding/${encoded}/reject`, {
+    ...internalBffInit,
+    method: "POST",
+    headers: backofficeMutationHeaders,
+    body: JSON.stringify(body),
+  });
+  return parseResponse<unknown>(response);
+}
+
+export async function resendMerchantOnboardingLink(applicationId: string): Promise<unknown> {
+  const encoded = encodeURIComponent(applicationId);
+  const response = await internalBffFetch(`/api/internal/crm/onboarding/${encoded}/resend-link`, {
+    ...internalBffInit,
+    method: "POST",
+    headers: backofficeMutationHeaders,
+  });
+  return parseResponse<unknown>(response);
 }

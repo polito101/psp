@@ -121,6 +121,24 @@ export function validateEnv(input: EnvInput): EnvInput {
   const httpLogSkipPrefixes = getString(env.HTTP_LOG_SKIP_PATH_PREFIXES) ?? '';
   env.HTTP_LOG_SKIP_PATH_PREFIXES = httpLogSkipPrefixes;
 
+  env.RESEND_API_KEY = getString(env.RESEND_API_KEY) ?? '';
+  env.ONBOARDING_EMAIL_FROM = getString(env.ONBOARDING_EMAIL_FROM) ?? '';
+  const merchantOnboardingBaseUrl =
+    getString(env.MERCHANT_ONBOARDING_BASE_URL) ?? 'http://localhost:3005';
+  env.MERCHANT_ONBOARDING_BASE_URL = normalizeMerchantOnboardingBaseUrl(
+    merchantOnboardingBaseUrl,
+    nodeEnv,
+  );
+  env.MERCHANT_ONBOARDING_TOKEN_TTL_HOURS = String(
+    parseIntegerRange(
+      getString(env.MERCHANT_ONBOARDING_TOKEN_TTL_HOURS),
+      168,
+      1,
+      24 * 30,
+      'MERCHANT_ONBOARDING_TOKEN_TTL_HOURS',
+    ),
+  );
+
   env.PAYMENTS_V2_ENABLED_MERCHANTS = getString(env.PAYMENTS_V2_ENABLED_MERCHANTS) ?? '';
   env.PAYMENTS_ALLOW_MOCK = String(
     parseBoolean(getString(env.PAYMENTS_ALLOW_MOCK), false, 'PAYMENTS_ALLOW_MOCK'),
@@ -376,6 +394,40 @@ function getString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Normaliza la URL pública de onboarding a su origin, evitando credenciales
+ * embebidas o componentes que puedan mezclarse con tokens del flujo.
+ */
+function normalizeMerchantOnboardingBaseUrl(value: string, nodeEnv: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('MERCHANT_ONBOARDING_BASE_URL must be an absolute URL');
+  }
+
+  if (url.username !== '' || url.password !== '') {
+    throw new Error('MERCHANT_ONBOARDING_BASE_URL must not include userinfo');
+  }
+
+  if (url.search !== '' || url.hash !== '') {
+    throw new Error('MERCHANT_ONBOARDING_BASE_URL must not include query or hash');
+  }
+
+  if (url.protocol === 'https:') {
+    return url.origin;
+  }
+
+  const allowsLocalhostHttp = nodeEnv === 'development' || nodeEnv === 'test';
+  if (allowsLocalhostHttp && url.protocol === 'http:' && url.hostname === 'localhost') {
+    return url.origin;
+  }
+
+  throw new Error(
+    'MERCHANT_ONBOARDING_BASE_URL must use https (http://localhost is allowed in development and test)',
+  );
 }
 
 function parseBoolean(value: string | undefined, defaultValue: boolean, envName: string): boolean {

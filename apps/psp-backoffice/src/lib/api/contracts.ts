@@ -451,3 +451,87 @@ export type MerchantFinancePayoutsFilters = {
   /** Si es `false`, el API omite COUNT; `page.total` y `page.totalPages` serán `null`. */
   includeTotal?: boolean;
 };
+
+export type MerchantOnboardingStatus =
+  | "ACCOUNT_CREATED"
+  | "DOCUMENTATION_PENDING"
+  | "IN_REVIEW"
+  | "APPROVED"
+  | "REJECTED"
+  | "ACTIVE";
+
+export type MerchantOnboardingChecklistStatus = "PENDING" | "COMPLETED" | "BLOCKED";
+
+export type MerchantOnboardingMerchantSummary = {
+  id: string;
+  name: string;
+  isActive: boolean;
+  deactivatedAt: string | null;
+  createdAt: string;
+};
+
+export type MerchantOnboardingChecklistItem = {
+  id: string;
+  applicationId: string;
+  key: string;
+  label: string;
+  status: MerchantOnboardingChecklistStatus;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MerchantOnboardingEvent = {
+  id: string;
+  applicationId: string;
+  type: string;
+  actorType: "SYSTEM" | "MERCHANT" | "ADMIN";
+  actorId: string | null;
+  message: string;
+  metadata?: unknown | null;
+  createdAt: string;
+};
+
+export type MerchantOnboardingApplicationListItem = {
+  id: string;
+  merchantId: string;
+  status: MerchantOnboardingStatus;
+  contactName: string;
+  contactEmail: string;
+  contactPhone: string;
+  tradeName: string | null;
+  legalName: string | null;
+  country: string | null;
+  website: string | null;
+  businessType: string | null;
+  rejectionReason: string | null;
+  submittedAt: string | null;
+  reviewedAt: string | null;
+  approvedAt: string | null;
+  rejectedAt: string | null;
+  activatedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  merchant: MerchantOnboardingMerchantSummary | null;
+  checklistItems: MerchantOnboardingChecklistItem[];
+};
+
+export type MerchantOnboardingApplicationsResponse = {
+  items: MerchantOnboardingApplicationListItem[];
+  total: number;
+  pageSize: number;
+};
+
+export type MerchantOnboardingApplicationDetail = MerchantOnboardingApplicationListItem & {
+  events: MerchantOnboardingEvent[];
+};
+
+export type MerchantOnboardingTokenResponse = {
+  id: string;
+  applicationId: string;
+  expiresAt: string;
+  application: {
+    id: string;
+    status: MerchantOnboardingStatus;
+  };
+};
