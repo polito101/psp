@@ -16,7 +16,8 @@ Ultima actualizacion: 2026-05-01
 - Backoffice (`psp-backoffice`): onboarding por token `/onboarding/[token]`; CRM admin `/crm/onboarding` y detalle.
 - Marketing (`web-finara`): captacion publica `/merchant-signup` con proxy server `POST /api/merchant-onboarding` → `psp-api` (`PSP_API_BASE_URL`).
 - Documentacion transversal: `PROJECT_CONTEXT.md`, `apps/psp-api/README.md` y `.env.example` (API/backoffice/web-finara) alineados con onboarding.
-- Pendiente: verificacion e2e del flujo completo en entorno integrado.
+- Verificacion automatica (rama actual): `npm run lint` en `psp-api`; `npm run typecheck` en `psp-backoffice` y `web-finara`; tests Jest `merchant-onboarding/*.spec.ts` (25 tests).
+- Pendiente (opcional): smoke manual end-to-end en entorno integrado (docker + tres apps).
 
 ## Proximas extensiones fuera de esta fase
 
