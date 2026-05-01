@@ -523,11 +523,12 @@ export class MerchantOnboardingService {
       });
     });
 
-    await this.emailService.sendOnboardingLink({
+    const emailResult = await this.sendOnboardingEmail({
       to: application.contactEmail,
       contactName: application.contactName,
       onboardingUrl: this.buildOnboardingUrl(token.plain),
     });
+    await this.recordEmailDeliveryEvent(applicationId, emailResult);
 
     return { ok: true, message: PUBLIC_RESEND_MESSAGE };
   }

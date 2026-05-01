@@ -586,6 +586,42 @@ describe('MerchantOnboardingService', () => {
       contactName: 'Ada Lovelace',
       onboardingUrl: 'https://onboarding.example.com/onboarding/plain_token',
     });
+    expect(prisma.merchantOnboardingEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        applicationId: 'app_1',
+        type: 'onboarding_email_sent',
+        actorType: 'SYSTEM',
+        metadata: { providerMessageId: 'email_1' },
+      }),
+    });
+    expect(result).toEqual({
+      ok: true,
+      message: 'If the application can receive onboarding links, we will send next steps shortly.',
+    });
+    jest.useRealTimers();
+  });
+
+  it('records failed resend email event and still returns neutral message', async () => {
+    jest.useFakeTimers().setSystemTime(now.getTime());
+    const { service, prisma, emailService } = createService();
+    prisma.merchantOnboardingApplication.findUnique.mockResolvedValue({
+      id: 'app_1',
+      contactName: 'Ada Lovelace',
+      contactEmail: 'ada@example.com',
+      status: 'DOCUMENTATION_PENDING',
+    });
+    emailService.sendOnboardingLink.mockRejectedValueOnce(new Error('SMTP down'));
+
+    const result = await service.resendLink('app_1');
+
+    expect(prisma.merchantOnboardingEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        applicationId: 'app_1',
+        type: 'onboarding_email_failed',
+        actorType: 'SYSTEM',
+        metadata: { errorMessage: 'SMTP down' },
+      }),
+    });
     expect(result).toEqual({
       ok: true,
       message: 'If the application can receive onboarding links, we will send next steps shortly.',
