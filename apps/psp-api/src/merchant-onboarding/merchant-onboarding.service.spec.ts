@@ -14,11 +14,13 @@ describe('MerchantOnboardingService', () => {
   });
 
   const createTx = () => ({
+    $executeRaw: jest.fn().mockResolvedValue(undefined),
     merchant: {
       create: jest.fn().mockResolvedValue({ id: 'merchant_1', name: 'Ada Lovelace' }),
       update: jest.fn().mockResolvedValue({ id: 'merchant_1', isActive: true }),
     },
     merchantOnboardingApplication: {
+      findFirst: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue({
         id: 'app_1',
         merchantId: 'merchant_1',
@@ -123,6 +125,11 @@ describe('MerchantOnboardingService', () => {
       phone: '+34600000000',
     });
 
+    expect(tx.$executeRaw).toHaveBeenCalled();
+    expect(tx.merchantOnboardingApplication.findFirst).toHaveBeenCalledWith({
+      where: { contactEmail: 'ada@example.com' },
+      select: { id: true },
+    });
     expect(tx.merchant.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         name: 'Ada Lovelace',
@@ -285,6 +292,30 @@ describe('MerchantOnboardingService', () => {
       phone: '+34600000000',
     });
 
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(tx.merchant.create).not.toHaveBeenCalled();
+    expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      ok: true,
+      message: 'If the email can receive onboarding links, we will send next steps shortly.',
+    });
+  });
+
+  it('returns neutral success when another request commits the same contact_email under the advisory lock', async () => {
+    const { service, tx, emailService } = createService();
+    tx.merchantOnboardingApplication.findFirst.mockResolvedValueOnce({ id: 'winner_app' });
+
+    const result = await service.createApplication({
+      name: 'Ada Lovelace',
+      email: 'ada@example.com',
+      phone: '+34600000000',
+    });
+
+    expect(tx.$executeRaw).toHaveBeenCalled();
+    expect(tx.merchantOnboardingApplication.findFirst).toHaveBeenCalledWith({
+      where: { contactEmail: 'ada@example.com' },
+      select: { id: true },
+    });
     expect(tx.merchant.create).not.toHaveBeenCalled();
     expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
     expect(result).toEqual({

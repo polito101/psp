@@ -79,7 +79,8 @@ function isLoopbackHostname(hostname: string): boolean {
  * Normaliza `MERCHANT_ONBOARDING_BASE_URL`: origen absoluto `https:`, o `http:` solo
  * en `development`/`test` si el host es loopback (`localhost`, `127.0.0.1`, `::1` / `[::1]`).
  *
- * @param raw URL absoluta desde env, o `undefined`/vacío para `http://localhost:3005`.
+ * @param raw URL absoluta desde env, o `undefined`/vacío para `http://localhost:3005` solo en
+ *   `development`/`test`; en el resto de entornos el valor es obligatorio (p. ej. Render `sandbox`/`production`).
  * @param nodeEnv Valor de `NODE_ENV` ya normalizado.
  * @returns Origen WHATWG (`scheme://host[:port]`).
  * @throws {Error} Si la URL es inválida o el esquema no está permitido.
@@ -89,7 +90,19 @@ export function normalizeMerchantOnboardingBaseUrl(
   nodeEnv: string,
 ): string {
   const defaultLocal = 'http://localhost:3005';
-  const segment = raw === undefined || raw.trim() === '' ? defaultLocal : raw.trim();
+  const isDevLike = nodeEnv === 'development' || nodeEnv === 'test';
+
+  let segment: string;
+  if (raw === undefined || raw.trim() === '') {
+    if (!isDevLike) {
+      throw new Error(
+        'MERCHANT_ONBOARDING_BASE_URL is required in non-development environments: set to the https origin of the backoffice that serves /onboarding/[token] (e.g. https://psp-backoffice.onrender.com)',
+      );
+    }
+    segment = defaultLocal;
+  } else {
+    segment = raw.trim();
+  }
   let url: URL;
   try {
     url = new URL(segment);
@@ -103,8 +116,7 @@ export function normalizeMerchantOnboardingBaseUrl(
     throw new Error('MERCHANT_ONBOARDING_BASE_URL must not include query or hash');
   }
   const isLoopback = isLoopbackHostname(url.hostname);
-  const allowHttp =
-    (nodeEnv === 'development' || nodeEnv === 'test') && isLoopback && url.protocol === 'http:';
+  const allowHttp = isDevLike && isLoopback && url.protocol === 'http:';
   if (url.protocol !== 'https:' && !allowHttp) {
     throw new Error(
       'MERCHANT_ONBOARDING_BASE_URL must use https, or http only for loopback hosts in development/test',

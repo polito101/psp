@@ -26,6 +26,8 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS "MerchantRateTable_provider_merchant_id_
 
 -- Merchant onboarding: unique normalized email (race-safe vs application-level checks).
 -- IF NOT EXISTS: environments that applied the corrected 20260430210000 migration already have this index.
+-- Si `pg_index.indisvalid` es false (p. ej. abort por lock_timeout en CREATE), el wrapper Node
+-- ejecuta DROP INDEX CONCURRENTLY de ese nombre y vuelve a aplicar este archivo (sin backoff entre pasadas).
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "merchant_onboarding_applications_contact_email_key"
   ON "merchant_onboarding_applications" ("contact_email");
 

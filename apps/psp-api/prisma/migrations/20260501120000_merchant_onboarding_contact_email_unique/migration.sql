@@ -31,5 +31,8 @@ END $$;
 -- Operational step (post-migrate, non-transactional; avoids blocking writes during index build):
 --   npm -w apps/psp-api run prisma:ops:indexes
 --
+-- Until this UNIQUE exists, `MerchantOnboardingService.createApplication` serializes by
+-- `contact_email` using `pg_advisory_xact_lock` in the same transaction as the insert.
+--
 -- The statement lives in `prisma/ops/create-indexes-concurrently.sql`. Pipeline using
 -- `npm -w apps/psp-api run prisma:migrate:deploy` runs migrate deploy and then that script.
