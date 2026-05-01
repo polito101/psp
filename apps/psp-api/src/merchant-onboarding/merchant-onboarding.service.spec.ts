@@ -724,4 +724,47 @@ describe('MerchantOnboardingService', () => {
     expect(result.items[0].merchant).not.toHaveProperty('apiKeyHash');
     expect(result.items[0].merchant).not.toHaveProperty('webhookSecretCiphertext');
   });
+
+  it('listApplications rejects search text longer than the configured maximum', async () => {
+    const { service } = createService();
+    const q = 'x'.repeat(101);
+
+    await expect(service.listApplications({ q })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('listApplications with q avoids count and caps total when more than pageSize matches', async () => {
+    const { service, prisma } = createService();
+    const row = {
+      id: 'app_1',
+      merchantId: 'merchant_1',
+      status: 'IN_REVIEW',
+      contactEmail: 'ada@example.com',
+      contactName: 'Ada',
+      contactPhone: '',
+      tradeName: null,
+      legalName: null,
+      country: null,
+      website: null,
+      businessType: null,
+      rejectionReason: null,
+      submittedAt: null,
+      reviewedAt: null,
+      approvedAt: null,
+      rejectedAt: null,
+      activatedAt: null,
+      createdAt: now,
+      updatedAt: now,
+      merchant: null,
+      checklistItems: [],
+    };
+    prisma.merchantOnboardingApplication.findMany.mockResolvedValue(
+      Array.from({ length: 51 }, (_, i) => ({ ...row, id: `app_${i}` })),
+    );
+
+    const result = await service.listApplications({ q: 'ada', pageSize: 50 });
+
+    expect(prisma.merchantOnboardingApplication.count).not.toHaveBeenCalled();
+    expect(result.items).toHaveLength(50);
+    expect(result.total).toBe(51);
+  });
 });

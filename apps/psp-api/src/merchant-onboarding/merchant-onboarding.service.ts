@@ -11,7 +11,11 @@ import {
 } from '../generated/prisma/enums';
 import type { Prisma } from '../generated/prisma/client';
 import { CreateMerchantOnboardingApplicationDto } from './dto/create-merchant-onboarding-application.dto';
-import { ListMerchantOnboardingApplicationsQueryDto } from './dto/list-merchant-onboarding-applications-query.dto';
+import {
+  ListMerchantOnboardingApplicationsQueryDto,
+  MERCHANT_ONBOARDING_APPLICATION_LIST_Q_MAX_LENGTH,
+  MERCHANT_ONBOARDING_APPLICATION_LIST_Q_MIN_LENGTH,
+} from './dto/list-merchant-onboarding-applications-query.dto';
 import { RejectMerchantOnboardingDto } from './dto/reject-merchant-onboarding.dto';
 import { SubmitBusinessProfileDto } from './dto/submit-business-profile.dto';
 import { OnboardingEmailService } from './onboarding-email.service';
@@ -250,9 +254,26 @@ export class MerchantOnboardingService {
     });
   }
 
+  /**
+   * Listado ops CRM. Con `q`, evita `COUNT(*)` (costoso con `contains` en varios campos): pide hasta `pageSize+1`
+   * filas y devuelve `total` exacto si hay ≤ `pageSize` coincidencias; si hay más, `total === pageSize + 1` (cota inferior).
+   */
   async listApplications(query: ListMerchantOnboardingApplicationsQueryDto) {
     const pageSize = query.pageSize ?? 50;
     const q = query.q?.trim();
+    if (q) {
+      if (q.length > MERCHANT_ONBOARDING_APPLICATION_LIST_Q_MAX_LENGTH) {
+        throw new BadRequestException(
+          `El texto de búsqueda no puede superar ${MERCHANT_ONBOARDING_APPLICATION_LIST_Q_MAX_LENGTH} caracteres.`,
+        );
+      }
+      if (q.length < MERCHANT_ONBOARDING_APPLICATION_LIST_Q_MIN_LENGTH) {
+        throw new BadRequestException(
+          `El texto de búsqueda debe tener al menos ${MERCHANT_ONBOARDING_APPLICATION_LIST_Q_MIN_LENGTH} caracteres.`,
+        );
+      }
+    }
+
     const where: Prisma.MerchantOnboardingApplicationWhereInput = {
       ...(query.status ? { status: query.status } : {}),
       ...(q
@@ -267,47 +288,55 @@ export class MerchantOnboardingService {
         : {}),
     };
 
-    const [items, total] = await Promise.all([
-      this.prisma.merchantOnboardingApplication.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        take: pageSize,
+    const applicationListSelect = {
+      id: true,
+      merchantId: true,
+      status: true,
+      contactName: true,
+      contactEmail: true,
+      contactPhone: true,
+      tradeName: true,
+      legalName: true,
+      country: true,
+      website: true,
+      businessType: true,
+      rejectionReason: true,
+      submittedAt: true,
+      reviewedAt: true,
+      approvedAt: true,
+      rejectedAt: true,
+      activatedAt: true,
+      createdAt: true,
+      updatedAt: true,
+      merchant: {
         select: {
           id: true,
-          merchantId: true,
-          status: true,
-          contactName: true,
-          contactEmail: true,
-          contactPhone: true,
-          tradeName: true,
-          legalName: true,
-          country: true,
-          website: true,
-          businessType: true,
-          rejectionReason: true,
-          submittedAt: true,
-          reviewedAt: true,
-          approvedAt: true,
-          rejectedAt: true,
-          activatedAt: true,
+          name: true,
+          isActive: true,
+          deactivatedAt: true,
           createdAt: true,
-          updatedAt: true,
-          merchant: {
-            select: {
-              id: true,
-              name: true,
-              isActive: true,
-              deactivatedAt: true,
-              createdAt: true,
-            },
-          },
-          checklistItems: true,
         },
-      }),
-      this.prisma.merchantOnboardingApplication.count({ where }),
-    ]);
+      },
+      checklistItems: true,
+    } satisfies Prisma.MerchantOnboardingApplicationSelect;
 
-    return { items: items.map(sanitizeApplicationMerchant), total, pageSize };
+    const take = q ? pageSize + 1 : pageSize;
+    const rows = await this.prisma.merchantOnboardingApplication.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take,
+      select: applicationListSelect,
+    });
+
+    if (q) {
+      const hasMore = rows.length > pageSize;
+      const items = rows.slice(0, pageSize).map(sanitizeApplicationMerchant);
+      const total = hasMore ? pageSize + 1 : items.length;
+      return { items, total, pageSize };
+    }
+
+    const total = await this.prisma.merchantOnboardingApplication.count({ where });
+    return { items: rows.map(sanitizeApplicationMerchant), total, pageSize };
   }
 
   async getApplication(applicationId: string) {
