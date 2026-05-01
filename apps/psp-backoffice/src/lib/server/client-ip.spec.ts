@@ -280,6 +280,7 @@ describe("ignored proxy header warnings (client-ip)", () => {
 
   afterEach(() => {
     process.env = { ...snapshot };
+    vi.restoreAllMocks();
   });
 
   it("warns once when x-forwarded-for is present but TRUST is off", async () => {
