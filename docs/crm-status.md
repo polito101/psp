@@ -15,7 +15,8 @@ Ultima actualizacion: 2026-05-01
 - API (`psp-api`): onboarding publico (POST aplicaciones, token, perfil negocio) + ops internos + CRM listado/detalle/acciones.
 - Backoffice (`psp-backoffice`): onboarding por token `/onboarding/[token]`; CRM admin `/crm/onboarding` y detalle.
 - Marketing (`web-finara`): captacion publica `/merchant-signup` con proxy server `POST /api/merchant-onboarding` → `psp-api` (`PSP_API_BASE_URL`).
-- Pendiente: revision final de documentacion transversal (`PROJECT_CONTEXT.md`, README/env) y verificacion e2e del flujo completo.
+- Documentacion transversal: `PROJECT_CONTEXT.md`, `apps/psp-api/README.md` y `.env.example` (API/backoffice/web-finara) alineados con onboarding.
+- Pendiente: verificacion e2e del flujo completo en entorno integrado.
 
 ## Proximas extensiones fuera de esta fase
 

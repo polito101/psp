@@ -101,6 +101,20 @@ Invoke-RestMethod -Method Get "http://localhost:3000/api/v1/balance" `
   -Headers @{ "X-API-Key"="PEGAR_APIKEY_COMERCIO" }
 ```
 
+## Merchant onboarding (captacion publica + CRM)
+
+Superficie versionada bajo `/api/v1/merchant-onboarding/*`: alta desde landing (`POST .../applications`), validacion de token y envio de perfil de negocio. Email transaccional vía **Resend** (`RESEND_API_KEY`, `ONBOARDING_EMAIL_FROM`); enlaces construidos con `MERCHANT_ONBOARDING_BASE_URL` (debe apuntar al host donde existe `/onboarding/[token]` en el backoffice).
+
+Ejemplo local (sin API key; body validado con `class-validator`):
+
+```powershell
+Invoke-RestMethod -Method Post "http://localhost:3000/api/v1/merchant-onboarding/applications" `
+  -Headers @{ "Content-Type"="application/json" } `
+  -Body '{"name":"Demo Merchant","email":"demo@example.com","phone":"+34600000000"}'
+```
+
+En `development` y `sandbox`, la respuesta puede incluir `onboardingUrl` para pruebas; en produccion no se expone en JSON (solo email). Estado vivo del modulo: `docs/crm-status.md`.
+
 ## Endpoints principales
 
 - `POST /api/v2/payments` (create intent)
@@ -188,6 +202,8 @@ Ver `.env.example`. Claves relevantes:
 - `PAYMENTS_PROVIDER_CB_FAILURES`
 - `PAYMENTS_PROVIDER_CB_COOLDOWN_MS`
 - `WEBHOOK_WORKER_ENABLED`
+- `MERCHANT_ONBOARDING_BASE_URL`, `MERCHANT_ONBOARDING_TOKEN_TTL_HOURS`
+- `RESEND_API_KEY`, `ONBOARDING_EMAIL_FROM`
 
 Matriz operativa sandbox: `docs/sandbox-env.md`.
 
