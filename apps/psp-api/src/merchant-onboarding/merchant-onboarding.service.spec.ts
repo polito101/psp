@@ -637,6 +637,7 @@ describe('MerchantOnboardingService', () => {
   });
 
   it('returns sanitized token validation data without token hashes', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-30T12:00:00.000Z').getTime());
     const { service, prisma } = createService();
     prisma.merchantOnboardingToken.findUnique.mockResolvedValue({
       id: 'tok_1',
@@ -657,6 +658,7 @@ describe('MerchantOnboardingService', () => {
       application: { id: 'app_1', status: 'DOCUMENTATION_PENDING' },
     });
     expect(result).not.toHaveProperty('tokenHash');
+    jest.useRealTimers();
   });
 
   it('returns sanitized application detail without merchant secrets', async () => {
