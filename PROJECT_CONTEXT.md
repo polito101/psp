@@ -1,6 +1,6 @@
 # PROJECT_CONTEXT
 
-Ultima actualizacion: 2026-04-30
+Ultima actualizacion: 2026-05-01
 
 ## 1) Resumen del proyecto
 
@@ -15,7 +15,7 @@ La API esta construida con NestJS y expone REST versionado por URI, con foco ope
 - health checks
 
 Ademas del servicio API, el repo incluye:
-- sitio marketing Next.js (landing Finara) en `apps/web-finara` (deploy Render: servicio `web-finara` en `render.yaml`); los CTAs de acceso cliente apuntan al login merchant público (`NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL` → mismo código `psp-backoffice` en modo merchant). Esa env se valida en `getMerchantBackofficeLoginUrl` (URL absoluta, solo `https`, sin credenciales en userinfo, path normalizado a `/login`; si falla, fallback `https://psp-backoffice.onrender.com/login` y un único `console.warn`).
+- sitio marketing Next.js (landing Finara) en `apps/web-finara` (deploy Render: servicio `web-finara` en `render.yaml`); los CTAs de acceso cliente apuntan al login merchant público (`NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL` → mismo código `psp-backoffice` en modo merchant). Esa env se valida en `getMerchantBackofficeLoginUrl` (URL absoluta, solo `https`, sin credenciales en userinfo, path normalizado a `/login`; si falla, fallback `https://psp-backoffice.onrender.com/login` y un único `console.warn`). El onboarding público puede usar la ruta App Router `POST /api/merchant-onboarding/applications`, que hace proxy a `psp-api` con rate limit por IP (o fingerprint) y reenvío controlado de `X-Forwarded-For` / `X-Real-IP` hacia la API; en Render `RENDER=true` habilita la lectura segura de cabeceras de borde. La API debe tener `TRUST_PROXY=true` (p. ej. en `render.yaml`) para que el `ThrottlerGuard` use esa IP.
 - panel PSP en `apps/psp-backoffice`: **dos despliegues** del mismo app (merchant vs admin) vía `BACKOFFICE_PORTAL_MODE`/`NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE` (`/login` vs `/admin/login`); detalle en **`apps/psp-backoffice/BACKOFFICE_CONTEXT.md`** y **`render.yaml`** (`psp-backoffice`, `psp-backoffice-admin`).
 - infraestructura en `infra/terraform`
 - entorno local con PostgreSQL + Redis via `docker-compose.yml` (Postgres expuesto en el host en **5433** para no chocar con un PostgreSQL local en 5432; credenciales `psp` / `psp_dev_password` / DB `psp`)
@@ -27,7 +27,7 @@ Ademas del servicio API, el repo incluye:
 - Lenguaje: TypeScript estricto (`noImplicitAny`, `strictNullChecks`)
 - Framework backend: NestJS 11
 - Framework frontend administrativo: Next.js 16 (App Router)
-- Sitio marketing (landing): Next.js 16 en `apps/web-finara` (Tailwind 4, sin BFF)
+- Sitio marketing (landing): Next.js 16 en `apps/web-finara` (Tailwind 4; BFF mínimo `POST /api/merchant-onboarding/applications` → `psp-api` con RL e identidad de cliente)
 - ORM/acceso a datos: Prisma ORM 7 + `@prisma/adapter-pg` + `pg`
 - Base de datos principal: PostgreSQL
 - Cache/soporte operativo: Redis (`ioredis`)
@@ -65,6 +65,7 @@ C:/AA psp/
 │   │   │   ├── prisma/
 │   │   │   ├── redis/
 │   │   │   ├── merchants/
+│   │   │   ├── merchant-onboarding/
 │   │   │   ├── payment-links/
 │   │   │   ├── ledger/
 │   │   │   ├── webhooks/
@@ -115,6 +116,7 @@ En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc`, `te
 - Guardias reutilizables (`ApiKeyGuard`, `InternalSecretGuard`) y decorador `CurrentMerchant`.
 - Prisma centralizado en `PrismaService` y cliente generado en `src/generated/prisma`.
 - Convencion Prisma: modelos en PascalCase y mapeo SQL snake_case mediante `@map`/`@@map`.
+- Onboarding CRM (merchants): modelos `MerchantOnboardingApplication` / `MerchantOnboardingToken` / checklist / eventos; **unicidad** en `contact_email` (email normalizado en servicio) para serializar creaciones concurrentes; `createApplication` interpreta `P2002` sobre ese campo como éxito neutral (misma forma que un alta válida) y no filtra estado interno.
 - Modulo `RedisModule/RedisService` para responsabilidades de cache e idempotencia.
 - Payments V2 (`/api/v2/payments`) introduce orquestacion multi-proveedor con **registry inyectable**: el token Nest `PAYMENT_PROVIDERS` recibe los adapters registrados en `PaymentsV2Module` (`useFactory`: `mock` y opcionalmente `acme` si `PAYMENTS_ACME_ENABLED=true`). `ProviderRegistryService` valida al arranque que cada entrada de `PAYMENTS_PROVIDER_ORDER` exista en ese conjunto. Los códigos de proveedor tipados viven en `PAYMENT_PROVIDER_NAMES` / `PaymentProviderName` (`apps/psp-api/src/payments-v2/domain/payment-provider-names.ts`, SSOT compartido con `env.validation` para el CSV). Retries acotados y circuit breaker por proveedor con estado compartido en Redis (HASH `payv2:cb:{provider}`: campos `failures`, `openedUntil` ms; sin `REDIS_URL` el servicio degrada a Map en proceso y registra una vez por proceso Node `payments_v2.circuit_breaker_redis_unavailable`). Opcionalmente, con Redis y `PAYMENTS_PROVIDER_CB_HALF_OPEN=true`, tras el cooldown solo una petición a la vez obtiene la sonda `SET payv2:cb:{provider}:probe NX` (mitiga thundering herd en recuperación); con el flag en false el comportamiento es el anterior. Entre reintentos internos del mismo adapter ante `transientError`, backoff exponencial acotado con jitter (`PAYMENTS_PROVIDER_RETRY_BASE_MS` default 100, `0` = sin espera; `PAYMENTS_PROVIDER_RETRY_MAX_MS` default 3000; si `MAX < BASE` se normaliza `MAX` a `BASE`).
 - Hardening providers: `PAYMENTS_PROVIDER_ORDER` se valida fail-fast contra `PAYMENT_PROVIDER_NAMES` (sin vacíos, no puede quedar vacío). `mock` queda restringido a `NODE_ENV=sandbox|development` salvo flag explícito `PAYMENTS_ALLOW_MOCK=true`.
