@@ -22,6 +22,10 @@ const CONCURRENT_INDEX_CHECKLIST = [
     table: 'MerchantRateTable',
     indexNames: ['MerchantRateTable_provider_merchant_id_currency_idx'],
   },
+  {
+    table: 'merchant_onboarding_applications',
+    indexNames: ['merchant_onboarding_applications_contact_email_key'],
+  },
 ];
 
 function envInt(name, fallback) {

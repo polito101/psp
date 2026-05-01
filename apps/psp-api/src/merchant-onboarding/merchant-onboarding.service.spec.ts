@@ -1,6 +1,5 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PrismaClientKnownRequestError } from '@prisma/client/runtime/client';
 import { MerchantOnboardingService } from './merchant-onboarding.service';
 import { OnboardingEmailService } from './onboarding-email.service';
 import { OnboardingTokenService } from './onboarding-token.service';
@@ -295,14 +294,13 @@ describe('MerchantOnboardingService', () => {
   });
 
   it('returns neutral success when DB unique constraint on contact_email races past findFirst', async () => {
-    const dupError = new PrismaClientKnownRequestError(
-      'Unique constraint failed on the fields: (`contact_email`)',
-      {
-        code: 'P2002',
-        clientVersion: 'test',
-        meta: { modelName: 'MerchantOnboardingApplication', target: ['contact_email'] },
-      },
-    );
+    const dupError = {
+      name: 'PrismaClientKnownRequestError',
+      message: 'Unique constraint failed on the fields: (`contact_email`)',
+      code: 'P2002',
+      clientVersion: 'test',
+      meta: { modelName: 'MerchantOnboardingApplication', target: ['contact_email'] },
+    };
     const { service, prisma, tx, emailService } = createService();
     prisma.$transaction.mockRejectedValueOnce(dupError);
 
@@ -321,11 +319,13 @@ describe('MerchantOnboardingService', () => {
   });
 
   it('rethrows P2002 that is not the onboarding contact_email unique violation', async () => {
-    const err = new PrismaClientKnownRequestError('Unique constraint failed', {
+    const err = {
+      name: 'PrismaClientKnownRequestError',
+      message: 'Unique constraint failed',
       code: 'P2002',
       clientVersion: 'test',
       meta: { modelName: 'MerchantOnboardingToken', target: ['token_hash'] },
-    });
+    };
     const { service, prisma } = createService();
     prisma.$transaction.mockRejectedValueOnce(err);
 

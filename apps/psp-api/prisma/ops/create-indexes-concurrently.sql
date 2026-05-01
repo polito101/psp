@@ -24,3 +24,8 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS "PaymentSettlement_provider_idx"
 CREATE INDEX CONCURRENTLY IF NOT EXISTS "MerchantRateTable_provider_merchant_id_currency_idx"
   ON "MerchantRateTable" ("provider", "merchant_id", "currency");
 
+-- Merchant onboarding: unique normalized email (race-safe vs application-level checks).
+-- IF NOT EXISTS: environments that applied the corrected 20260430210000 migration already have this index.
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "merchant_onboarding_applications_contact_email_key"
+  ON "merchant_onboarding_applications" ("contact_email");
+

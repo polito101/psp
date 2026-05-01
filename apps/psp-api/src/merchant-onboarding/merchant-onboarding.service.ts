@@ -1,6 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PrismaClientKnownRequestError } from '@prisma/client/runtime/client';
 import { randomBytes } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import { encryptUtf8 } from '../crypto/secret-box';
@@ -39,19 +38,21 @@ const PUBLIC_RESEND_MESSAGE =
 /** Índice único en DB (`20260501120000_merchant_onboarding_contact_email_unique`). */
 const CONTACT_EMAIL_UNIQUE_INDEX_NAME = 'merchant_onboarding_applications_contact_email_key';
 
+type PrismaKnownRequestLike = {
+  code?: unknown;
+  meta?: { target?: unknown; modelName?: unknown };
+};
+
 /**
  * P2002 de unicidad sobre el email de contacto del expediente (carrera tras `findFirst`).
+ * Comprobación estructural (sin importar clases desde rutas internas de `@prisma/client`).
  */
 function isContactEmailUniqueViolation(error: unknown): boolean {
-  const code =
-    error instanceof PrismaClientKnownRequestError ? error.code : (error as { code?: string })?.code;
-  if (code !== 'P2002') {
+  const err = error as PrismaKnownRequestLike;
+  if (typeof err.code !== 'string' || err.code !== 'P2002') {
     return false;
   }
-  const meta =
-    error instanceof PrismaClientKnownRequestError
-      ? (error.meta as { target?: unknown; modelName?: unknown } | undefined)
-      : (error as { meta?: { target?: unknown; modelName?: unknown } })?.meta;
+  const meta = err.meta;
 
   const rawTarget = meta?.target;
   const targetParts: string[] = Array.isArray(rawTarget)
