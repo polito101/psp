@@ -6,6 +6,7 @@ import pg from 'pg';
  * Índices creados por `prisma/ops/create-indexes-concurrently.sql`.
  * Tras cada pase se comprueba `pg_index.indisvalid`; índices inválidos se eliminan con
  * `DROP INDEX CONCURRENTLY` (acotado por `PSP_PRISMA_INDEX_LOCK_TIMEOUT`) y se reaplica el SQL sin backoff.
+ * El contador de rondas de remediación solo avanza tras un DROP exitoso (fallos transitorios no consumen presupuesto).
  */
 const CONCURRENT_INDEX_CHECKLIST = [
   {
@@ -29,11 +30,30 @@ const CONCURRENT_INDEX_CHECKLIST = [
   },
 ];
 
-function envInt(name, fallback) {
+/**
+ * Entero no negativo desde env (solo dígitos). Valores inválidos o fuera de rango seguro → error explícito.
+ *
+ * @param {string} name
+ * @param {number} fallback
+ * @returns {number}
+ */
+function envNonNegativeInt(name, fallback) {
   const raw = process.env[name];
-  if (!raw) return fallback;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) ? parsed : fallback;
+  if (raw === undefined || raw === null) return fallback;
+  const trimmed = String(raw).trim();
+  if (!trimmed) return fallback;
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(
+      `${name} must be a non-negative integer (digits only). Received: ${raw}`,
+    );
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(
+      `${name} must be a non-negative safe integer. Received: ${raw}`,
+    );
+  }
+  return parsed;
 }
 
 function envLockTimeoutMs(name, fallback) {
@@ -222,9 +242,12 @@ function quotePgIdentifier(name) {
 
 async function main() {
   const lockTimeoutMs = envLockTimeoutMs('PSP_PRISMA_INDEX_LOCK_TIMEOUT', 15000);
-  const retries = envInt('PSP_PRISMA_INDEX_RETRIES', 6);
-  const baseDelayMs = envInt('PSP_PRISMA_INDEX_RETRY_BASE_DELAY_MS', 1000);
-  const maxRemediation = envInt('PSP_PRISMA_INDEX_INVALID_REMEDIATION_ROUNDS', 3);
+  const retries = envNonNegativeInt('PSP_PRISMA_INDEX_RETRIES', 6);
+  const baseDelayMs = envNonNegativeInt('PSP_PRISMA_INDEX_RETRY_BASE_DELAY_MS', 1000);
+  const maxRemediation = envNonNegativeInt(
+    'PSP_PRISMA_INDEX_INVALID_REMEDIATION_ROUNDS',
+    3,
+  );
 
   const cwd = process.cwd();
   await loadDotenvIfPresent(cwd);
@@ -247,7 +270,7 @@ async function main() {
   let remediationRound = 0;
   // Retries help with transient lock contention (mainly on DROP INDEX CONCURRENTLY).
   // Bounded budget so persistent lock issues are not masked forever.
-  // Índices con indisvalid=false: DROP controlado + nuevo pase inmediato (sin backoff); si sigue fallando, fail-fast.
+  // Índices con indisvalid=false: DROP controlado + nuevo pase inmediato (sin backoff); presupuesto de rondas solo tras DROP OK.
   while (true) {
     try {
       await runStatements(databaseUrl, statements);
@@ -271,14 +294,16 @@ async function main() {
             `${FAIL_FAST_REMEDIATION} invalid indexes persist after ${maxRemediation} DROP/rebuild attempt(s): ${detail}.`,
           );
         }
-        remediationRound += 1;
+        const remediationAttempt = remediationRound + 1;
         // eslint-disable-next-line no-console
         console.warn(
           `[prisma:ops:indexes] invalid concurrent indexes (indisvalid=false): ${invalid
             .map((m) => `"${m.indexName}"@${m.table}`)
-            .join(', ')} — dropping with CONCURRENTLY and rebuilding (remediation ${remediationRound}/${maxRemediation}).`,
+            .join(', ')} — dropping with CONCURRENTLY and rebuilding (remediation ${remediationAttempt}/${maxRemediation}).`,
         );
         await dropIndexesConcurrently(databaseUrl, invalid, lockTimeoutMs);
+        // Solo cuenta una ronda tras DROP exitoso; si falla (locks/conexión), el retry no consume presupuesto.
+        remediationRound += 1;
         continue;
       }
 
