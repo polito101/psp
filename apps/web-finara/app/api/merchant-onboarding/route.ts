@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 
-const UPSTREAM_TIMEOUT_MS = 25_000;
+function parseProxyTimeoutMs(): number {
+  const raw = process.env.PSP_API_PROXY_TIMEOUT_MS?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return 25_000;
+  const n = Number(raw);
+  if (n < 1 || n > 120_000) return 25_000;
+  return n;
+}
 
 function getPspApiBaseUrl(): string | null {
   const raw = process.env.PSP_API_BASE_URL?.trim();
@@ -47,8 +53,9 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const upstream = `${baseUrl}/api/v1/merchant-onboarding/applications`;
+  const upstreamTimeoutMs = parseProxyTimeoutMs();
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => controller.abort(), upstreamTimeoutMs);
 
   try {
     const upstreamResponse = await fetch(upstream, {
@@ -85,7 +92,7 @@ export async function POST(request: Request): Promise<Response> {
     const err = e instanceof Error ? e : new Error(String(e));
     if (err.name === "AbortError") {
       return NextResponse.json(
-        { message: `Tiempo de espera agotado al contactar la API (${UPSTREAM_TIMEOUT_MS} ms).` },
+        { message: `Tiempo de espera agotado al contactar la API (${upstreamTimeoutMs} ms).` },
         { status: 504 },
       );
     }
