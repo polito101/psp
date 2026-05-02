@@ -74,7 +74,7 @@ function envNonNegativeInt(name, fallback, opts = {}) {
   if (max !== undefined && parsed > max) {
     // eslint-disable-next-line no-console
     console.warn(
-      `[prisma:ops:indexes] ${name}=${parsed} exceeds configured maximum ${max}; using ${max}.`,
+      `[prisma:ops:indexes] ${name}=${parsed} exceeds configured maximum ${max}; using ${max}. See PROJECT_CONTEXT.md (repo root) for operational clamp limits.`,
     );
     return max;
   }
@@ -111,7 +111,7 @@ function jitter(ms) {
 
 /**
  * Loads `.env` from `cwd` when the `dotenv` package is available (local dev).
- * In production, `DATABASE_URL` should already be set by the runtime.
+ * In production, env vars should already be set by the runtime (`DATABASE_URL`, `PSP_PRISMA_INDEX_*`).
  *
  * @param {string} cwd
  */
@@ -266,6 +266,9 @@ function quotePgIdentifier(name) {
 }
 
 async function main() {
+  const cwd = process.cwd();
+  await loadDotenvIfPresent(cwd);
+
   const lockTimeoutMs = envLockTimeoutMs('PSP_PRISMA_INDEX_LOCK_TIMEOUT', 15000);
   const retries = envNonNegativeInt('PSP_PRISMA_INDEX_RETRIES', 6, {
     max: MAX_PSP_PRISMA_INDEX_RETRIES,
@@ -280,9 +283,6 @@ async function main() {
     3,
     { max: MAX_PSP_PRISMA_INDEX_INVALID_REMEDIATION_ROUNDS },
   );
-
-  const cwd = process.cwd();
-  await loadDotenvIfPresent(cwd);
 
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
