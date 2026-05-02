@@ -30,18 +30,36 @@ const CONCURRENT_INDEX_CHECKLIST = [
   },
 ];
 
+/** Límite superior para `PSP_PRISMA_INDEX_RETRIES` (evita backoff desmesurado). */
+const MAX_PSP_PRISMA_INDEX_RETRIES = 20;
+/** Límite superior para `PSP_PRISMA_INDEX_RETRY_BASE_DELAY_MS` (ms). */
+const MAX_PSP_PRISMA_INDEX_RETRY_BASE_DELAY_MS = 300_000;
+/** Límite superior para `PSP_PRISMA_INDEX_INVALID_REMEDIATION_ROUNDS`. */
+const MAX_PSP_PRISMA_INDEX_INVALID_REMEDIATION_ROUNDS = 10;
+/**
+ * Tope por iteración antes de `sleep()` ante overflow o exponencial muy alto (ms).
+ */
+const MAX_RETRY_SLEEP_MS = 600_000;
+
 /**
  * Entero no negativo desde env (solo dígitos). Valores inválidos o fuera de rango seguro → error explícito.
+ * Si `opts.max` está definido y el valor parseado lo supera, se usa `max` y se avisa por consola.
  *
  * @param {string} name
  * @param {number} fallback
+ * @param {{ max?: number }} [opts]
  * @returns {number}
  */
-function envNonNegativeInt(name, fallback) {
+function envNonNegativeInt(name, fallback, opts = {}) {
+  const max = opts.max;
   const raw = process.env[name];
-  if (raw === undefined || raw === null) return fallback;
+  if (raw === undefined || raw === null) {
+    return max !== undefined ? Math.min(fallback, max) : fallback;
+  }
   const trimmed = String(raw).trim();
-  if (!trimmed) return fallback;
+  if (!trimmed) {
+    return max !== undefined ? Math.min(fallback, max) : fallback;
+  }
   if (!/^\d+$/.test(trimmed)) {
     throw new Error(
       `${name} must be a non-negative integer (digits only). Received: ${raw}`,
@@ -52,6 +70,13 @@ function envNonNegativeInt(name, fallback) {
     throw new Error(
       `${name} must be a non-negative safe integer. Received: ${raw}`,
     );
+  }
+  if (max !== undefined && parsed > max) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[prisma:ops:indexes] ${name}=${parsed} exceeds configured maximum ${max}; using ${max}. See PROJECT_CONTEXT.md (repo root) for operational clamp limits.`,
+    );
+    return max;
   }
   return parsed;
 }
@@ -86,7 +111,7 @@ function jitter(ms) {
 
 /**
  * Loads `.env` from `cwd` when the `dotenv` package is available (local dev).
- * In production, `DATABASE_URL` should already be set by the runtime.
+ * In production, env vars should already be set by the runtime (`DATABASE_URL`, `PSP_PRISMA_INDEX_*`).
  *
  * @param {string} cwd
  */
@@ -241,16 +266,23 @@ function quotePgIdentifier(name) {
 }
 
 async function main() {
+  const cwd = process.cwd();
+  await loadDotenvIfPresent(cwd);
+
   const lockTimeoutMs = envLockTimeoutMs('PSP_PRISMA_INDEX_LOCK_TIMEOUT', 15000);
-  const retries = envNonNegativeInt('PSP_PRISMA_INDEX_RETRIES', 6);
-  const baseDelayMs = envNonNegativeInt('PSP_PRISMA_INDEX_RETRY_BASE_DELAY_MS', 1000);
+  const retries = envNonNegativeInt('PSP_PRISMA_INDEX_RETRIES', 6, {
+    max: MAX_PSP_PRISMA_INDEX_RETRIES,
+  });
+  const baseDelayMs = envNonNegativeInt(
+    'PSP_PRISMA_INDEX_RETRY_BASE_DELAY_MS',
+    1000,
+    { max: MAX_PSP_PRISMA_INDEX_RETRY_BASE_DELAY_MS },
+  );
   const maxRemediation = envNonNegativeInt(
     'PSP_PRISMA_INDEX_INVALID_REMEDIATION_ROUNDS',
     3,
+    { max: MAX_PSP_PRISMA_INDEX_INVALID_REMEDIATION_ROUNDS },
   );
-
-  const cwd = process.cwd();
-  await loadDotenvIfPresent(cwd);
 
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -322,7 +354,8 @@ async function main() {
       throw new Error(`[prisma:ops:indexes] failed after ${retries} retries.`);
     }
 
-    const delayMs = jitter(baseDelayMs * Math.pow(2, attempt - 1));
+    const rawDelayMs = jitter(baseDelayMs * Math.pow(2, attempt - 1));
+    const delayMs = Math.min(rawDelayMs, MAX_RETRY_SLEEP_MS);
     // eslint-disable-next-line no-console
     console.warn(
       `[prisma:ops:indexes] attempt ${attempt}/${retries} failed; retrying in ${delayMs}ms...`,
