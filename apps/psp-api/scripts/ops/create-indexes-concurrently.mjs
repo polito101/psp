@@ -4,7 +4,9 @@ import pg from 'pg';
 
 /**
  * Índices creados por `prisma/ops/create-indexes-concurrently.sql`.
- * Tras un pase correcto se comprueba `pg_index.indisvalid` por tabla para detectar builds concurrentes abortados.
+ * Tras cada pase se comprueba `pg_index.indisvalid`; índices inválidos se eliminan con
+ * `DROP INDEX CONCURRENTLY` (acotado por `PSP_PRISMA_INDEX_LOCK_TIMEOUT`) y se reaplica el SQL sin backoff.
+ * El contador de rondas de remediación solo avanza tras un DROP exitoso (fallos transitorios no consumen presupuesto).
  */
 const CONCURRENT_INDEX_CHECKLIST = [
   {
@@ -22,13 +24,36 @@ const CONCURRENT_INDEX_CHECKLIST = [
     table: 'MerchantRateTable',
     indexNames: ['MerchantRateTable_provider_merchant_id_currency_idx'],
   },
+  {
+    table: 'merchant_onboarding_applications',
+    indexNames: ['merchant_onboarding_applications_contact_email_key'],
+  },
 ];
 
-function envInt(name, fallback) {
+/**
+ * Entero no negativo desde env (solo dígitos). Valores inválidos o fuera de rango seguro → error explícito.
+ *
+ * @param {string} name
+ * @param {number} fallback
+ * @returns {number}
+ */
+function envNonNegativeInt(name, fallback) {
   const raw = process.env[name];
-  if (!raw) return fallback;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) ? parsed : fallback;
+  if (raw === undefined || raw === null) return fallback;
+  const trimmed = String(raw).trim();
+  if (!trimmed) return fallback;
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(
+      `${name} must be a non-negative integer (digits only). Received: ${raw}`,
+    );
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(
+      `${name} must be a non-negative safe integer. Received: ${raw}`,
+    );
+  }
+  return parsed;
 }
 
 function envLockTimeoutMs(name, fallback) {
@@ -130,14 +155,26 @@ async function runStatements(connectionString, statements) {
   }
 }
 
+/** Prefijos detectados en `main()` para abortar sin backoff ni reintentos. */
+const FAIL_FAST_MISSING = '[prisma:ops:indexes:missing]';
+const FAIL_FAST_REMEDIATION = '[prisma:ops:indexes:remediation-exhausted]';
+
 /**
+ * Comprueba presencia y validez (`pg_index.indisvalid`) de los índices del checklist.
+ *
  * @param {string} connectionString
  * @param {readonly { table: string; indexNames: readonly string[] }[]} checklist
+ * @returns {Promise<{ missing: { table: string; indexName: string }[]; invalid: { table: string; indexName: string }[] }>}
  */
-async function assertConcurrentIndexesValid(connectionString, checklist) {
+async function validateConcurrentIndexes(connectionString, checklist) {
   const client = new pg.Client({ connectionString });
   await client.connect();
   try {
+    /** @type {{ table: string; indexName: string }[]} */
+    const missing = [];
+    /** @type {{ table: string; indexName: string }[]} */
+    const invalid = [];
+
     for (const { table, indexNames } of checklist) {
       const res = await client.query(
         `SELECT i.relname AS index_name, idx.indisvalid AS is_valid
@@ -152,27 +189,65 @@ async function assertConcurrentIndexesValid(connectionString, checklist) {
       for (const name of indexNames) {
         const row = byName.get(name);
         if (!row) {
-          throw new Error(
-            `[prisma:ops:indexes] expected index "${name}" on "${table}" not found after script run.`,
-          );
-        }
-        if (!row.is_valid) {
-          throw new Error(
-            `[prisma:ops:indexes] index "${name}" on "${table}" exists but is invalid (indisvalid=false). ` +
-              `Drop it with DROP INDEX CONCURRENTLY and re-run this script.`,
-          );
+          missing.push({ table, indexName: name });
+        } else if (!row.is_valid) {
+          invalid.push({ table, indexName: name });
         }
       }
+    }
+
+    return { missing, invalid };
+  } finally {
+    await client.end();
+  }
+}
+
+/**
+ * Ejecuta `DROP INDEX CONCURRENTLY IF EXISTS` por cada entrada, con `lock_timeout` como en el SQL principal.
+ *
+ * @param {string} connectionString
+ * @param {readonly { table: string; indexName: string }[]} indexes
+ * @param {number} lockTimeoutMs
+ */
+async function dropIndexesConcurrently(connectionString, indexes, lockTimeoutMs) {
+  if (indexes.length === 0) {
+    return;
+  }
+
+  const client = new pg.Client({ connectionString });
+  await client.connect();
+  try {
+    for (const { indexName, table } of indexes) {
+      await client.query(`SET lock_timeout = ${lockTimeoutMs}`);
+      await client.query(`DROP INDEX CONCURRENTLY IF EXISTS ${quotePgIdentifier(indexName)}`);
+      await client.query('RESET lock_timeout');
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[prisma:ops:indexes] dropped invalid concurrent index "${indexName}" (table "${table}") for rebuild on next pass.`,
+      );
     }
   } finally {
     await client.end();
   }
 }
 
+/**
+ * Cita un identificador para DDL PostgreSQL (solo caracteres seguros en nombres de índice del checklist).
+ *
+ * @param {string} name
+ */
+function quotePgIdentifier(name) {
+  return `"${name.replace(/"/g, '""')}"`;
+}
+
 async function main() {
   const lockTimeoutMs = envLockTimeoutMs('PSP_PRISMA_INDEX_LOCK_TIMEOUT', 15000);
-  const retries = envInt('PSP_PRISMA_INDEX_RETRIES', 6);
-  const baseDelayMs = envInt('PSP_PRISMA_INDEX_RETRY_BASE_DELAY_MS', 1000);
+  const retries = envNonNegativeInt('PSP_PRISMA_INDEX_RETRIES', 6);
+  const baseDelayMs = envNonNegativeInt('PSP_PRISMA_INDEX_RETRY_BASE_DELAY_MS', 1000);
+  const maxRemediation = envNonNegativeInt(
+    'PSP_PRISMA_INDEX_INVALID_REMEDIATION_ROUNDS',
+    3,
+  );
 
   const cwd = process.cwd();
   await loadDotenvIfPresent(cwd);
@@ -192,15 +267,52 @@ async function main() {
   );
 
   let attempt = 0;
+  let remediationRound = 0;
   // Retries help with transient lock contention (mainly on DROP INDEX CONCURRENTLY).
   // Bounded budget so persistent lock issues are not masked forever.
+  // Índices con indisvalid=false: DROP controlado + nuevo pase inmediato (sin backoff); presupuesto de rondas solo tras DROP OK.
   while (true) {
     try {
       await runStatements(databaseUrl, statements);
-      await assertConcurrentIndexesValid(databaseUrl, CONCURRENT_INDEX_CHECKLIST);
+
+      const { missing, invalid } = await validateConcurrentIndexes(
+        databaseUrl,
+        CONCURRENT_INDEX_CHECKLIST,
+      );
+
+      if (missing.length > 0) {
+        const detail = missing.map((m) => `"${m.indexName}" on "${m.table}"`).join('; ');
+        throw new Error(
+          `${FAIL_FAST_MISSING} expected index(es) not found after script run: ${detail}.`,
+        );
+      }
+
+      if (invalid.length > 0) {
+        if (remediationRound >= maxRemediation) {
+          const detail = invalid.map((m) => `"${m.indexName}"@${m.table}`).join(', ');
+          throw new Error(
+            `${FAIL_FAST_REMEDIATION} invalid indexes persist after ${maxRemediation} DROP/rebuild attempt(s): ${detail}.`,
+          );
+        }
+        const remediationAttempt = remediationRound + 1;
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[prisma:ops:indexes] invalid concurrent indexes (indisvalid=false): ${invalid
+            .map((m) => `"${m.indexName}"@${m.table}`)
+            .join(', ')} — dropping with CONCURRENTLY and rebuilding (remediation ${remediationAttempt}/${maxRemediation}).`,
+        );
+        await dropIndexesConcurrently(databaseUrl, invalid, lockTimeoutMs);
+        // Solo cuenta una ronda tras DROP exitoso; si falla (locks/conexión), el retry no consume presupuesto.
+        remediationRound += 1;
+        continue;
+      }
+
       return;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (message.includes(FAIL_FAST_MISSING) || message.includes(FAIL_FAST_REMEDIATION)) {
+        throw error;
+      }
       // eslint-disable-next-line no-console
       console.warn(`[prisma:ops:indexes] ${message}`);
     }

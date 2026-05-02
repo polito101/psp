@@ -1,6 +1,5 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PrismaClientKnownRequestError } from '@prisma/client/runtime/client';
 import { MerchantOnboardingService } from './merchant-onboarding.service';
 import { OnboardingEmailService } from './onboarding-email.service';
 import { OnboardingTokenService } from './onboarding-token.service';
@@ -15,11 +14,13 @@ describe('MerchantOnboardingService', () => {
   });
 
   const createTx = () => ({
+    $executeRaw: jest.fn().mockResolvedValue(undefined),
     merchant: {
       create: jest.fn().mockResolvedValue({ id: 'merchant_1', name: 'Ada Lovelace' }),
       update: jest.fn().mockResolvedValue({ id: 'merchant_1', isActive: true }),
     },
     merchantOnboardingApplication: {
+      findFirst: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue({
         id: 'app_1',
         merchantId: 'merchant_1',
@@ -124,6 +125,11 @@ describe('MerchantOnboardingService', () => {
       phone: '+34600000000',
     });
 
+    expect(tx.$executeRaw).toHaveBeenCalled();
+    expect(tx.merchantOnboardingApplication.findFirst).toHaveBeenCalledWith({
+      where: { contactEmail: 'ada@example.com' },
+      select: { id: true },
+    });
     expect(tx.merchant.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         name: 'Ada Lovelace',
@@ -286,6 +292,30 @@ describe('MerchantOnboardingService', () => {
       phone: '+34600000000',
     });
 
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(tx.merchant.create).not.toHaveBeenCalled();
+    expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      ok: true,
+      message: 'If the email can receive onboarding links, we will send next steps shortly.',
+    });
+  });
+
+  it('returns neutral success when another request commits the same contact_email under the advisory lock', async () => {
+    const { service, tx, emailService } = createService();
+    tx.merchantOnboardingApplication.findFirst.mockResolvedValueOnce({ id: 'winner_app' });
+
+    const result = await service.createApplication({
+      name: 'Ada Lovelace',
+      email: 'ada@example.com',
+      phone: '+34600000000',
+    });
+
+    expect(tx.$executeRaw).toHaveBeenCalled();
+    expect(tx.merchantOnboardingApplication.findFirst).toHaveBeenCalledWith({
+      where: { contactEmail: 'ada@example.com' },
+      select: { id: true },
+    });
     expect(tx.merchant.create).not.toHaveBeenCalled();
     expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
     expect(result).toEqual({
@@ -295,14 +325,13 @@ describe('MerchantOnboardingService', () => {
   });
 
   it('returns neutral success when DB unique constraint on contact_email races past findFirst', async () => {
-    const dupError = new PrismaClientKnownRequestError(
-      'Unique constraint failed on the fields: (`contact_email`)',
-      {
-        code: 'P2002',
-        clientVersion: 'test',
-        meta: { modelName: 'MerchantOnboardingApplication', target: ['contact_email'] },
-      },
-    );
+    const dupError = {
+      name: 'PrismaClientKnownRequestError',
+      message: 'Unique constraint failed on the fields: (`contact_email`)',
+      code: 'P2002',
+      clientVersion: 'test',
+      meta: { modelName: 'MerchantOnboardingApplication', target: ['contact_email'] },
+    };
     const { service, prisma, tx, emailService } = createService();
     prisma.$transaction.mockRejectedValueOnce(dupError);
 
@@ -321,11 +350,13 @@ describe('MerchantOnboardingService', () => {
   });
 
   it('rethrows P2002 that is not the onboarding contact_email unique violation', async () => {
-    const err = new PrismaClientKnownRequestError('Unique constraint failed', {
+    const err = {
+      name: 'PrismaClientKnownRequestError',
+      message: 'Unique constraint failed',
       code: 'P2002',
       clientVersion: 'test',
       meta: { modelName: 'MerchantOnboardingToken', target: ['token_hash'] },
-    });
+    };
     const { service, prisma } = createService();
     prisma.$transaction.mockRejectedValueOnce(err);
 

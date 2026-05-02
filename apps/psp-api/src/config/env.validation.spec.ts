@@ -238,6 +238,15 @@ describe('normalizeMerchantOnboardingBaseUrl', () => {
       /MERCHANT_ONBOARDING_BASE_URL must use https/,
     );
   });
+
+  it('exige URL explícita en production si raw está vacío', () => {
+    expect(() => normalizeMerchantOnboardingBaseUrl(undefined, 'production')).toThrow(
+      /MERCHANT_ONBOARDING_BASE_URL is required in non-development environments/,
+    );
+    expect(() => normalizeMerchantOnboardingBaseUrl('   ', 'sandbox')).toThrow(
+      /MERCHANT_ONBOARDING_BASE_URL is required in non-development environments/,
+    );
+  });
 });
 
 describe('validateEnv MERCHANT_ONBOARDING_BASE_URL', () => {
@@ -274,6 +283,30 @@ describe('validateEnv MERCHANT_ONBOARDING_BASE_URL', () => {
         MERCHANT_ONBOARDING_BASE_URL: 'http://127.0.0.1:3005',
       }),
     ).toThrow(/MERCHANT_ONBOARDING_BASE_URL must use https/);
+  });
+
+  it('exige MERCHANT_ONBOARDING_BASE_URL en NODE_ENV=sandbox si está ausente', () => {
+    expect(() =>
+      validateEnv({
+        ...minimalEnv(),
+        NODE_ENV: 'sandbox',
+        PAYMENTS_PROVIDER_ORDER: 'mock',
+        REDIS_URL: 'redis://127.0.0.1:6379',
+        CORS_ALLOWED_ORIGINS: 'https://psp-backoffice.onrender.com',
+      }),
+    ).toThrow(/MERCHANT_ONBOARDING_BASE_URL is required in non-development environments/);
+  });
+
+  it('acepta https en NODE_ENV=sandbox', () => {
+    const out = validateEnv({
+      ...minimalEnv(),
+      NODE_ENV: 'sandbox',
+      PAYMENTS_PROVIDER_ORDER: 'mock',
+      REDIS_URL: 'redis://127.0.0.1:6379',
+      CORS_ALLOWED_ORIGINS: 'https://psp-backoffice.onrender.com',
+      MERCHANT_ONBOARDING_BASE_URL: 'https://psp-backoffice.onrender.com/',
+    });
+    expect(out.MERCHANT_ONBOARDING_BASE_URL).toBe('https://psp-backoffice.onrender.com');
   });
 });
 
