@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import type { SessionClaims } from "@/lib/server/auth/session-claims";
 
 const DEFAULT_API_BASE_URL = "http://localhost:3000";
-const DEFAULT_PROXY_TIMEOUT_MS = 5000;
+/** Sin env: mismo orden que Render blueprint (`render.yaml`) para cold start / primera petición. */
+const DEFAULT_PROXY_TIMEOUT_MS = 60_000;
 const PROXY_TIMEOUT_MS_MIN = 1_000;
 const PROXY_TIMEOUT_MS_MAX = 120_000;
 
