@@ -27,6 +27,13 @@ export function OnboardingActions({ applicationId, status }: Props) {
     await queryClient.invalidateQueries({ queryKey: ["merchant-onboarding-application", applicationId] });
   }
 
+  function formatMutationError(err: unknown, fallback: string): string {
+    if (err instanceof Error && err.message.trim()) {
+      return err.message.trim();
+    }
+    return fallback;
+  }
+
   const approveMutation = useMutation({
     mutationFn: () => approveMerchantOnboardingApplication(applicationId),
     onSuccess: async () => {
@@ -34,9 +41,9 @@ export function OnboardingActions({ applicationId, status }: Props) {
       setMessage("Solicitud aprobada y merchant activado.");
       await refreshOnboardingQueries();
     },
-    onError: () => {
+    onError: (err) => {
       setMessage(null);
-      setError("No se pudo aprobar la solicitud. Inténtalo de nuevo.");
+      setError(formatMutationError(err, "No se pudo aprobar la solicitud. Inténtalo de nuevo."));
     },
   });
 
@@ -48,9 +55,9 @@ export function OnboardingActions({ applicationId, status }: Props) {
       setRejectReason("");
       await refreshOnboardingQueries();
     },
-    onError: () => {
+    onError: (err) => {
       setMessage(null);
-      setError("No se pudo rechazar la solicitud. Inténtalo de nuevo.");
+      setError(formatMutationError(err, "No se pudo rechazar la solicitud. Inténtalo de nuevo."));
     },
   });
 
@@ -61,9 +68,9 @@ export function OnboardingActions({ applicationId, status }: Props) {
       setMessage("Link de onboarding reenviado.");
       await refreshOnboardingQueries();
     },
-    onError: () => {
+    onError: (err) => {
       setMessage(null);
-      setError("No se pudo reenviar el link. Inténtalo de nuevo.");
+      setError(formatMutationError(err, "No se pudo reenviar el link. Inténtalo de nuevo."));
     },
   });
 
@@ -83,11 +90,23 @@ export function OnboardingActions({ applicationId, status }: Props) {
   }
 
   if (!canReview && !canResendLink) {
-    return null;
+    return (
+      <p className="text-sm text-slate-600">
+        No hay acciones para el estado actual ({status}). Aprobar y rechazar solo están disponibles cuando el
+        expediente está <span className="font-medium">En revisión</span> (el merchant debe completar y enviar el
+        formulario público de onboarding).
+      </p>
+    );
   }
 
   return (
     <div className="space-y-4">
+      {canResendLink && !canReview ? (
+        <p className="text-sm text-slate-600">
+          Aprobar y rechazar estarán disponibles cuando el estado pase a <span className="font-medium">En revisión</span>{" "}
+          tras el envío del formulario por el merchant.
+        </p>
+      ) : null}
       {message ? (
         <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
           {message}
