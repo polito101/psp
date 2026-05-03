@@ -119,6 +119,9 @@ export function AppShell({
   const showLoginLink = !session && pathname !== loginHref;
 
   const isEntryPage = pathname === "/login" || pathname === "/admin/login";
+  if (pathname.startsWith("/onboarding/")) {
+    return <div className="min-h-screen">{children}</div>;
+  }
   if (isEntryPage) {
     return <div className="min-h-screen bg-slate-50">{children}</div>;
   }

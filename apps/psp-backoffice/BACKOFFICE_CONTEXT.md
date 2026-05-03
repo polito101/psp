@@ -85,7 +85,7 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 |----------|-----|
 | `BACKOFFICE_PORTAL_MODE` | **`merchant`** u **`admin`**: en `merchant` solo acepta sesión merchant y login en `/login`; en `admin` solo admin y login en `/admin/login`. Si falta, por defecto **`merchant`** (fail-closed para no exponer admin). |
 | `NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE` | Debe coincidir con `BACKOFFICE_PORTAL_MODE` (copia para UI en cliente: rutas de logout / enlace “Iniciar sesión”). Middleware/Edge puede usar este fallback si el server env no está inlined en el bundle. Si ambas están en `admin` o `merchant` y **no** coinciden, `getBackofficePortalMode()` lanza y `POST /api/auth/session` responde **500** con mensaje explícito (evita 404 silencioso por desalineación cliente/servidor). |
-| `PSP_API_BASE_URL` | Base URL de `psp-api` (solo servidor); **obligatoria** fuera de `NODE_ENV=development`. En desarrollo local puede omitirse y usar `http://localhost:3000` como valor por defecto. |
+| `PSP_API_BASE_URL` | Base URL de `psp-api` (solo servidor); **obligatoria** fuera de `NODE_ENV=development`. En desarrollo local puede omitirse y usar `http://localhost:3000` como valor por defecto. En Render debe ser la URL **exacta** del servicio web API en el Dashboard (p. ej. `https://psp-api-xxxx.onrender.com`), no un nombre inventado; `render.yaml` puede sobrescribir esta variable al sincronizar el Blueprint. |
 | `PSP_API_PROXY_TIMEOUT_MS` | Opcional: timeout ms del `fetch` BFF→API (default **60000**, máx. 120000). Debe ser **solo dígitos** (p. ej. `60000`; sin `60s`, `1e5`, etc.). Valores mal formados usan el default y un **warning** único en logs del servidor. En local puedes bajarlo si la API está en la misma máquina. |
 | `PSP_INTERNAL_API_SECRET` | Secreto interno API; **nunca** al cliente |
 | `BACKOFFICE_ADMIN_SECRET` | Credencial de login **admin** (solo deploy admin y `POST /api/auth/session` con `mode: "admin"`); distinto de `PSP_INTERNAL_API_SECRET`. En deploy **solo merchant** suele omitirse. |
@@ -102,7 +102,7 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 
 - **`/login`** — Solo **portal merchant** (`BACKOFFICE_PORTAL_MODE=merchant`): formulario merchant ID + token temporal; no admin.
 - **`/admin/login`** — Solo **portal admin** (`BACKOFFICE_PORTAL_MODE=admin`): formulario mínimo con secreto admin.
-- **`/onboarding/[token]`** — Página pública de onboarding merchant; valida el token vía `/api/public/onboarding/:token` y envía el perfil de negocio a `/api/public/onboarding/:token/business-profile`.
+- **`/onboarding/[token]`** — Página pública de onboarding merchant (sin chrome lateral del AppShell, UI oscura tipo marketing Finara); valida el token vía `/api/public/onboarding/:token` y envía el perfil de negocio a `/api/public/onboarding/:token/business-profile`.
 - **`/crm/onboarding`** — CRM onboarding (solo admin): listado de expedientes merchant desde `GET /api/internal/crm/onboarding`, con acceso al detalle.
 - **`/crm/onboarding/[applicationId]`** — Detalle admin de expediente onboarding: contacto, negocio, checklist, historial y acciones `approve|reject|resend-link`.
 - **`/`** — Inicio: **admin** — bloque **Resumen** (intervalo/comparador vía `GET /api/internal/transactions/summary`), tarjetas UTC + volumen EUR + card volumen **USD** (`/ops/dashboard/volume-usd` vía BFF) + accesos a `/merchants` y `/operations`. **Merchant** — resumen scoped + enlaces al portal.
