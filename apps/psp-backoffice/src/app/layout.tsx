@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "PSP Backoffice",
+  title: "ADMIN BACKOFFICE",
   description: "Frontend administrativo para monitoreo operativo PSP",
   manifest: "/site.webmanifest",
   icons: {
