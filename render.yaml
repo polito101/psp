@@ -3,8 +3,12 @@
 #
 # Migraciones: el Dockerfile de psp-api ejecuta `prisma migrate deploy` en el entrypoint antes de `node dist/main`.
 #
-# Ajusta las URLs públicas (psp-api, web-finara, psp-backoffice) si Render te asigna otro dominio
-# al crear el Blueprint (nombre de servicio ocupado globalmente).
+# URLs públicas: el nombre del servicio ("psp-api") NO garantiza el host https://psp-api.onrender.com — Render asigna
+# un hostname único (p. ej. https://psp-api-yzfj.onrender.com). Copia la URL del servicio API desde el Dashboard
+# (psp-api → Settings → URL) y mantén PSP_API_BASE_URL en web-finara y ambos backoffice IGUAL a esa URL.
+# Si sincronizas este Blueprint desde el repo, estos valores SOBRESCRIBEN las variables del Dashboard.
+#
+# Ajusta también CORS/MERCHANT_ONBOARDING_BASE_URL/NEXT_PUBLIC_* si tus hosts de front difieren del ejemplo.
 
 services:
   - type: keyvalue
@@ -77,9 +81,9 @@ services:
         value: production
       - key: NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL
         value: https://psp-backoffice.onrender.com/login
-      # Misma URL pública que el BFF del backoffice (`POST /api/merchant-onboarding` → psp-api).
+      # Origen público real del servicio `psp-api` en Dashboard (único por cuenta/proyecto).
       - key: PSP_API_BASE_URL
-        value: https://psp-api.onrender.com
+        value: https://psp-api-yzfj.onrender.com
       - key: PSP_API_PROXY_TIMEOUT_MS
         value: "60000"
 
@@ -99,10 +103,10 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      # Debe coincidir con el hostname público del servicio psp-api tras el primer deploy.
+      # Misma URL https que el servicio web `psp-api` (Dashboard → psp-api → URL).
       - key: PSP_API_BASE_URL
-        value: https://psp-api.onrender.com
-      # Cold start en plan free suele superar el default 5s del BFF (`backoffice-api.ts`).
+        value: https://psp-api-yzfj.onrender.com
+      # Cold start Render free: PSP_API_PROXY_TIMEOUT_MS suficiente para el fetch BFF→API.
       - key: PSP_API_PROXY_TIMEOUT_MS
         value: "60000"
       - key: PSP_INTERNAL_API_SECRET
@@ -138,7 +142,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: PSP_API_BASE_URL
-        value: https://psp-api.onrender.com
+        value: https://psp-api-yzfj.onrender.com
       - key: PSP_API_PROXY_TIMEOUT_MS
         value: "60000"
       - key: PSP_INTERNAL_API_SECRET

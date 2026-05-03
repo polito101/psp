@@ -36,6 +36,8 @@ const MAX_PSP_PRISMA_INDEX_RETRIES = 20;
 const MAX_PSP_PRISMA_INDEX_RETRY_BASE_DELAY_MS = 300_000;
 /** Límite superior para `PSP_PRISMA_INDEX_INVALID_REMEDIATION_ROUNDS`. */
 const MAX_PSP_PRISMA_INDEX_INVALID_REMEDIATION_ROUNDS = 10;
+/** Límite superior para `PSP_PRISMA_INDEX_LOCK_TIMEOUT` (ms). Evita `SET lock_timeout` excesivo en DROP concurrente. */
+const MAX_PSP_PRISMA_INDEX_LOCK_TIMEOUT_MS = 120_000;
 /**
  * Tope por iteración antes de `sleep()` ante overflow o exponencial muy alto (ms).
  */
@@ -81,20 +83,46 @@ function envNonNegativeInt(name, fallback, opts = {}) {
   return parsed;
 }
 
+/**
+ * Milisegundos para `SET lock_timeout` en `DROP INDEX CONCURRENTLY`.
+ * `0` en Postgres desactiva el timeout (riesgo de cuelgue); valores altos alargan demasiado el script.
+ *
+ * @param {string} name
+ * @param {number} fallback
+ * @returns {number}
+ */
 function envLockTimeoutMs(name, fallback) {
   const raw = process.env[name];
-  if (!raw) return fallback;
-  if (!/^\d+$/.test(raw)) {
+  if (raw === undefined || raw === null) {
+    return fallback;
+  }
+  const trimmed = String(raw).trim();
+  if (!trimmed) {
+    return fallback;
+  }
+  if (!/^\d+$/.test(trimmed)) {
     throw new Error(
       `${name} must be an integer value in milliseconds (for example, 15000). Received: ${raw}`,
     );
   }
 
-  const parsed = Number.parseInt(raw, 10);
+  const parsed = Number.parseInt(trimmed, 10);
   if (!Number.isSafeInteger(parsed) || parsed < 0) {
     throw new Error(
       `${name} must be a non-negative safe integer in milliseconds. Received: ${raw}`,
     );
+  }
+  if (parsed === 0) {
+    throw new Error(
+      `${name}=0 disables lock_timeout in PostgreSQL (waits indefinitely). Use a positive millisecond value (default ${fallback}). Received: ${raw}`,
+    );
+  }
+  if (parsed > MAX_PSP_PRISMA_INDEX_LOCK_TIMEOUT_MS) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[prisma:ops:indexes] ${name}=${parsed} exceeds configured maximum ${MAX_PSP_PRISMA_INDEX_LOCK_TIMEOUT_MS}ms; using ${MAX_PSP_PRISMA_INDEX_LOCK_TIMEOUT_MS}ms. See PROJECT_CONTEXT.md (repo root) for operational clamp limits.`,
+    );
+    return MAX_PSP_PRISMA_INDEX_LOCK_TIMEOUT_MS;
   }
 
   return parsed;

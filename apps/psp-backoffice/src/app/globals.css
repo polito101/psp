@@ -27,3 +27,23 @@ body {
 * {
   border-color: var(--border);
 }
+
+/* Estilo marketing Finara (pág. pública `/onboarding/[token]`) */
+@layer utilities {
+  .text-brand-gradient {
+    background: linear-gradient(90deg, #00d4c8, #4f6ef7, #c936e8, #ec4899, #f97316);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .btn-brand-gradient {
+    background: linear-gradient(90deg, #00d4c8, #4f6ef7, #c936e8, #f97316);
+    color: #fff;
+    border: none;
+  }
+
+  .btn-brand-gradient:hover {
+    opacity: 0.92;
+  }
+}
