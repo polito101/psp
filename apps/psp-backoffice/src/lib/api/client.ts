@@ -31,6 +31,43 @@ import type {
 } from "@/lib/api/contracts";
 import type { OpsPaymentProvider } from "@/lib/api/payment-providers";
 
+/**
+ * Error del cliente BFF con mensaje seguro para UI (`publicMessage` / `message`) y detalle interno en `cause`.
+ * No exponer `cause` en pantalla; usar solo para logs/monitoring.
+ */
+export class BffClientError extends Error {
+  readonly publicMessage: string;
+  readonly statusCode?: number;
+
+  constructor(options: { publicMessage: string; cause?: unknown; statusCode?: number }) {
+    super(options.publicMessage, options.cause !== undefined ? { cause: options.cause } : undefined);
+    this.name = "BffClientError";
+    this.publicMessage = options.publicMessage;
+    this.statusCode = options.statusCode;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/** Mensajes HTTP genéricos para UI; el detalle del servidor va en `cause`, no aquí. */
+function publicMessageForHttpStatus(status: number): string {
+  if (status === 401 || status === 403) {
+    return "No tienes permiso para esta acción o la sesión expiró.";
+  }
+  if (status === 404) {
+    return "No se encontró el recurso solicitado.";
+  }
+  if (status === 408 || status === 504) {
+    return "Tiempo de espera agotado. Inténtalo de nuevo.";
+  }
+  if (status === 429) {
+    return "Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.";
+  }
+  if (status >= 500) {
+    return "El servicio no está disponible temporalmente. Inténtalo más tarde.";
+  }
+  return "No se pudo completar la solicitud. Inténtalo de nuevo.";
+}
+
 /** Incluye cookies (p. ej. `backoffice_admin_token` tras `/login`) en peticiones al BFF. */
 const internalBffInit: RequestInit = {
   credentials: "include",
@@ -141,11 +178,18 @@ async function internalBffFetch(input: string, init?: RequestInit): Promise<Resp
   } catch (e) {
     const err = e instanceof Error ? e : new Error(String(e));
     if (err.name === "TimeoutError" || err.name === "AbortError") {
-      throw new Error(
+      const internalDetail = new Error(
         `Tiempo de espera agotado (${ms} ms) al llamar al panel. Comprueba que psp-api responda, que PSP_API_BASE_URL apunte a ese servicio y que PSP_API_PROXY_TIMEOUT_MS en el backoffice cubra el cold start (Render free).`,
       );
+      throw new BffClientError({
+        publicMessage: "Tiempo de espera agotado. Inténtalo de nuevo.",
+        cause: internalDetail,
+      });
     }
-    throw err;
+    throw new BffClientError({
+      publicMessage: "No se pudo completar la solicitud. Inténtalo de nuevo.",
+      cause: err,
+    });
   } finally {
     dispose();
   }
@@ -176,14 +220,18 @@ function toSearchParams(filters: TransactionsFilters): URLSearchParams {
 
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    let message = "Unexpected API error";
+    let internalDetail = `HTTP ${response.status}`;
     try {
       const payload = (await response.json()) as { message?: string };
-      if (payload?.message) message = payload.message;
+      if (payload?.message) internalDetail = payload.message;
     } catch {
       // no-op
     }
-    throw new Error(message);
+    throw new BffClientError({
+      publicMessage: publicMessageForHttpStatus(response.status),
+      statusCode: response.status,
+      cause: new Error(internalDetail),
+    });
   }
 
   return (await response.json()) as T;

@@ -48,6 +48,11 @@ type NextRequestWithIp = NextRequest & { ip?: string };
  * si hay señal verificable en el proceso o `TRUST_PLATFORM_IP_HEADERS` / flags granulares
  * (`TRUST_VERCEL_IP_HEADERS`, `TRUST_CLOUDFLARE_IP_HEADERS`).
  *
+ * Para CSRF de mutaciones (`enforceInternalMutationRequest` en `internal-mutation-guard.ts`),
+ * `X-Forwarded-Host` / `X-Forwarded-Proto` reconstruyen el origen público solo con
+ * `TRUST_BACKOFFICE_FORWARDED_ORIGIN_HEADERS=true` o en runtime Vercel / Cloudflare Pages / Render
+ * (`VERCEL=1`, `CF_PAGES=1`, `RENDER=true`).
+ *
  * @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Forwarded-For
  */
 function trustProxyForwardedClientHeaders(): boolean {
