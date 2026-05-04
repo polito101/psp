@@ -166,6 +166,9 @@ export class MerchantOnboardingService {
     const webhookSecretCiphertext = encryptUtf8(webhookSecretPlain);
     const placeholderHash = await bcrypt.hash(randomBytes(16).toString('hex'), 12);
 
+    const initialPasswordPlain = randomBytes(18).toString('base64url');
+    const merchantPortalPasswordHash = await bcrypt.hash(initialPasswordPlain, 12);
+
     let txResult: CreateApplicationTxResult;
     try {
       txResult = await this.prisma.$transaction(async (tx): Promise<CreateApplicationTxResult> => {
@@ -184,6 +187,7 @@ export class MerchantOnboardingService {
             name: dto.name,
             apiKeyHash: placeholderHash,
             webhookSecretCiphertext,
+            merchantPortalPasswordHash,
             isActive: false,
             deactivatedAt: now,
           },
@@ -263,6 +267,8 @@ export class MerchantOnboardingService {
       to: contactEmail,
       contactName: dto.name,
       onboardingUrl,
+      loginEmail: contactEmail,
+      initialPassword: initialPasswordPlain,
     });
     await this.recordEmailDeliveryEvent(applicationId, emailResult);
 
@@ -706,6 +712,8 @@ export class MerchantOnboardingService {
     to: string;
     contactName: string;
     onboardingUrl: string;
+    loginEmail?: string;
+    initialPassword?: string;
   }): Promise<EmailDeliveryResult> {
     try {
       return await this.emailService.sendOnboardingLink(input);

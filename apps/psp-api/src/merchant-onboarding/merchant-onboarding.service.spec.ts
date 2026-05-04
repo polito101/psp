@@ -138,6 +138,7 @@ describe('MerchantOnboardingService', () => {
     expect(tx.merchant.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         name: 'Ada Lovelace',
+        merchantPortalPasswordHash: expect.any(String),
         isActive: false,
         deactivatedAt: now,
       }),
@@ -195,6 +196,8 @@ describe('MerchantOnboardingService', () => {
     expect(emailService.sendOnboardingLink).toHaveBeenCalledWith({
       to: 'ada@example.com',
       contactName: 'Ada Lovelace',
+      loginEmail: 'ada@example.com',
+      initialPassword: expect.any(String),
       onboardingUrl: 'https://onboarding.example.com/onboarding/plain_token',
     });
     expect(result).toEqual({

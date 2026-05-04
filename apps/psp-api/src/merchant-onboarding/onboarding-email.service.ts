@@ -5,6 +5,9 @@ export type SendOnboardingEmailInput = {
   to: string;
   contactName: string;
   onboardingUrl: string;
+  /** Incluido en el cuerpo del email junto con la contraseña inicial (flujo de creación). */
+  loginEmail?: string;
+  initialPassword?: string;
 };
 
 export type SendOnboardingDecisionEmailInput = {
@@ -31,6 +34,32 @@ export class OnboardingEmailService {
   async sendOnboardingLink(
     input: SendOnboardingEmailInput,
   ): Promise<SendOnboardingEmailResult> {
+    const loginEmail = input.loginEmail?.trim();
+    const initialPassword = input.initialPassword;
+    const hasPortalCredentials =
+      !!loginEmail &&
+      typeof initialPassword === 'string' &&
+      initialPassword.length > 0;
+
+    if (hasPortalCredentials) {
+      return this.sendViaResend({
+        to: input.to,
+        subject: 'Completa tu onboarding en Finara',
+        html:
+          `<p>Hola ${escapeHtml(input.contactName)},</p>` +
+          '<p>Te hemos creado acceso al portal merchant. Usa estos datos para iniciar sesión:</p>' +
+          `<p><strong>Email:</strong> ${escapeHtml(loginEmail)}</p>` +
+          `<p><strong>Contraseña inicial:</strong> ${escapeHtml(initialPassword)}</p>` +
+          '<p>Completa también los datos de tu negocio para iniciar la revisión:</p>' +
+          `<p><a href="${escapeHtml(input.onboardingUrl)}">Abrir onboarding</a></p>`,
+        text:
+          `Hola ${input.contactName},\n\n` +
+          `Email: ${loginEmail}\n` +
+          `Password: ${initialPassword}\n\n` +
+          `Onboarding: ${input.onboardingUrl}\n`,
+      });
+    }
+
     return this.sendViaResend({
       to: input.to,
       subject: 'Completa tu onboarding en Finara',
