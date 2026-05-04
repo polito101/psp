@@ -41,4 +41,56 @@ describe('OnboardingEmailService', () => {
       'merchant_onboarding.email_failed status=500 request_id=req_123',
     );
   });
+
+  it('returns failure on Resend fetch timeout/abort (no hang)', async () => {
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    const timeoutError =
+      typeof DOMException !== 'undefined'
+        ? new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+        : Object.assign(new Error('The operation was aborted due to timeout'), {
+            name: 'TimeoutError',
+          });
+    global.fetch = jest.fn().mockRejectedValue(timeoutError);
+
+    const config = {
+      get: jest.fn((key: string) => {
+        if (key === 'RESEND_API_KEY') return 'resend-key';
+        if (key === 'ONBOARDING_EMAIL_FROM') return 'Finara <onboarding@example.com>';
+        return undefined;
+      }),
+    } as unknown as ConfigService;
+    const service = new OnboardingEmailService(config);
+
+    const result = await service.sendOnboardingLink({
+      to: 'merchant@example.com',
+      contactName: 'Ada',
+      onboardingUrl: 'https://example.com/onboarding',
+    });
+
+    expect(result).toEqual({ ok: false, errorMessage: 'Resend request timed out' });
+    expect(warnSpy).toHaveBeenCalledWith('merchant_onboarding.email_fetch_timeout');
+  });
+
+  it('returns failure on other fetch errors', async () => {
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    global.fetch = jest.fn().mockRejectedValue(new TypeError('fetch failed'));
+
+    const config = {
+      get: jest.fn((key: string) => {
+        if (key === 'RESEND_API_KEY') return 'resend-key';
+        if (key === 'ONBOARDING_EMAIL_FROM') return 'Finara <onboarding@example.com>';
+        return undefined;
+      }),
+    } as unknown as ConfigService;
+    const service = new OnboardingEmailService(config);
+
+    const result = await service.sendOnboardingDecisionEmail({
+      to: 'm@example.com',
+      contactName: 'Bob',
+      decision: 'approved',
+    });
+
+    expect(result).toEqual({ ok: false, errorMessage: 'Resend request failed' });
+    expect(warnSpy).toHaveBeenCalledWith('merchant_onboarding.email_fetch_failed');
+  });
 });

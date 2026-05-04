@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MerchantOnboardingService } from './merchant-onboarding.service';
 import { OnboardingEmailService } from './onboarding-email.service';
@@ -569,6 +569,53 @@ describe('MerchantOnboardingService', () => {
       }),
     });
     expect(result.status).toBe('ACTIVE');
+    jest.useRealTimers();
+  });
+
+  it('does not fail approve/reject response when decision email audit insert fails', async () => {
+    jest.useFakeTimers().setSystemTime(now.getTime());
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const { service, prisma, tx, emailService } = createService();
+    prisma.merchantOnboardingApplication.findUnique.mockResolvedValue({
+      id: 'app_1',
+      merchantId: 'merchant_1',
+      status: 'IN_REVIEW',
+      merchant: { id: 'merchant_1', isActive: false },
+    });
+    tx.merchantOnboardingApplication.update.mockResolvedValue({
+      id: 'app_1',
+      status: 'ACTIVE',
+      merchantId: 'merchant_1',
+      contactName: 'Ada Lovelace',
+      contactEmail: 'ada@example.com',
+    });
+    prisma.merchantOnboardingEvent.create.mockRejectedValueOnce(new Error('audit insert failed'));
+
+    const approved = await service.approveApplication('app_1');
+    expect(approved.status).toBe('ACTIVE');
+    expect(emailService.sendOnboardingDecisionEmail).toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to record decision email delivery event'),
+    );
+
+    prisma.merchantOnboardingApplication.findUnique.mockResolvedValue({
+      id: 'app_1',
+      merchantId: 'merchant_1',
+      status: 'IN_REVIEW',
+      merchant: { id: 'merchant_1', isActive: false },
+    });
+    tx.merchantOnboardingApplication.update.mockResolvedValue({
+      id: 'app_1',
+      status: 'REJECTED',
+      rejectionReason: 'x',
+    });
+    prisma.merchantOnboardingEvent.create.mockRejectedValueOnce(new Error('audit insert failed'));
+
+    const rejected = await service.rejectApplication('app_1', { reason: 'No pasa.' });
+    expect(rejected.status).toBe('REJECTED');
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+
+    warnSpy.mockRestore();
     jest.useRealTimers();
   });
 

@@ -37,7 +37,7 @@ function buildNavItems(session: LayoutSession | null): NavItem[] {
 
   if (session?.role === "merchant") {
     const mid = encodeURIComponent(session.merchantId);
-    const financeHref = `/merchants/${session.merchantId}/finance`;
+    const financeHref = `/merchants/${mid}/finance`;
     return [
       { href: "/", id: "home", label: "Inicio", icon: LayoutDashboard },
       { href: loginHref, id: "login", label: "Iniciar sesión", icon: LogIn },

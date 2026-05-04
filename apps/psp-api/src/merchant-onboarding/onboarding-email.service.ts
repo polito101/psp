@@ -19,6 +19,9 @@ export type SendOnboardingEmailResult =
   | { ok: true; providerMessageId: string | null }
   | { ok: false; errorMessage: string };
 
+/** Tiempo máximo de espera al API de Resend (conexión + respuesta HTTP inicial). */
+const RESEND_FETCH_TIMEOUT_MS = 8_000;
+
 @Injectable()
 export class OnboardingEmailService {
   private readonly logger = new Logger(OnboardingEmailService.name);
@@ -92,34 +95,54 @@ export class OnboardingEmailService {
       return { ok: false, errorMessage: 'Resend is not configured' };
     }
 
-    const response = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from,
-        to: parts.to,
-        subject: parts.subject,
-        html: parts.html,
-        text: parts.text,
-      }),
-    });
+    try {
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from,
+          to: parts.to,
+          subject: parts.subject,
+          html: parts.html,
+          text: parts.text,
+        }),
+        signal: AbortSignal.timeout(RESEND_FETCH_TIMEOUT_MS),
+      });
 
-    if (!response.ok) {
-      const requestId = response.headers.get('x-request-id');
-      const requestIdSuffix = requestId ? ` request_id=${requestId}` : '';
-      this.logger.warn(`merchant_onboarding.email_failed status=${response.status}${requestIdSuffix}`);
-      return { ok: false, errorMessage: `Resend responded ${response.status}` };
+      if (!response.ok) {
+        const requestId = response.headers.get('x-request-id');
+        const requestIdSuffix = requestId ? ` request_id=${requestId}` : '';
+        this.logger.warn(`merchant_onboarding.email_failed status=${response.status}${requestIdSuffix}`);
+        return { ok: false, errorMessage: `Resend responded ${response.status}` };
+      }
+
+      const payload: unknown = await response.json().catch(() => null);
+      const providerMessageId =
+        isObjectWithStringId(payload) ? payload.id : null;
+
+      return { ok: true, providerMessageId };
+    } catch (err: unknown) {
+      if (isResendFetchTimeoutOrAbortError(err)) {
+        this.logger.warn('merchant_onboarding.email_fetch_timeout');
+        return { ok: false, errorMessage: 'Resend request timed out' };
+      }
+      this.logger.warn('merchant_onboarding.email_fetch_failed');
+      return { ok: false, errorMessage: 'Resend request failed' };
     }
-
-    const payload: unknown = await response.json().catch(() => null);
-    const providerMessageId =
-      isObjectWithStringId(payload) ? payload.id : null;
-
-    return { ok: true, providerMessageId };
   }
+}
+
+/**
+ * `fetch` con `AbortSignal.timeout` rechaza con `TimeoutError` (DOMException) o `AbortError`.
+ */
+function isResendFetchTimeoutOrAbortError(error: unknown): boolean {
+  if (typeof DOMException !== 'undefined' && error instanceof DOMException) {
+    return error.name === 'TimeoutError' || error.name === 'AbortError';
+  }
+  return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
 }
 
 function isObjectWithStringId(value: unknown): value is { id: string } {

@@ -734,7 +734,13 @@ export class MerchantOnboardingService {
     } catch (error) {
       emailResult = { ok: false, errorMessage: getErrorMessage(error) };
     }
-    await this.recordDecisionEmailDeliveryEvent(applicationId, input.decision, emailResult);
+    try {
+      await this.recordDecisionEmailDeliveryEvent(applicationId, input.decision, emailResult);
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Failed to record decision email delivery event (applicationId=${applicationId}, decision=${input.decision}): ${getErrorMessage(error)}`,
+      );
+    }
   }
 
   private async recordDecisionEmailDeliveryEvent(
