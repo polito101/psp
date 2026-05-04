@@ -27,11 +27,9 @@ export function OnboardingActions({ applicationId, status }: Props) {
     await queryClient.invalidateQueries({ queryKey: ["merchant-onboarding-application", applicationId] });
   }
 
-  function formatMutationError(err: unknown, fallback: string): string {
-    if (err instanceof Error && err.message.trim()) {
-      return err.message.trim();
-    }
-    return fallback;
+  function handleMutationError(err: unknown, fallback: string) {
+    console.error(err);
+    setError(fallback);
   }
 
   const approveMutation = useMutation({
@@ -43,7 +41,7 @@ export function OnboardingActions({ applicationId, status }: Props) {
     },
     onError: (err) => {
       setMessage(null);
-      setError(formatMutationError(err, "No se pudo aprobar la solicitud. Inténtalo de nuevo."));
+      handleMutationError(err, "No se pudo aprobar la solicitud. Inténtalo de nuevo.");
     },
   });
 
@@ -57,7 +55,7 @@ export function OnboardingActions({ applicationId, status }: Props) {
     },
     onError: (err) => {
       setMessage(null);
-      setError(formatMutationError(err, "No se pudo rechazar la solicitud. Inténtalo de nuevo."));
+      handleMutationError(err, "No se pudo rechazar la solicitud. Inténtalo de nuevo.");
     },
   });
 
@@ -70,7 +68,7 @@ export function OnboardingActions({ applicationId, status }: Props) {
     },
     onError: (err) => {
       setMessage(null);
-      setError(formatMutationError(err, "No se pudo reenviar el link. Inténtalo de nuevo."));
+      handleMutationError(err, "No se pudo reenviar el link. Inténtalo de nuevo.");
     },
   });
 
