@@ -1,4 +1,11 @@
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomBytes } from 'crypto';
 import * as bcrypt from 'bcryptjs';
@@ -694,6 +701,39 @@ export class MerchantOnboardingService {
     await this.recordEmailDeliveryEvent(applicationId, emailResult);
 
     return { ok: true, message: PUBLIC_RESEND_MESSAGE };
+  }
+
+  /**
+   * Valida credenciales del portal merchant por email de contacto del expediente más reciente (interno).
+   */
+  async validateMerchantPortalLogin(email: string, password: string) {
+    const contactEmail = normalizeEmail(email);
+    const application = await this.prisma.merchantOnboardingApplication.findFirst({
+      where: { contactEmail },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        merchantId: true,
+        status: true,
+        rejectionReason: true,
+        merchant: { select: { merchantPortalPasswordHash: true } },
+      },
+    });
+
+    const hash = application?.merchant?.merchantPortalPasswordHash;
+    if (!application || hash == null) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    const ok = await bcrypt.compare(password, hash);
+    if (!ok) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    return {
+      merchantId: application.merchantId,
+      onboardingStatus: application.status as string,
+      rejectionReason: application.rejectionReason,
+    };
   }
 
   private publicCreateResponse(onboardingUrl?: string) {
