@@ -304,7 +304,7 @@ describe('MerchantOnboardingService', () => {
     });
   });
 
-  it('rejects createApplication when contact email is already in use (onboarding application)', async () => {
+  it('returns neutral success when contact email is already in use (onboarding application)', async () => {
     const { service, prisma, tx, emailService } = createService();
     prisma.merchantOnboardingApplication.findFirst.mockResolvedValue({ id: 'existing_app' });
 
@@ -314,14 +314,17 @@ describe('MerchantOnboardingService', () => {
         email: 'ADA@EXAMPLE.COM',
         phone: '+34600000000',
       }),
-    ).rejects.toThrow(ConflictException);
+    ).resolves.toEqual({
+      ok: true,
+      message: 'If the email can receive onboarding links, we will send next steps shortly.',
+    });
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(tx.merchant.create).not.toHaveBeenCalled();
     expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
   });
 
-  it('rejects createApplication when merchant email is already in use', async () => {
+  it('returns neutral success when merchant email is already in use', async () => {
     const { service, prisma, tx, emailService } = createService();
     prisma.merchant.findUnique.mockResolvedValue({ id: 'merchant_existing' });
 
@@ -331,14 +334,17 @@ describe('MerchantOnboardingService', () => {
         email: 'ada@example.com',
         phone: '+34600000000',
       }),
-    ).rejects.toThrow(ConflictException);
+    ).resolves.toEqual({
+      ok: true,
+      message: 'If the email can receive onboarding links, we will send next steps shortly.',
+    });
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(tx.merchant.create).not.toHaveBeenCalled();
     expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
   });
 
-  it('rejects when another request commits the same contact_email under the advisory lock', async () => {
+  it('returns neutral success when another request commits the same contact_email under the advisory lock', async () => {
     const { service, tx, emailService } = createService();
     tx.merchantOnboardingApplication.findFirst.mockResolvedValueOnce({ id: 'winner_app' });
 
@@ -348,7 +354,10 @@ describe('MerchantOnboardingService', () => {
         email: 'ada@example.com',
         phone: '+34600000000',
       }),
-    ).rejects.toThrow(ConflictException);
+    ).resolves.toEqual({
+      ok: true,
+      message: 'If the email can receive onboarding links, we will send next steps shortly.',
+    });
 
     expect(tx.$executeRaw).toHaveBeenCalled();
     expect(tx.merchantOnboardingApplication.findFirst).toHaveBeenCalledWith({
@@ -359,7 +368,7 @@ describe('MerchantOnboardingService', () => {
     expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
   });
 
-  it('throws Conflict when DB unique constraint on contact_email races past findFirst', async () => {
+  it('returns neutral success when DB unique constraint on contact_email races past findFirst', async () => {
     const dupError = {
       name: 'PrismaClientKnownRequestError',
       message: 'Unique constraint failed on the fields: (`contact_email`)',
@@ -376,7 +385,10 @@ describe('MerchantOnboardingService', () => {
         email: 'ada@example.com',
         phone: '+34600000000',
       }),
-    ).rejects.toThrow(ConflictException);
+    ).resolves.toEqual({
+      ok: true,
+      message: 'If the email can receive onboarding links, we will send next steps shortly.',
+    });
 
     expect(tx.merchant.create).not.toHaveBeenCalled();
     expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
@@ -400,6 +412,26 @@ describe('MerchantOnboardingService', () => {
         phone: '+34',
       }),
     ).rejects.toBe(err);
+  });
+
+  it('maps merchant mid P2002 at transaction boundary to ConflictException', async () => {
+    const err = {
+      name: 'PrismaClientKnownRequestError',
+      message: 'Unique constraint failed on the fields: (`mid`)',
+      code: 'P2002',
+      clientVersion: 'test',
+      meta: { modelName: 'Merchant', target: ['mid'] },
+    };
+    const { service, prisma } = createService();
+    prisma.$transaction.mockRejectedValueOnce(err);
+
+    await expect(
+      service.createApplication({
+        name: 'Ada Lovelace',
+        email: 'ada@example.com',
+        phone: '+34600000000',
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
   });
 
   it('submits business profile with a valid token and moves to IN_REVIEW', async () => {
@@ -661,6 +693,10 @@ describe('MerchantOnboardingService', () => {
   it('does not approve when the conditional status claim loses the race', async () => {
     jest.useFakeTimers().setSystemTime(now.getTime());
     const { service, prisma, tx, emailService } = createService();
+    prisma.merchantOnboardingApplication.findUnique.mockResolvedValueOnce({
+      id: 'app_1',
+      status: 'IN_REVIEW',
+    });
     tx.merchantOnboardingApplication.updateMany.mockResolvedValue({ count: 0 });
     tx.merchantOnboardingApplication.findUnique.mockResolvedValue({
       id: 'app_1',
@@ -675,6 +711,25 @@ describe('MerchantOnboardingService', () => {
     expect(tx.merchant.update).not.toHaveBeenCalled();
     expect(emailService.sendOnboardingDecisionEmail).not.toHaveBeenCalled();
     jest.useRealTimers();
+  });
+
+  it('approveApplication skips bcrypt and transaction when application does not exist', async () => {
+    const { service, prisma } = createService();
+    prisma.merchantOnboardingApplication.findUnique.mockResolvedValueOnce(null);
+
+    await expect(service.approveApplication('missing')).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('approveApplication skips bcrypt and transaction when application is not IN_REVIEW', async () => {
+    const { service, prisma } = createService();
+    prisma.merchantOnboardingApplication.findUnique.mockResolvedValueOnce({
+      id: 'app_1',
+      status: 'DOCUMENTATION_PENDING',
+    });
+
+    await expect(service.approveApplication('app_1')).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('rejects application and keeps merchant inactive', async () => {

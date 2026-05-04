@@ -10,7 +10,10 @@ import { ConfigService } from '@nestjs/config';
 import { createHash, randomBytes } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import { encryptUtf8 } from '../crypto/secret-box';
-import { allocateUniqueMerchantMid } from '../merchants/allocate-unique-merchant-mid';
+import {
+  createMerchantWithUniqueMid,
+  isMerchantMidUniqueViolation,
+} from '../merchants/allocate-unique-merchant-mid';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   MerchantOnboardingActorType,
@@ -128,7 +131,9 @@ type OnboardingTransaction = Prisma.TransactionClient;
  */
 const ADVISORY_LOCK_MERCHANT_ONBOARDING_CONTACT_EMAIL_NS = 0x504d4f62;
 
-type CreateApplicationTxResult = { kind: 'created'; applicationId: string };
+type CreateApplicationTxResult =
+  | { kind: 'created'; applicationId: string }
+  | { kind: 'duplicate' };
 
 /**
  * Deriva el par (int4, int4) para `pg_advisory_xact_lock` a partir del email normalizado.
@@ -184,7 +189,8 @@ export class MerchantOnboardingService {
    *
    * Concurrencia: `pg_advisory_xact_lock` por email dentro de la transacción evita duplicados
    * mientras el UNIQUE de `contact_email` se aplique fuera de la migración (`prisma:ops:indexes`).
-   * Email de contacto duplicado (expediente o fila `Merchant`) → `409 Conflict`.
+   * Duplicados (`Merchant.email` o `contactEmail` del expediente) se deduplican en DB pero la respuesta
+   * HTTP es neutral (`2xx` + mismo cuerpo que creación) para no filtrar existencia del email.
    */
   async createApplication(dto: CreateMerchantOnboardingApplicationDto) {
     const contactEmail = normalizeEmail(dto.email);
@@ -194,7 +200,10 @@ export class MerchantOnboardingService {
       select: { id: true },
     });
     if (merchantWithEmail) {
-      throw new ConflictException('Merchant email already exists');
+      this.logger.log(
+        'Public merchant onboarding create skipped: merchant row already exists for normalized contact email',
+      );
+      return this.publicCreateResponse();
     }
 
     const existing = await this.prisma.merchantOnboardingApplication.findFirst({
@@ -203,7 +212,10 @@ export class MerchantOnboardingService {
     });
 
     if (existing) {
-      throw new ConflictException('Merchant email already exists');
+      this.logger.log(
+        'Public merchant onboarding create skipped: onboarding application already exists for contact email',
+      );
+      return this.publicCreateResponse();
     }
 
     const now = new Date();
@@ -223,7 +235,7 @@ export class MerchantOnboardingService {
           select: { id: true },
         });
         if (existingAfterLock) {
-          throw new ConflictException('Merchant email already exists');
+          return { kind: 'duplicate' };
         }
 
         const merchantDup = await tx.merchant.findUnique({
@@ -231,23 +243,20 @@ export class MerchantOnboardingService {
           select: { id: true },
         });
         if (merchantDup) {
-          throw new ConflictException('Merchant email already exists');
+          return { kind: 'duplicate' };
         }
 
-        const mid = await allocateUniqueMerchantMid(tx);
-        const merchant = await tx.merchant.create({
-          data: {
-            name: dto.name,
-            email: contactEmail,
-            contactName: dto.name,
-            contactPhone: dto.phone,
-            mid,
-            apiKeyHash: placeholderHash,
-            webhookSecretCiphertext,
-            isActive: false,
-            deactivatedAt: now,
-          },
-        });
+        const merchant = await createMerchantWithUniqueMid(tx, (mid) => ({
+          name: dto.name,
+          email: contactEmail,
+          contactName: dto.name,
+          contactPhone: dto.phone,
+          mid,
+          apiKeyHash: placeholderHash,
+          webhookSecretCiphertext,
+          isActive: false,
+          deactivatedAt: now,
+        }));
 
         const application = await tx.merchantOnboardingApplication.create({
           data: {
@@ -307,9 +316,27 @@ export class MerchantOnboardingService {
       });
     } catch (error) {
       if (isContactEmailUniqueViolation(error) || isMerchantEmailUniqueViolation(error)) {
-        throw new ConflictException('Merchant email already exists');
+        this.logger.log(
+          'Public merchant onboarding create skipped: unique constraint violation (race)',
+        );
+        return this.publicCreateResponse();
+      }
+      if (isMerchantMidUniqueViolation(error)) {
+        this.logger.warn(
+          'Public merchant onboarding: merchant mid unique violation surfaced outside MID retry loop',
+        );
+        throw new ConflictException(
+          'No se pudo completar el registro en este momento. Vuelve a intentarlo.',
+        );
       }
       throw error;
+    }
+
+    if (txResult.kind === 'duplicate') {
+      this.logger.log(
+        'Public merchant onboarding create skipped: duplicate detected after advisory lock',
+      );
+      return this.publicCreateResponse();
     }
 
     const applicationId = txResult.applicationId;
@@ -561,6 +588,19 @@ export class MerchantOnboardingService {
    */
   async approveApplication(applicationId: string) {
     const now = new Date();
+
+    const preflight = await this.prisma.merchantOnboardingApplication.findUnique({
+      where: { id: applicationId },
+      select: { id: true, status: true },
+    });
+
+    if (!preflight) {
+      throw new NotFoundException('Merchant onboarding application not found');
+    }
+    if (preflight.status !== MerchantOnboardingStatus.IN_REVIEW) {
+      throw new ConflictException('Application must be in review before a decision');
+    }
+
     const portalInitialPasswordPlain = randomBytes(18).toString('base64url');
     const merchantPortalPasswordHash = await bcrypt.hash(portalInitialPasswordPlain, 12);
 

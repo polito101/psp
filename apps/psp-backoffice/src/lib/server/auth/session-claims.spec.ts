@@ -24,6 +24,16 @@ describe("session-claims", () => {
     expect(out).toBe(emoji.repeat(3));
   });
 
+  it("truncateUtf8ToMaxBytes does not split BMP+emoji surrogate pairs (no U+FFFD)", () => {
+    const maxBytes = 768;
+    const input = "a".repeat(765) + "😀";
+    const out = truncateUtf8ToMaxBytes(input, maxBytes);
+    expect(out).not.toContain("\uFFFD");
+    expect(input.startsWith(out)).toBe(true);
+    expect(new TextEncoder().encode(out).length).toBeLessThanOrEqual(maxBytes);
+    expect(out).toBe("a".repeat(765));
+  });
+
   it("signSession stores rejectionReason truncated to max JWT UTF-8 bytes", async () => {
     const longReason = "🚫".repeat(2000);
     const claims = {

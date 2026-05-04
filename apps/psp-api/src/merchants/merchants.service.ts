@@ -2,7 +2,7 @@ import { ConflictException, Injectable, NotFoundException } from '@nestjs/common
 import { randomBytes } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import { encryptUtf8 } from '../crypto/secret-box';
-import { allocateUniqueMerchantMid } from './allocate-unique-merchant-mid';
+import { createMerchantWithUniqueMid } from './allocate-unique-merchant-mid';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaymentProviderName } from '../payments-v2/domain/payment-provider-names';
 import { PAYMENT_PROVIDER_NAMES } from '../payments-v2/domain/payment-provider-names';
@@ -43,16 +43,13 @@ export class MerchantsService {
       : null;
 
     const { merchant, apiKeyPlain } = await this.prisma.$transaction(async (tx) => {
-      const mid = await allocateUniqueMerchantMid(tx);
-      const merchant = await tx.merchant.create({
-        data: {
-          name: dto.name,
-          mid,
-          apiKeyHash: placeholderHash,
-          webhookUrl: dto.webhookUrl ?? null,
-          webhookSecretCiphertext,
-        },
-      });
+      const merchant = await createMerchantWithUniqueMid(tx, (mid) => ({
+        name: dto.name,
+        mid,
+        apiKeyHash: placeholderHash,
+        webhookUrl: dto.webhookUrl ?? null,
+        webhookSecretCiphertext,
+      }));
 
       const apiKeyPlain = `psp.${merchant.id}.${randomBytes(32).toString('base64url')}`;
       const apiKeyHash = await bcrypt.hash(apiKeyPlain, 12);
@@ -102,18 +99,15 @@ export class MerchantsService {
     const placeholderHash = await bcrypt.hash(randomBytes(16).toString('hex'), 12);
     const now = new Date();
 
-    const mid = await allocateUniqueMerchantMid(tx);
-    const merchant = await tx.merchant.create({
-      data: {
-        name,
-        mid,
-        apiKeyHash: placeholderHash,
-        webhookUrl: null,
-        webhookSecretCiphertext,
-        isActive: false,
-        deactivatedAt: now,
-      },
-    });
+    const merchant = await createMerchantWithUniqueMid(tx, (mid) => ({
+      name,
+      mid,
+      apiKeyHash: placeholderHash,
+      webhookUrl: null,
+      webhookSecretCiphertext,
+      isActive: false,
+      deactivatedAt: now,
+    }));
 
     const apiKeyPlain = `psp.${merchant.id}.${randomBytes(32).toString('base64url')}`;
     const apiKeyHash = await bcrypt.hash(apiKeyPlain, 12);

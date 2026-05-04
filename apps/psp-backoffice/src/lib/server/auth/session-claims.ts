@@ -28,6 +28,12 @@ export function truncateUtf8ToMaxBytes(input: string, maxBytes: number): string 
       high = mid - 1;
     }
   }
+  if (best > 0) {
+    const last = input.charCodeAt(best - 1);
+    if (last >= 0xd800 && last <= 0xdbff) {
+      best -= 1;
+    }
+  }
   return input.slice(0, best);
 }
 
