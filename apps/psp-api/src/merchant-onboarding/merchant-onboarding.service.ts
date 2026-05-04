@@ -11,6 +11,7 @@ import { createHash, randomBytes } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import { encryptUtf8 } from '../crypto/secret-box';
 import {
+  MerchantMidAllocationFailedError,
   createMerchantWithUniqueMid,
   isMerchantMidUniqueViolation,
 } from '../merchants/allocate-unique-merchant-mid';
@@ -191,32 +192,12 @@ export class MerchantOnboardingService {
    * mientras el UNIQUE de `contact_email` se aplique fuera de la migración (`prisma:ops:indexes`).
    * Duplicados (`Merchant.email` o `contactEmail` del expediente) se deduplican en DB pero la respuesta
    * HTTP es neutral (`2xx` + mismo cuerpo que creación) para no filtrar existencia del email.
+   *
+   * Mitigación timing: no hay `find*` previos a la transacción que eviten el trabajo costoso
+   * (`createTokenValues`, `bcrypt.hash`, etc.); la detección de duplicados ocurre tras el lock en la TX.
    */
   async createApplication(dto: CreateMerchantOnboardingApplicationDto) {
     const contactEmail = normalizeEmail(dto.email);
-
-    const merchantWithEmail = await this.prisma.merchant.findUnique({
-      where: { email: contactEmail },
-      select: { id: true },
-    });
-    if (merchantWithEmail) {
-      this.logger.log(
-        'Public merchant onboarding create skipped: merchant row already exists for normalized contact email',
-      );
-      return this.publicCreateResponse();
-    }
-
-    const existing = await this.prisma.merchantOnboardingApplication.findFirst({
-      where: { contactEmail },
-      select: { id: true },
-    });
-
-    if (existing) {
-      this.logger.log(
-        'Public merchant onboarding create skipped: onboarding application already exists for contact email',
-      );
-      return this.publicCreateResponse();
-    }
 
     const now = new Date();
     const token = await this.createTokenValues(now);
@@ -321,10 +302,15 @@ export class MerchantOnboardingService {
         );
         return this.publicCreateResponse();
       }
-      if (isMerchantMidUniqueViolation(error)) {
-        this.logger.warn(
-          'Public merchant onboarding: merchant mid unique violation surfaced outside MID retry loop',
-        );
+      if (
+        error instanceof MerchantMidAllocationFailedError ||
+        isMerchantMidUniqueViolation(error)
+      ) {
+        const detail =
+          error instanceof MerchantMidAllocationFailedError
+            ? `MID allocation failed (${error.reason})`
+            : 'merchant mid unique violation surfaced outside MID retry loop';
+        this.logger.warn(`Public merchant onboarding: ${detail}`);
         throw new ConflictException(
           'No se pudo completar el registro en este momento. Vuelve a intentarlo.',
         );

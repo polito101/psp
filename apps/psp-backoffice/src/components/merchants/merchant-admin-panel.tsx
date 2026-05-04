@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   fetchMerchantsOpsDetail,
   patchMerchantOpsAccount,
+  type PatchMerchantAccountBody,
 } from "@/lib/api/client";
 import type {
   MerchantIndustry,
@@ -69,6 +70,35 @@ function accountFormFromDetail(data: MerchantsOpsDetailResponse): AccountFormSta
   };
 }
 
+function patchBodyFromAccountForm(formState: AccountFormState): PatchMerchantAccountBody {
+  const body: PatchMerchantAccountBody = {
+    isActive: formState.isActive,
+    registrationStatus: formState.registrationStatus,
+    industry: formState.industry,
+  };
+  const name = formState.name.trim();
+  if (name !== "") {
+    body.name = name;
+  }
+  const email = formState.email.trim();
+  if (email !== "") {
+    body.email = email;
+  }
+  const contactName = formState.contactName.trim();
+  if (contactName !== "") {
+    body.contactName = contactName;
+  }
+  const contactPhone = formState.contactPhone.trim();
+  if (contactPhone !== "") {
+    body.contactPhone = contactPhone;
+  }
+  const websiteUrl = formState.websiteUrl.trim();
+  body.websiteUrl = websiteUrl === "" ? null : websiteUrl;
+  const registrationNumber = formState.registrationNumber.trim();
+  body.registrationNumber = registrationNumber === "" ? null : registrationNumber;
+  return body;
+}
+
 export function MerchantAdminPanel({ merchantId }: { merchantId: string }) {
   const qc = useQueryClient();
   const [activeTab, setActiveTab] = useState<MerchantAdminTab>("account");
@@ -90,18 +120,8 @@ export function MerchantAdminPanel({ merchantId }: { merchantId: string }) {
   }, [detailQuery.data]);
 
   const patchAccount = useMutation({
-    mutationFn: (body: AccountFormState) =>
-      patchMerchantOpsAccount(merchantId, {
-        name: body.name,
-        email: body.email,
-        contactName: body.contactName,
-        contactPhone: body.contactPhone,
-        websiteUrl: body.websiteUrl || null,
-        isActive: body.isActive,
-        registrationStatus: body.registrationStatus,
-        registrationNumber: body.registrationNumber || null,
-        industry: body.industry,
-      }),
+    mutationFn: (formState: AccountFormState) =>
+      patchMerchantOpsAccount(merchantId, patchBodyFromAccountForm(formState)),
     onSuccess: async () => {
       setNote("Cuenta actualizada.");
       await qc.invalidateQueries({ queryKey: ["merchant-ops-detail-admin", merchantId] });
@@ -310,7 +330,10 @@ function ApplicationFormTab({ data }: { data: MerchantsOpsDetailResponse }) {
     <Card>
       <CardHeader>
         <CardTitle className="text-base">Application Form</CardTitle>
-        <CardDescription>Historial cronológico del expediente más reciente.</CardDescription>
+        <CardDescription>
+          Historial cronológico del expediente más reciente (como máximo {data.onboardingEventsLimit}{" "}
+          eventos más recientes).
+        </CardDescription>
       </CardHeader>
       <CardContent>
         <div className="space-y-3">

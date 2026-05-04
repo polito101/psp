@@ -48,6 +48,17 @@ describe("PATCH /api/internal/merchants/ops/[merchantId]/account", () => {
     });
   }
 
+  it("returns 400 for malformed percent-encoding in merchantId", async () => {
+    const req = await adminPatchRequest("http://localhost:3005/api/internal/merchants/ops/m_%/account", {
+      name: "x",
+    });
+    const res = await PATCH(req, { params: Promise.resolve({ merchantId: "m_%" }) });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.message).toBe("Invalid merchantId");
+    expect(proxyInternalPatchMock).not.toHaveBeenCalled();
+  });
+
   it("returns 400 for invalid account body", async () => {
     const req = await adminPatchRequest("http://localhost:3005/api/internal/merchants/ops/m_123/account", {
       email: "not-email",
@@ -92,6 +103,42 @@ describe("PATCH /api/internal/merchants/ops/[merchantId]/account", () => {
         registrationStatus: "LEAD",
         registrationNumber: "2024-00069",
         industry: "FOREX",
+      },
+      backofficeScope: expect.objectContaining({ role: "admin" }),
+    });
+  });
+
+  it("accepts blank optional strings and omits them from the upstream PATCH body", async () => {
+    proxyInternalPatchMock.mockResolvedValue({
+      id: "m_1",
+      mid: "123456",
+      name: "Co",
+      email: null,
+      isActive: true,
+    });
+
+    const req = await adminPatchRequest("http://localhost:3005/api/internal/merchants/ops/m_123/account", {
+      name: "Co",
+      email: "",
+      contactName: "   ",
+      contactPhone: "",
+      websiteUrl: null,
+      isActive: true,
+      registrationStatus: "ACTIVE",
+      registrationNumber: null,
+      industry: "OTHER",
+    });
+    const res = await PATCH(req, { params: Promise.resolve({ merchantId: "m_123" }) });
+    expect(res.status).toBe(200);
+    expect(proxyInternalPatchMock).toHaveBeenCalledWith({
+      path: "/api/v1/merchants/ops/m_123/account",
+      body: {
+        name: "Co",
+        websiteUrl: null,
+        isActive: true,
+        registrationStatus: "ACTIVE",
+        registrationNumber: null,
+        industry: "OTHER",
       },
       backofficeScope: expect.objectContaining({ role: "admin" }),
     });

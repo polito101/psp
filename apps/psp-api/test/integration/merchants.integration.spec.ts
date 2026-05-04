@@ -88,7 +88,7 @@ describe('merchants integration', () => {
     expect(res.body.merchant).toEqual(
       expect.objectContaining({
         id: merchantId,
-        mid: expect.stringMatching(/^\d{6}$/),
+        mid: expect.stringMatching(/^\d{6,15}$/),
         name: expect.any(String),
         registrationStatus: 'LEAD',
         industry: 'OTHER',
@@ -98,6 +98,7 @@ describe('merchants integration', () => {
       expect.objectContaining({
         latestOnboardingApplication: null,
         onboardingEvents: [],
+        onboardingEventsLimit: 100,
         paymentMethods: expect.any(Array),
       }),
     );
@@ -137,7 +138,7 @@ describe('merchants integration', () => {
         industry: 'FOREX',
       }),
     );
-    expect(res.body.mid).toMatch(/^\d{6}$/);
+    expect(res.body.mid).toMatch(/^\d{6,15}$/);
   });
 
   it('PATCH ops account returns 409 when email duplicates another merchant', async () => {

@@ -20,7 +20,7 @@ ALTER TABLE "Merchant"
   ADD COLUMN "contact_name" VARCHAR(160),
   ADD COLUMN "contact_phone" VARCHAR(64),
   ADD COLUMN "website_url" VARCHAR(2048),
-  ADD COLUMN "mid" VARCHAR(6),
+  ADD COLUMN "mid" VARCHAR(16),
   ADD COLUMN "registration_number" VARCHAR(64),
   ADD COLUMN "registration_status" "MerchantRegistrationStatus" NOT NULL DEFAULT 'LEAD',
   ADD COLUMN "industry" "MerchantIndustry" NOT NULL DEFAULT 'OTHER';
@@ -28,7 +28,7 @@ ALTER TABLE "Merchant"
 WITH numbered AS (
   SELECT
     "id",
-    LPAD((100000 + ROW_NUMBER() OVER (ORDER BY "created_at", "id"))::text, 6, '0') AS generated_mid
+    (100000 + ROW_NUMBER() OVER (ORDER BY "created_at", "id"))::text AS generated_mid
   FROM "Merchant"
   WHERE "mid" IS NULL
 )

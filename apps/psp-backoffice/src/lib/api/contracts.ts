@@ -269,6 +269,8 @@ export type MerchantsOpsDetailResponse = {
   paymentMethods: MerchantPaymentMethodRow[];
   latestOnboardingApplication: MerchantOnboardingApplicationDetail | null;
   onboardingEvents: MerchantOnboardingEvent[];
+  /** Límite aplicado en API: se devuelven como mucho estos eventos (los más recientes). */
+  onboardingEventsLimit: number;
 };
 
 export type OpsVolumeHourlyMetric = "volume_gross" | "volume_net" | "succeeded_count";

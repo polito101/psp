@@ -2,7 +2,10 @@ import { ConflictException, Injectable, NotFoundException } from '@nestjs/common
 import { randomBytes } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import { encryptUtf8 } from '../crypto/secret-box';
-import { createMerchantWithUniqueMid } from './allocate-unique-merchant-mid';
+import {
+  MerchantMidAllocationFailedError,
+  createMerchantWithUniqueMid,
+} from './allocate-unique-merchant-mid';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaymentProviderName } from '../payments-v2/domain/payment-provider-names';
 import { PAYMENT_PROVIDER_NAMES } from '../payments-v2/domain/payment-provider-names';
@@ -23,6 +26,9 @@ type CreateRateTableInput = {
   contractRef?: string;
 };
 
+/** Máximo de eventos de onboarding incluidos en `getOpsDetail` (los más recientes). */
+const MERCHANT_OPS_ONBOARDING_EVENTS_LIMIT = 100;
+
 @Injectable()
 export class MerchantsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -42,41 +48,54 @@ export class MerchantsService {
       ? new Date(Date.now() + dto.keyTtlDays * 86_400_000)
       : null;
 
-    const { merchant, apiKeyPlain } = await this.prisma.$transaction(async (tx) => {
-      const merchant = await createMerchantWithUniqueMid(tx, (mid) => ({
-        name: dto.name,
-        mid,
-        apiKeyHash: placeholderHash,
-        webhookUrl: dto.webhookUrl ?? null,
-        webhookSecretCiphertext,
-      }));
+    let merchant: Awaited<ReturnType<Prisma.TransactionClient['merchant']['create']>>;
+    let apiKeyPlain: string;
+    try {
+      const out = await this.prisma.$transaction(async (tx) => {
+        const m = await createMerchantWithUniqueMid(tx, (mid) => ({
+          name: dto.name,
+          mid,
+          apiKeyHash: placeholderHash,
+          webhookUrl: dto.webhookUrl ?? null,
+          webhookSecretCiphertext,
+        }));
 
-      const apiKeyPlain = `psp.${merchant.id}.${randomBytes(32).toString('base64url')}`;
-      const apiKeyHash = await bcrypt.hash(apiKeyPlain, 12);
+        const plain = `psp.${m.id}.${randomBytes(32).toString('base64url')}`;
+        const apiKeyHash = await bcrypt.hash(plain, 12);
 
-      await tx.merchant.update({
-        where: { id: merchant.id },
-        data: { apiKeyHash, apiKeyExpiresAt },
+        await tx.merchant.update({
+          where: { id: m.id },
+          data: { apiKeyHash, apiKeyExpiresAt },
+        });
+
+        await tx.merchantRateTable.createMany({
+          data: PAYMENT_PROVIDER_NAMES.map((provider) => ({
+            merchantId: m.id,
+            currency: 'EUR',
+            provider,
+            percentageBps: m.feeBps,
+            fixedMinor: 0,
+            minimumMinor: 0,
+            settlementMode: SettlementMode.NET,
+            payoutScheduleType: PayoutScheduleType.T_PLUS_N,
+            payoutScheduleParam: 1,
+          })),
+        });
+
+        await this.ensureMockPaymentMethodsForMerchant(tx, m.id);
+
+        return { merchant: m, apiKeyPlain: plain };
       });
-
-      await tx.merchantRateTable.createMany({
-        data: PAYMENT_PROVIDER_NAMES.map((provider) => ({
-          merchantId: merchant.id,
-          currency: 'EUR',
-          provider,
-          percentageBps: merchant.feeBps,
-          fixedMinor: 0,
-          minimumMinor: 0,
-          settlementMode: SettlementMode.NET,
-          payoutScheduleType: PayoutScheduleType.T_PLUS_N,
-          payoutScheduleParam: 1,
-        })),
-      });
-
-      await this.ensureMockPaymentMethodsForMerchant(tx, merchant.id);
-
-      return { merchant, apiKeyPlain };
-    });
+      merchant = out.merchant;
+      apiKeyPlain = out.apiKeyPlain;
+    } catch (error) {
+      if (error instanceof MerchantMidAllocationFailedError) {
+        throw new ConflictException(
+          'No se pudo completar el registro en este momento. Vuelve a intentarlo.',
+        );
+      }
+      throw error;
+    }
 
     return {
       id: merchant.id,
@@ -335,18 +354,26 @@ export class MerchantsService {
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         include: {
           events: {
-            orderBy: { createdAt: 'asc' },
+            orderBy: { createdAt: 'desc' },
+            take: MERCHANT_OPS_ONBOARDING_EVENTS_LIMIT,
           },
         },
       }),
     ]);
+    const eventsNewestFirst = latestOnboardingApplication?.events ?? [];
+    const onboardingEventsChronological =
+      eventsNewestFirst.length > 0 ? [...eventsNewestFirst].reverse() : [];
+    const latestWithEventsOrdered = latestOnboardingApplication
+      ? { ...latestOnboardingApplication, events: onboardingEventsChronological }
+      : null;
     return {
       merchant,
       recentPayments,
       settlementRequests,
       paymentMethods,
-      latestOnboardingApplication,
-      onboardingEvents: latestOnboardingApplication?.events ?? [],
+      latestOnboardingApplication: latestWithEventsOrdered,
+      onboardingEvents: onboardingEventsChronological,
+      onboardingEventsLimit: MERCHANT_OPS_ONBOARDING_EVENTS_LIMIT,
     };
   }
 

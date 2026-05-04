@@ -1,7 +1,7 @@
-import { ConflictException } from '@nestjs/common';
 import type { Prisma } from '../generated/prisma/client';
 import {
   MERCHANT_MID_UNIQUE_CONSTRAINT,
+  MerchantMidAllocationFailedError,
   createMerchantWithUniqueMid,
   isMerchantMidUniqueViolation,
 } from './allocate-unique-merchant-mid';
@@ -47,13 +47,17 @@ describe('allocate-unique-merchant-mid', () => {
 
   describe('createMerchantWithUniqueMid', () => {
     it('reintenta ante P2002 de mid y termina en éxito', async () => {
-      const created = { id: 'm1', mid: '123456' };
+      const created = { id: 'm1', mid: '123457' };
       const p2002 = {
         code: 'P2002',
         meta: { modelName: 'Merchant', target: ['mid'] },
       };
+      const $queryRaw = jest
+        .fn()
+        .mockResolvedValueOnce([{ seq: BigInt(123456) }])
+        .mockResolvedValueOnce([{ seq: BigInt(123457) }]);
       const create = jest.fn().mockRejectedValueOnce(p2002).mockResolvedValueOnce(created);
-      const tx = { merchant: { create } } as unknown as Prisma.TransactionClient;
+      const tx = { merchant: { create }, $queryRaw } as unknown as Prisma.TransactionClient;
 
       await expect(
         createMerchantWithUniqueMid(tx, (mid) => ({
@@ -64,13 +68,21 @@ describe('allocate-unique-merchant-mid', () => {
         })),
       ).resolves.toBe(created);
 
+      expect($queryRaw).toHaveBeenCalledTimes(2);
       expect(create).toHaveBeenCalledTimes(2);
+      expect(create.mock.calls[0][0]).toMatchObject({
+        data: expect.objectContaining({ mid: '123456' }),
+      });
+      expect(create.mock.calls[1][0]).toMatchObject({
+        data: expect.objectContaining({ mid: '123457' }),
+      });
     });
 
-    it('lanza ConflictException tras agotar intentos', async () => {
+    it('lanza MerchantMidAllocationFailedError tras agotar intentos', async () => {
       const err = { code: 'P2002', meta: { modelName: 'Merchant', target: ['mid'] } };
+      const $queryRaw = jest.fn().mockResolvedValue([{ seq: BigInt(900001) }]);
       const create = jest.fn().mockRejectedValue(err);
-      const tx = { merchant: { create } } as unknown as Prisma.TransactionClient;
+      const tx = { merchant: { create }, $queryRaw } as unknown as Prisma.TransactionClient;
 
       await expect(
         createMerchantWithUniqueMid(
@@ -85,15 +97,17 @@ describe('allocate-unique-merchant-mid', () => {
             maxAttempts: 2,
           },
         ),
-      ).rejects.toBeInstanceOf(ConflictException);
+      ).rejects.toBeInstanceOf(MerchantMidAllocationFailedError);
 
       expect(create).toHaveBeenCalledTimes(2);
+      expect($queryRaw).toHaveBeenCalledTimes(2);
     });
 
     it('propaga errores que no son colisión de mid', async () => {
       const other = { code: 'P2003', meta: {} };
+      const $queryRaw = jest.fn().mockResolvedValue([{ seq: BigInt(1) }]);
       const create = jest.fn().mockRejectedValueOnce(other);
-      const tx = { merchant: { create } } as unknown as Prisma.TransactionClient;
+      const tx = { merchant: { create }, $queryRaw } as unknown as Prisma.TransactionClient;
 
       await expect(
         createMerchantWithUniqueMid(tx, (mid) => ({
@@ -103,6 +117,8 @@ describe('allocate-unique-merchant-mid', () => {
           webhookSecretCiphertext: 'ct',
         })),
       ).rejects.toBe(other);
+
+      expect($queryRaw).toHaveBeenCalledTimes(1);
     });
   });
 });

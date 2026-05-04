@@ -11,11 +11,34 @@ type RouteContext = { params: Promise<{ merchantId: string }> };
 const registrationStatusSchema = z.enum(["LEAD", "IN_REVIEW", "APPROVED", "REJECTED", "ACTIVE"]);
 const industrySchema = z.enum(["CLOUD_COMPUTING", "CRYPTO", "FOREX", "GAMBLING", "PSP", "OTHER"]);
 
+/** Treat absent, null, and blank strings as not provided for optional text fields. */
+function optionalStringInputToUndefined(val: unknown): unknown {
+  if (val === null || val === undefined) {
+    return undefined;
+  }
+  if (typeof val === "string" && val.trim() === "") {
+    return undefined;
+  }
+  return val;
+}
+
 const bodySchema = z.object({
-  name: z.string().trim().min(2).max(160).optional(),
-  email: z.string().trim().email().max(320).optional(),
-  contactName: z.string().trim().min(2).max(160).optional(),
-  contactPhone: z.string().trim().min(6).max(64).optional(),
+  name: z.preprocess(
+    optionalStringInputToUndefined,
+    z.string().trim().min(2).max(160).optional(),
+  ),
+  email: z.preprocess(
+    optionalStringInputToUndefined,
+    z.string().trim().email().max(320).optional(),
+  ),
+  contactName: z.preprocess(
+    optionalStringInputToUndefined,
+    z.string().trim().min(2).max(160).optional(),
+  ),
+  contactPhone: z.preprocess(
+    optionalStringInputToUndefined,
+    z.string().trim().min(6).max(64).optional(),
+  ),
   websiteUrl: z
     .string()
     .trim()
@@ -53,7 +76,12 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
   }
 
   const { merchantId: rawMerchantId } = await context.params;
-  const merchantId = decodeURIComponent(rawMerchantId);
+  let merchantId: string;
+  try {
+    merchantId = decodeURIComponent(rawMerchantId);
+  } catch {
+    return NextResponse.json({ message: "Invalid merchantId" }, { status: 400 });
+  }
 
   let json: unknown;
   try {

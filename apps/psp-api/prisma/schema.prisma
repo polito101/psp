@@ -84,7 +84,7 @@ model Merchant {
   contactName                String?                    @map("contact_name") @db.VarChar(160)
   contactPhone               String?                    @map("contact_phone") @db.VarChar(64)
   websiteUrl                 String?                    @map("website_url") @db.VarChar(2048)
-  mid                        String                     @unique @db.VarChar(6)
+  mid                        String                     @unique @db.VarChar(16)
   registrationNumber         String?                    @map("registration_number") @db.VarChar(64)
   registrationStatus         MerchantRegistrationStatus @default(LEAD) @map("registration_status")
   industry                   MerchantIndustry           @default(OTHER)
