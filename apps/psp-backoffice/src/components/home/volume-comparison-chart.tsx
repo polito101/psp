@@ -7,6 +7,9 @@ import { Select } from "@/components/ui/select";
 import { addUtcCalendarDaysFromYmd, formatUtcYmdLong, utcYmd } from "./utc-compare-date";
 import { OpsCumulativeHourlyChart } from "./ops-cumulative-hourly-chart";
 
+/** Reloj bajo el total del gráfico (inicio): `Europe/Madrid` (península y Baleares). */
+const BACKOFFICE_DISPLAY_TIME_ZONE = "Europe/Madrid";
+
 function formatSeriesValue(
   valueUnit: OpsVolumeHourlyResponse["valueUnit"],
   raw: string | bigint | null | undefined,
@@ -24,9 +27,9 @@ function formatSeriesValue(
   return formatAmountMinor(raw, currency);
 }
 
-function formatUtcClock(): string {
+function formatMadridClock(): string {
   return new Intl.DateTimeFormat("es-ES", {
-    timeZone: "UTC",
+    timeZone: BACKOFFICE_DISPLAY_TIME_ZONE,
     hour: "numeric",
     minute: "2-digit",
     hourCycle: "h23",
@@ -43,9 +46,7 @@ type Props = {
   compareDateMax: string;
 };
 
-/**
- * Gráfico de líneas: acumulado hoy (UTC) vs día de comparación, hover hora a hora con % vs mismo bucket.
- */
+/** Gráfico de líneas: acumulado hoy (UTC) vs día de comparación; reloj en hora Madrid; buckets API en UTC. */
 export function VolumeComparisonChart({
   data,
   metric,
@@ -76,7 +77,7 @@ export function VolumeComparisonChart({
     return false;
   }, [data.totals, data.todayCumulativeVolumeMinor, parsedToday, parsedCompare]);
 
-  const utcTimeLabel = formatUtcClock();
+  const madridTimeLabel = formatMadridClock();
 
   const yesterdayUtcYmd = addUtcCalendarDaysFromYmd(utcYmd(new Date()), -1);
   const compareDayTitle =
@@ -110,7 +111,7 @@ export function VolumeComparisonChart({
           <p className="text-3xl font-semibold tabular-nums tracking-tight text-slate-900 sm:text-4xl">
             {formatSeriesValue(data.valueUnit, data.totals.todayVolumeMinor, data.currency)}
           </p>
-          <p className="text-xs text-slate-500">{utcTimeLabel} UTC</p>
+          <p className="text-xs text-slate-500">{madridTimeLabel} Madrid</p>
         </div>
         <div className="flex shrink-0 flex-col gap-2 sm:min-w-[200px] sm:items-end sm:text-right">
           <div className="w-full sm:w-auto sm:max-w-[200px]">

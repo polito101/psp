@@ -2,7 +2,7 @@
 
 Ultima actualizacion: 2026-05-04
 
-Documento **local** del app `apps/psp-backoffice` (nombre distinto de `PROJECT_CONTEXT.md` en la raíz para evitar confusion). El monorepo mantiene visión global y API en **`PROJECT_CONTEXT.md`** (raíz); aquí se detalla solo el panel administrativo.
+Documento **local** del app `apps/psp-backoffice` (nombre distinto de `PROJECT_CONTEXT.md` en la raíz para evitar confusion). El monorepo y la API se documentan en **`PROJECT_CONTEXT.md`** (raíz) y **`apps/psp-api/README.md`**; la web marketing tiene **`apps/web-finara/WEB_FINARA_CONTEXT.md`**. Aquí se detalla solo el panel administrativo.
 
 ## 1) Proposito
 
