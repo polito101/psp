@@ -46,6 +46,9 @@ const PUBLIC_RESEND_MESSAGE =
 /** Índice único en DB (`20260501120000_merchant_onboarding_contact_email_unique`). */
 const CONTACT_EMAIL_UNIQUE_INDEX_NAME = 'merchant_onboarding_applications_contact_email_key';
 
+/** Índice único `Merchant.email` (merchant admin account). */
+const MERCHANT_EMAIL_UNIQUE_INDEX_NAME = 'Merchant_email_key';
+
 type PrismaKnownRequestLike = {
   code?: unknown;
   meta?: { target?: unknown; modelName?: unknown };
@@ -86,6 +89,37 @@ function isContactEmailUniqueViolation(error: unknown): boolean {
   return true;
 }
 
+/**
+ * P2002 de unicidad sobre el email del merchant (`Merchant.email`).
+ */
+function isMerchantEmailUniqueViolation(error: unknown): boolean {
+  const err = error as PrismaKnownRequestLike;
+  if (typeof err.code !== 'string' || err.code !== 'P2002') {
+    return false;
+  }
+  const meta = err.meta;
+
+  const rawTarget = meta?.target;
+  const targetParts: string[] = Array.isArray(rawTarget)
+    ? rawTarget.filter((t): t is string => typeof t === 'string')
+    : typeof rawTarget === 'string'
+      ? [rawTarget]
+      : [];
+
+  const hitsEmailConstraint = targetParts.some(
+    (t) => t === 'email' || t === MERCHANT_EMAIL_UNIQUE_INDEX_NAME,
+  );
+  if (!hitsEmailConstraint) {
+    return false;
+  }
+
+  const modelName = meta?.modelName;
+  if (typeof modelName === 'string' && modelName !== 'Merchant') {
+    return false;
+  }
+  return true;
+}
+
 type OnboardingTransaction = Prisma.TransactionClient;
 
 /**
@@ -94,9 +128,7 @@ type OnboardingTransaction = Prisma.TransactionClient;
  */
 const ADVISORY_LOCK_MERCHANT_ONBOARDING_CONTACT_EMAIL_NS = 0x504d4f62;
 
-type CreateApplicationTxResult =
-  | { kind: 'created'; applicationId: string }
-  | { kind: 'duplicate' };
+type CreateApplicationTxResult = { kind: 'created'; applicationId: string };
 
 /**
  * Deriva el par (int4, int4) para `pg_advisory_xact_lock` a partir del email normalizado.
@@ -148,23 +180,30 @@ export class MerchantOnboardingService {
   ) {}
 
   /**
-   * Crea una solicitud pública de onboarding sin revelar si el email ya existe.
-   * El merchant queda inactivo hasta que el backoffice apruebe la aplicación.
+   * Crea una solicitud pública de onboarding. El merchant queda inactivo hasta aprobación.
    *
    * Concurrencia: `pg_advisory_xact_lock` por email dentro de la transacción evita duplicados
-   * mientras el UNIQUE de `contact_email` se crea fuera de la migración (`prisma:ops:indexes`).
-   * Con índice ya aplicado, P2002 sigue siendo red de seguridad (misma respuesta neutral).
+   * mientras el UNIQUE de `contact_email` se aplique fuera de la migración (`prisma:ops:indexes`).
+   * Email de contacto duplicado (expediente o fila `Merchant`) → `409 Conflict`.
    */
   async createApplication(dto: CreateMerchantOnboardingApplicationDto) {
     const contactEmail = normalizeEmail(dto.email);
-    // Atajo idempotente; bajo carrera la comprobación definitiva es tras advisory lock en la TX.
+
+    const merchantWithEmail = await this.prisma.merchant.findUnique({
+      where: { email: contactEmail },
+      select: { id: true },
+    });
+    if (merchantWithEmail) {
+      throw new ConflictException('Merchant email already exists');
+    }
+
     const existing = await this.prisma.merchantOnboardingApplication.findFirst({
       where: { contactEmail },
       select: { id: true },
     });
 
     if (existing) {
-      return this.publicCreateResponse();
+      throw new ConflictException('Merchant email already exists');
     }
 
     const now = new Date();
@@ -184,13 +223,24 @@ export class MerchantOnboardingService {
           select: { id: true },
         });
         if (existingAfterLock) {
-          return { kind: 'duplicate' };
+          throw new ConflictException('Merchant email already exists');
+        }
+
+        const merchantDup = await tx.merchant.findUnique({
+          where: { email: contactEmail },
+          select: { id: true },
+        });
+        if (merchantDup) {
+          throw new ConflictException('Merchant email already exists');
         }
 
         const mid = await allocateUniqueMerchantMid(tx);
         const merchant = await tx.merchant.create({
           data: {
             name: dto.name,
+            email: contactEmail,
+            contactName: dto.name,
+            contactPhone: dto.phone,
             mid,
             apiKeyHash: placeholderHash,
             webhookSecretCiphertext,
@@ -256,16 +306,10 @@ export class MerchantOnboardingService {
         return { kind: 'created', applicationId: application.id };
       });
     } catch (error) {
-      if (isContactEmailUniqueViolation(error)) {
-        this.logger.debug('merchant_onboarding.create_application.duplicate_contact_email');
-        return this.publicCreateResponse();
+      if (isContactEmailUniqueViolation(error) || isMerchantEmailUniqueViolation(error)) {
+        throw new ConflictException('Merchant email already exists');
       }
       throw error;
-    }
-
-    if (txResult.kind === 'duplicate') {
-      this.logger.debug('merchant_onboarding.create_application.duplicate_after_contact_email_lock');
-      return this.publicCreateResponse();
     }
 
     const applicationId = txResult.applicationId;
@@ -343,12 +387,21 @@ export class MerchantOnboardingService {
         where: { id: tokenRow.applicationId },
         data: {
           status: MerchantOnboardingStatus.IN_REVIEW,
-          tradeName: dto.tradeName,
-          legalName: dto.legalName,
-          country: dto.country,
-          website: dto.website ?? null,
-          businessType: dto.businessType,
+          tradeName: dto.companyName,
+          legalName: null,
+          country: null,
+          website: dto.websiteUrl ?? null,
+          businessType: dto.industry,
           submittedAt: now,
+        },
+      });
+
+      await tx.merchant.update({
+        where: { id: application.merchantId },
+        data: {
+          name: dto.companyName,
+          industry: dto.industry,
+          websiteUrl: dto.websiteUrl ?? null,
         },
       });
 
