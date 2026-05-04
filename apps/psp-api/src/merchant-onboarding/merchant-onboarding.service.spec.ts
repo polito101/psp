@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MerchantOnboardingService } from './merchant-onboarding.service';
 import { OnboardingEmailService } from './onboarding-email.service';
@@ -37,6 +37,8 @@ describe('MerchantOnboardingService', () => {
         id: 'app_1',
         merchantId: 'merchant_1',
         status: 'APPROVED',
+        contactName: 'Ada Lovelace',
+        contactEmail: 'ada@example.com',
         merchant: { id: 'merchant_1', isActive: false },
       }),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -92,7 +94,10 @@ describe('MerchantOnboardingService', () => {
     } satisfies Pick<OnboardingTokenService, 'generatePlainToken' | 'hashToken' | 'computeExpiresAt'>;
     const emailService = {
       sendOnboardingLink: jest.fn().mockResolvedValue({ ok: true, providerMessageId: 'email_1' }),
-    } satisfies Pick<OnboardingEmailService, 'sendOnboardingLink'>;
+      sendOnboardingDecisionEmail: jest
+        .fn()
+        .mockResolvedValue({ ok: true, providerMessageId: 'email_decision_1' }),
+    } satisfies Pick<OnboardingEmailService, 'sendOnboardingLink' | 'sendOnboardingDecisionEmail'>;
     const config = {
       get: jest.fn((key: string) => {
         if (key === 'MERCHANT_ONBOARDING_BASE_URL') return 'https://onboarding.example.com';
@@ -491,7 +496,7 @@ describe('MerchantOnboardingService', () => {
 
   it('approves application and activates merchant atomically', async () => {
     jest.useFakeTimers().setSystemTime(now.getTime());
-    const { service, prisma, tx } = createService();
+    const { service, prisma, tx, emailService } = createService();
     prisma.merchantOnboardingApplication.findUnique.mockResolvedValue({
       id: 'app_1',
       merchantId: 'merchant_1',
@@ -502,6 +507,8 @@ describe('MerchantOnboardingService', () => {
       id: 'app_1',
       status: 'ACTIVE',
       merchantId: 'merchant_1',
+      contactName: 'Ada Lovelace',
+      contactEmail: 'ada@example.com',
     });
 
     const result = await service.approveApplication('app_1');
@@ -548,29 +555,92 @@ describe('MerchantOnboardingService', () => {
         actorType: 'ADMIN',
       }),
     });
+    expect(emailService.sendOnboardingDecisionEmail).toHaveBeenCalledWith({
+      to: 'ada@example.com',
+      contactName: 'Ada Lovelace',
+      decision: 'approved',
+    });
+    expect(prisma.merchantOnboardingEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        applicationId: 'app_1',
+        type: 'decision_email_sent',
+        actorType: 'SYSTEM',
+        metadata: { decision: 'approved', providerMessageId: 'email_decision_1' },
+      }),
+    });
     expect(result.status).toBe('ACTIVE');
+    jest.useRealTimers();
+  });
+
+  it('does not fail approve/reject response when decision email audit insert fails', async () => {
+    jest.useFakeTimers().setSystemTime(now.getTime());
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const { service, prisma, tx, emailService } = createService();
+    prisma.merchantOnboardingApplication.findUnique.mockResolvedValue({
+      id: 'app_1',
+      merchantId: 'merchant_1',
+      status: 'IN_REVIEW',
+      merchant: { id: 'merchant_1', isActive: false },
+    });
+    tx.merchantOnboardingApplication.update.mockResolvedValue({
+      id: 'app_1',
+      status: 'ACTIVE',
+      merchantId: 'merchant_1',
+      contactName: 'Ada Lovelace',
+      contactEmail: 'ada@example.com',
+    });
+    prisma.merchantOnboardingEvent.create.mockRejectedValueOnce(new Error('audit insert failed'));
+
+    const approved = await service.approveApplication('app_1');
+    expect(approved.status).toBe('ACTIVE');
+    expect(emailService.sendOnboardingDecisionEmail).toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to record decision email delivery event'),
+    );
+
+    prisma.merchantOnboardingApplication.findUnique.mockResolvedValue({
+      id: 'app_1',
+      merchantId: 'merchant_1',
+      status: 'IN_REVIEW',
+      merchant: { id: 'merchant_1', isActive: false },
+    });
+    tx.merchantOnboardingApplication.update.mockResolvedValue({
+      id: 'app_1',
+      status: 'REJECTED',
+      rejectionReason: 'x',
+    });
+    prisma.merchantOnboardingEvent.create.mockRejectedValueOnce(new Error('audit insert failed'));
+
+    const rejected = await service.rejectApplication('app_1', { reason: 'No pasa.' });
+    expect(rejected.status).toBe('REJECTED');
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+
+    warnSpy.mockRestore();
     jest.useRealTimers();
   });
 
   it('does not approve when the conditional status claim loses the race', async () => {
     jest.useFakeTimers().setSystemTime(now.getTime());
-    const { service, prisma, tx } = createService();
+    const { service, prisma, tx, emailService } = createService();
     tx.merchantOnboardingApplication.updateMany.mockResolvedValue({ count: 0 });
     tx.merchantOnboardingApplication.findUnique.mockResolvedValue({
       id: 'app_1',
       merchantId: 'merchant_1',
       status: 'REJECTED',
+      contactName: 'Ada Lovelace',
+      contactEmail: 'ada@example.com',
       merchant: { id: 'merchant_1', isActive: false },
     });
 
     await expect(service.approveApplication('app_1')).rejects.toBeInstanceOf(ConflictException);
     expect(tx.merchant.update).not.toHaveBeenCalled();
+    expect(emailService.sendOnboardingDecisionEmail).not.toHaveBeenCalled();
     jest.useRealTimers();
   });
 
   it('rejects application and keeps merchant inactive', async () => {
     jest.useFakeTimers().setSystemTime(now.getTime());
-    const { service, prisma, tx } = createService();
+    const { service, prisma, tx, emailService } = createService();
     prisma.merchantOnboardingApplication.findUnique.mockResolvedValue({
       id: 'app_1',
       merchantId: 'merchant_1',
@@ -605,18 +675,34 @@ describe('MerchantOnboardingService', () => {
       where: { applicationId: 'app_1', key: 'approval_decision' },
       data: { status: 'BLOCKED', completedAt: now },
     });
+    expect(emailService.sendOnboardingDecisionEmail).toHaveBeenCalledWith({
+      to: 'ada@example.com',
+      contactName: 'Ada Lovelace',
+      decision: 'rejected',
+      rejectionReason: 'No cumple los requisitos de riesgo actuales.',
+    });
+    expect(prisma.merchantOnboardingEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        applicationId: 'app_1',
+        type: 'decision_email_sent',
+        actorType: 'SYSTEM',
+        metadata: { decision: 'rejected', providerMessageId: 'email_decision_1' },
+      }),
+    });
     expect(result.status).toBe('REJECTED');
     jest.useRealTimers();
   });
 
   it('does not reject when the conditional status claim loses the race', async () => {
     jest.useFakeTimers().setSystemTime(now.getTime());
-    const { service, prisma, tx } = createService();
+    const { service, prisma, tx, emailService } = createService();
     tx.merchantOnboardingApplication.updateMany.mockResolvedValue({ count: 0 });
     tx.merchantOnboardingApplication.findUnique.mockResolvedValue({
       id: 'app_1',
       merchantId: 'merchant_1',
       status: 'ACTIVE',
+      contactName: 'Ada Lovelace',
+      contactEmail: 'ada@example.com',
       merchant: { id: 'merchant_1', isActive: true },
     });
 
@@ -626,6 +712,7 @@ describe('MerchantOnboardingService', () => {
       }),
     ).rejects.toBeInstanceOf(ConflictException);
     expect(tx.merchant.update).not.toHaveBeenCalled();
+    expect(emailService.sendOnboardingDecisionEmail).not.toHaveBeenCalled();
     jest.useRealTimers();
   });
 

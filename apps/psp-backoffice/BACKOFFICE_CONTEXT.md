@@ -1,6 +1,6 @@
 # BACKOFFICE_CONTEXT — PSP Backoffice
 
-Ultima actualizacion: 2026-05-01
+Ultima actualizacion: 2026-05-04
 
 Documento **local** del app `apps/psp-backoffice` (nombre distinto de `PROJECT_CONTEXT.md` en la raíz para evitar confusion). El monorepo mantiene visión global y API en **`PROJECT_CONTEXT.md`** (raíz); aquí se detalla solo el panel administrativo.
 
@@ -68,8 +68,9 @@ El listado `/transactions` lee la misma base que **`psp-api`**. Para generar fil
 
 1. Desde `apps/psp-api`, con la URL y el secreto interno **del mismo deploy** que consume el backoffice (`PSP_API_BASE_URL` / `PSP_INTERNAL_API_SECRET`):
    - `npm run demo:backoffice-payments`
-2. Variables reconocidas por el script: `DEMO_API_BASE_URL` o `SMOKE_BASE_URL`, y `INTERNAL_API_SECRET` o `SMOKE_INTERNAL_API_SECRET`. Opcional: `DEMO_FETCH_TIMEOUT_MS` (default 90000) si el cold start es lento.
-3. Alternativa: `npm run test:smoke:sandbox` con las mismas variables (Jest) también persiste pagos v2.
+2. Volumen para el panel (≥60 `succeeded` + muestras `canceled` / `refunded` / `requires_action` / `authorized`): `npm run test:smoke:backoffice-demo` con `SMOKE_BASE_URL` o `DEMO_API_BASE_URL` + `INTERNAL_API_SECRET` (o `SMOKE_*`). En **Windows PowerShell** define variables con `$env:SMOKE_BASE_URL='https://…'` (el comando `set` de CMD no aplica). No forma parte de `test:smoke:sandbox` (solo corre con ese script o `SMOKE_BACKOFFICE_VOLUME_DEMO=1`). Pausas por defecto respetan el throttle de creación v2 (30/min); ver cabecera JSDoc en `test/smoke/backoffice-volume-demo.smoke.spec.ts`.
+3. Variables reconocidas por el script demo: `DEMO_API_BASE_URL` o `SMOKE_BASE_URL`, y `INTERNAL_API_SECRET` o `SMOKE_INTERNAL_API_SECRET`. Opcional: `DEMO_FETCH_TIMEOUT_MS` (default 90000) si el cold start es lento.
+4. Alternativa ligera: `npm run test:smoke:sandbox` con las mismas variables (Jest) también persiste pagos v2 (pocos).
 
 Entrar al backoffice como **admin** y abrir `/` o `/transactions` (sin filtro de fecha por defecto se listan todas las recientes).
 
@@ -110,7 +111,7 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 - **`/crm/onboarding/[applicationId]`** — Detalle admin de expediente onboarding: contacto, negocio, checklist, historial y acciones `approve|reject|resend-link`.
 - **`/`** — Inicio: **admin** — bloque **Resumen** (intervalo/comparador vía `GET /api/internal/transactions/summary`), tarjetas UTC + volumen EUR + card volumen **USD** (`/ops/dashboard/volume-usd` vía BFF) + accesos a `/merchants` y `/operations`. **Merchant** — resumen scoped + enlaces al portal.
 - **`/transactions`** — Dashboard de transacciones (lista ops, filtros, export CSV de pagina visible, conteos por estado, cursores). Filtros extendidos (país, método, weekday, `merchantActive`) se reenvían al BFF.
-- **`/merchants`** — Directorio merchants (solo admin); desde aquí **Ver** → overview, **Admin** → panel activación / admin-enabled métodos.
+- **`/merchants`** — Directorio merchants (solo admin); buscador local por nombre o ID (sobre hasta 500 filas del `GET .../merchants/ops/directory`); **Ver** → overview, **Admin** → panel activación / admin-enabled métodos.
 - **`/merchants/[merchantId]/overview`** — Resumen merchant/admin con timeline (detalle ops interno).
 - **`/merchants/[merchantId]/payments`** — Mismo listado ops con `merchantId` precargado (`TransactionsDashboard`).
 - **`/merchants/[merchantId]/settlements`** — Saldo AVAILABLE + crear solicitud + historial.
@@ -130,7 +131,7 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 - Alcance portal en BFF (`enforceInternalRouteAuth`): JWT verificado pero con **rol incompatible** con `BACKOFFICE_PORTAL_MODE` → **`403`** (p. ej. cookie admin en deploy merchant).
 - Mutaciones BFF (`POST`/`PATCH` bajo `/api/internal/*`): el navegador debe enviar cabecera `X-Backoffice-Mutation: 1`; si existe cabecera `Origin`, debe coincidir con `request.nextUrl.origin` **o** con el origen público reconstruido desde `Host` (preferido) + último segmento de `X-Forwarded-Proto` si la lista es coma-separada; si falta `Host`, último segmento de `X-Forwarded-Host`. Esa reconstrucción **solo** aplica con `TRUST_BACKOFFICE_FORWARDED_ORIGIN_HEADERS=true` o en runtime donde el borde controla esos valores (`VERCEL=1`, `CF_PAGES=1`, `RENDER=true`). La sesión/RBAC sigue aplicándose después.
 - Login: `POST /api/auth/session` acepta **solo** el `mode` que coincida con `BACKOFFICE_PORTAL_MODE`: admin `{ "mode":"admin","token":"<BACKOFFICE_ADMIN_SECRET>" }` o merchant `{ "mode":"merchant","merchantId":"...","merchantToken":"<expUnix>:<hmac_hex>" }` (HMAC de ``merchantId.exp``, caducidad acotada). Otro modo → **`404`** (no filtrar existencia por UI). Rate limit best-effort en proceso: clave = IP normalizada desde `request.ip` (si existe); luego `x-vercel-forwarded-for` solo con `VERCEL=1` o `TRUST_VERCEL_IP_HEADERS` / `TRUST_PLATFORM_IP_HEADERS`; **`X-Forwarded-For` y `X-Real-IP` solo si `TRUST_X_FORWARDED_FOR=true`**; luego `cf-connecting-ip` solo con `CF_PAGES=1` o `TRUST_CLOUDFLARE_IP_HEADERS` / `TRUST_PLATFORM_IP_HEADERS`. Sin IP resoluble: clave `__psp_bo_login_rl_fp:` + hash SHA-256 (32 hex) de `User-Agent` + `Accept-Language` normalizados; si faltan ambos, clave interna `LOGIN_RATE_LIMIT_UNRESOLVED_KEY` y **warning** en logs del servidor (throttled ~1/min por proceso). Normalización con `node:net`/`isIP`. Map de buckets con barrido de ventanas expiradas y tope de entradas; en producción complementar con límite en edge/WAF si hay varias instancias.
-- Navegación: rol **merchant** no ve `/monitor` ni `/merchants/lookup`; enlaces a **Mi comercio** (`/merchants/{id}/overview` y subrutas) y **Finanzas**. Admin ve **Merchants**, **Operaciones**, **CRM onboarding**, monitor y lookup financiero.
+- Navegación: rol **merchant** no ve `/monitor` ni `/merchants/lookup`; enlaces a **Mi comercio** (`/merchants/{id}/overview` y subrutas) y **Finanzas**. Admin ve **Merchants**, **Operaciones**, **CRM onboarding** y monitor (finanzas por merchant siguen enlazadas desde transacciones u otras vistas, sin ítem dedicado en el lateral).
 - Detalle de pago: un merchant que pida un `paymentId` de otro comercio recibe **404** (anti-enumeración), en BFF y en API.
 - Alcance **merchant** en BFF: rutas con `merchantId` en path o query fuerzan/validan contra el claim; métricas globales (`provider-health` → `ops/metrics`) solo **admin**. El proxy añade cabeceras `X-Backoffice-Role` y `X-Backoffice-Merchant-Id` para que `psp-api` vuelva a validar (defensa en profundidad). Las páginas merchant incluyen `/merchants/[merchantId]/finance` con validación en Server Component vía `ensureMerchantPortalRoute`, además del proxy y el BFF.
 - Cabeceras de seguridad globales desde `next.config.ts`: `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`.

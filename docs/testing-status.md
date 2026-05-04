@@ -1,6 +1,6 @@
 # Estado de tests
 
-Ultima actualizacion: 2026-05-03
+Ultima actualizacion: 2026-05-04
 
 ## Objetivo
 
@@ -12,7 +12,7 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 - `unit` (API): specs co-localizados en `apps/psp-api/src/**/*.spec.ts` (`npm run test` desde `apps/psp-api`).
 - `unit` (backoffice): libs solo servidor en `apps/psp-backoffice/src/**/*.spec.ts` (`npm run test` desde `apps/psp-backoffice`, Vitest).
 - `integration-local`: tests de integracion con app Nest local + Supertest en `apps/psp-api/test/integration/**/*.spec.ts` (`npm run test:integration` desde `apps/psp-api`).
-- `smoke`: tests HTTP contra entorno desplegado/base URL en `apps/psp-api/test/smoke/**/*.spec.ts` (`npm run test:smoke:sandbox`).
+- `smoke`: tests HTTP contra entorno desplegado/base URL en `apps/psp-api/test/smoke/**/*.spec.ts` (`npm run test:smoke:sandbox`). Volumen demo backoffice (no incluido en sandbox por defecto): `npm run test:smoke:backoffice-demo` (`backoffice-volume-demo.smoke.spec.ts`).
 
 La CI del monorepo incluye `api-ci` (lint/test/build API), `backoffice-ci` (lint, typecheck, Vitest, Playwright con **`psp-api`** levantado en el mismo job vía Postgres/Redis + migraciones en `127.0.0.1:3003`, validación del proxy a `/api/internal/merchants/ops/directory`, y build del panel), y `web-finara-ci` (typecheck vía `next typegen` + `tsc --noEmit`, y build de la landing en `apps/web-finara`).
 
@@ -22,7 +22,7 @@ La CI del monorepo incluye `api-ci` (lint/test/build API), `backoffice-ci` (lint
 | --- | --- | --- | --- | --- | --- |
 | `payments-v2` | Si | Si | Si | Cubierto | Unit `payments-v2.service.spec`: mocks `merchant.findUnique` + `merchantPaymentMethod` tras `clearAllMocks`; idempotencia 3DS espera `nextAction` mínimo `{ type: '3ds' }`; asserts `ConflictException.getResponse()` toleran cuerpo objeto Nest; `onApplicationBootstrap` legacy stripe usa doble `$queryRaw`. Create v2 sin `provider` en body: ruteo vía `PAYMENTS_PROVIDER_ORDER` + registry inyectable (`PAYMENT_PROVIDERS`); integration setup con `mock`. Flujos create/get/capture/cancel/refund + idempotencia + `paymentLink` + ops. Unit: `ProviderRegistryService`, adapter Acme stub, CB v2 (Redis/fallback, half-open NX con validación env solo si `PAYMENTS_PROVIDER_CB_HALF_OPEN` + `REDIS_URL`, snapshot `circuitState`/`halfOpen`, backoff), reintento transitorio unit valida ms vía spy de `sleep` (no wall-clock `Date.now`); cuota merchant (`payments-v2-merchant-rate-limit*.spec.ts`, `PaymentsV2MerchantRateLimitService`; incluye deduplicación heap/indice por bucket), correlación HTTP (`src/common/correlation/correlation-id.spec.ts`, cabeceras `X-Request-Id`/`X-Correlation-Id`). Integration `jest.integration.setup` fuerza `PAYMENTS_PROVIDER_RETRY_BASE_MS=0`. Integration `volume-hourly`: totales/serie como string. Integration dedicada `payments-v2-merchant-rate-limit.integration.spec.ts` (429 + idempotencia sin consumo extra; incluida en `test:integration:critical`). Integration `payments-v2.integration.spec.ts`: aserciones de cabecera `X-Request-Id` en create. |
 | `merchants` | No | Si | Parcial | Parcial | Integration cubre create+guard y ciclo revoke/rotate via servicio. Falta spec unitario del controller/service. |
-| `merchant-onboarding` | Si | No | No | Parcial | Unit `merchant-onboarding.service.spec.ts`: creación pública neutral, checklist, token, eventos, claims approve/reject, `listApplications` con `q` acotado y sin `count` con búsqueda; barrera `pg_advisory_xact_lock` + `findFirst` tras lock (duplicado concurrente sin writes); respuesta neutral ante P2002 de unicidad en `contact_email` (error simulado como objeto con `code`/`meta`, sin clase runtime de Prisma); `merchant-onboarding.controller.spec.ts` (delegación público/ops). Unit `onboarding-email.service.spec.ts` y `onboarding-token.service.spec.ts`. Migraciones `20260430210000_merchant_onboarding_crm` y `20260501120000_merchant_onboarding_contact_email_unique` (único `contact_email`). Integración HTTP pendiente. |
+| `merchant-onboarding` | Si | No | No | Parcial | Unit `merchant-onboarding.service.spec.ts`: creación pública neutral, checklist, token, eventos, claims approve/reject (incl. email post-TX vía `sendOnboardingDecisionEmail` + eventos `decision_email_sent`; fallo al insertar evento de auditoría post-decisión no tumba la respuesta), `listApplications` con `q` acotado y sin `count` con búsqueda; barrera `pg_advisory_xact_lock` + `findFirst` tras lock (duplicado concurrente sin writes); respuesta neutral ante P2002 de unicidad en `contact_email` (error simulado como objeto con `code`/`meta`, sin clase runtime de Prisma); `merchant-onboarding.controller.spec.ts` (delegación público/ops). Unit `onboarding-email.service.spec.ts` (Resend sin leer body en error HTTP; timeout/abort y fallo de red → `ok: false`) y `onboarding-token.service.spec.ts`. Migraciones `20260430210000_merchant_onboarding_crm` y `20260501120000_merchant_onboarding_contact_email_unique` (único `contact_email`). Integración HTTP pendiente. |
 | `payment-links` | No | Si | No | Parcial | Sin endpoint HTTP activo; cobertura via `PaymentLinksService.findForMerchant`. |
 | `ledger` | Si | Si | Si | Cubierto | Unit de servicio + integration/smoke de `/api/v1/balance`, incluyendo transición `pending/available` y compatibilidad con asientos legacy `available`. |
 | `fees` | Si | Si | No | Cubierto | Unit `FeeService` (fixed/percentage/minimum + resolve active rate table) e integración de endpoints internos para rate tables por merchant/currency/provider. |
@@ -79,18 +79,16 @@ La CI del monorepo incluye `api-ci` (lint/test/build API), `backoffice-ci` (lint
 - `src/common/correlation/correlation-id.spec.ts`
 - `src/merchant-onboarding/merchant-onboarding.controller.spec.ts`
 - `src/merchant-onboarding/merchant-onboarding.service.spec.ts`
-- `src/merchant-onboarding/onboarding-email.service.spec.ts`
-- `src/merchant-onboarding/onboarding-token.service.spec.ts`
 - `src/fees/fee.service.spec.ts`
 - `src/ledger/ledger.service.spec.ts`
 - `src/settlements/settlement.service.spec.ts`
 - `src/merchant-onboarding/onboarding-email.service.spec.ts`
 - `src/merchant-onboarding/onboarding-token.service.spec.ts`
-- `src/merchant-onboarding/merchant-onboarding.service.spec.ts`
 
 ### Smoke (`test/smoke`)
 
 - `test/smoke/sandbox.smoke.spec.ts`
+- `test/smoke/backoffice-volume-demo.smoke.spec.ts` (solo `npm run test:smoke:backoffice-demo` o `SMOKE_BACKOFFICE_VOLUME_DEMO=1`)
 - `test/smoke/orchestrator.integration.spec.ts`
 - `test/smoke/check-ops-metrics-ci.spec.ts`
 
@@ -108,6 +106,7 @@ Desde `apps/psp-api`:
 - `npm run test:integration:critical`
 - `npm run test:ci:ops-metrics`
 - `npm run test:smoke:sandbox`
+- `npm run test:smoke:backoffice-demo`
 
 Desde `apps/psp-backoffice`:
 

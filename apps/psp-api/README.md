@@ -215,12 +215,19 @@ npm run test
 npm run test:integration
 npm run test:integration:critical
 npm run test:smoke:sandbox
+npm run test:smoke:backoffice-demo
 ```
 
 Para **poblar transacciones de demo** visibles en el backoffice (misma API/DB), con `SMOKE_BASE_URL` o `DEMO_API_BASE_URL` y `INTERNAL_API_SECRET` apuntando al entorno:
 
 ```bash
 npm run demo:backoffice-payments
+```
+
+Para **volumen** (por defecto ≥60 `succeeded` y muestras en `canceled` / `refunded` / `requires_action` / `authorized`), con las mismas variables:
+
+```bash
+npm run test:smoke:backoffice-demo
 ```
 
 Ver detalle en `BACKOFFICE_CONTEXT.md` (sección datos de prueba).

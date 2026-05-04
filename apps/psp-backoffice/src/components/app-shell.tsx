@@ -34,11 +34,10 @@ function sessionBadgeLabel(session: LayoutSession | null): string {
 
 function buildNavItems(session: LayoutSession | null): NavItem[] {
   const loginHref = getClientPortalLoginPath();
-  const financeHref =
-    session?.role === "merchant" ? `/merchants/${session.merchantId}/finance` : "/merchants/lookup";
 
   if (session?.role === "merchant") {
     const mid = encodeURIComponent(session.merchantId);
+    const financeHref = `/merchants/${mid}/finance`;
     return [
       { href: "/", id: "home", label: "Inicio", icon: LayoutDashboard },
       { href: loginHref, id: "login", label: "Iniciar sesión", icon: LogIn },
@@ -83,14 +82,6 @@ function buildNavItems(session: LayoutSession | null): NavItem[] {
       id: "crm-onboarding",
       label: "CRM onboarding",
       icon: UserPlus,
-    },
-    {
-      href: financeHref,
-      id: "merchant-finance-lookup",
-      label: "Finanzas merchant",
-      icon: Landmark,
-      activeMatch: (pathname: string) =>
-        pathname === "/merchants/lookup" || /^\/merchants\/[^/]+\/finance/.test(pathname),
     },
     { href: "/monitor", id: "monitor", label: "Monitor operativo (API)", icon: Activity },
   ];

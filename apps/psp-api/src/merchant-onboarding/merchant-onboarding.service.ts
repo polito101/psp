@@ -494,11 +494,12 @@ export class MerchantOnboardingService {
 
   /**
    * Aprueba una solicitud y activa el merchant en una única transacción.
+   * Tras el commit, notifica por email al contacto del expediente (mismo canal Resend que el link de onboarding).
    */
   async approveApplication(applicationId: string) {
     const now = new Date();
 
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       const claim = await tx.merchantOnboardingApplication.updateMany({
         where: { id: applicationId, status: MerchantOnboardingStatus.IN_REVIEW },
         data: {
@@ -553,15 +554,24 @@ export class MerchantOnboardingService {
 
       return updated;
     });
+
+    await this.notifyMerchantDecisionEmail(updated.id, {
+      to: updated.contactEmail,
+      contactName: updated.contactName,
+      decision: 'approved',
+    });
+
+    return updated;
   }
 
   /**
    * Rechaza una solicitud sin activar el merchant asociado.
+   * Tras el commit, notifica por email al contacto incluyendo el motivo de rechazo.
    */
   async rejectApplication(applicationId: string, dto: RejectMerchantOnboardingDto) {
     const now = new Date();
 
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       const claim = await tx.merchantOnboardingApplication.updateMany({
         where: { id: applicationId, status: MerchantOnboardingStatus.IN_REVIEW },
         data: {
@@ -605,6 +615,15 @@ export class MerchantOnboardingService {
 
       return updated;
     });
+
+    await this.notifyMerchantDecisionEmail(updated.id, {
+      to: updated.contactEmail,
+      contactName: updated.contactName,
+      decision: 'rejected',
+      rejectionReason: dto.reason,
+    });
+
+    return updated;
   }
 
   /**
@@ -695,6 +714,67 @@ export class MerchantOnboardingService {
     }
   }
 
+  private async notifyMerchantDecisionEmail(
+    applicationId: string,
+    input: {
+      to: string;
+      contactName: string;
+      decision: 'approved' | 'rejected';
+      rejectionReason?: string;
+    },
+  ): Promise<void> {
+    let emailResult: EmailDeliveryResult;
+    try {
+      emailResult = await this.emailService.sendOnboardingDecisionEmail({
+        to: input.to,
+        contactName: input.contactName,
+        decision: input.decision,
+        rejectionReason: input.rejectionReason,
+      });
+    } catch (error) {
+      emailResult = { ok: false, errorMessage: getErrorMessage(error) };
+    }
+    try {
+      await this.recordDecisionEmailDeliveryEvent(applicationId, input.decision, emailResult);
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Failed to record decision email delivery event (applicationId=${applicationId}, decision=${input.decision}): ${getErrorMessage(error)}`,
+      );
+    }
+  }
+
+  private async recordDecisionEmailDeliveryEvent(
+    applicationId: string,
+    decision: 'approved' | 'rejected',
+    emailResult: EmailDeliveryResult,
+  ): Promise<void> {
+    if (emailResult.ok) {
+      await this.prisma.merchantOnboardingEvent.create({
+        data: {
+          applicationId,
+          type: 'decision_email_sent',
+          actorType: MerchantOnboardingActorType.SYSTEM,
+          message:
+            decision === 'approved'
+              ? 'Email de aprobación de onboarding enviado al contacto.'
+              : 'Email de rechazo de onboarding enviado al contacto.',
+          metadata: { decision, providerMessageId: emailResult.providerMessageId },
+        },
+      });
+      return;
+    }
+
+    await this.prisma.merchantOnboardingEvent.create({
+      data: {
+        applicationId,
+        type: 'decision_email_failed',
+        actorType: MerchantOnboardingActorType.SYSTEM,
+        message: 'No se pudo enviar el email de decisión de onboarding al contacto.',
+        metadata: { decision, errorMessage: emailResult.errorMessage },
+      },
+    });
+  }
+
   private async recordEmailDeliveryEvent(
     applicationId: string,
     emailResult: EmailDeliveryResult,
@@ -755,6 +835,8 @@ export class MerchantOnboardingService {
         id: true,
         merchantId: true,
         status: true,
+        contactName: true,
+        contactEmail: true,
         merchant: { select: { id: true, isActive: true } },
       },
     });
