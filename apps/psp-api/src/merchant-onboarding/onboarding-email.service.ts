@@ -7,6 +7,14 @@ export type SendOnboardingEmailInput = {
   onboardingUrl: string;
 };
 
+export type SendOnboardingDecisionEmailInput = {
+  to: string;
+  contactName: string;
+  decision: 'approved' | 'rejected';
+  /** Obligatorio cuando `decision === 'rejected'` (validado en el servicio de dominio). */
+  rejectionReason?: string;
+};
+
 export type SendOnboardingEmailResult =
   | { ok: true; providerMessageId: string | null }
   | { ok: false; errorMessage: string };
@@ -20,6 +28,62 @@ export class OnboardingEmailService {
   async sendOnboardingLink(
     input: SendOnboardingEmailInput,
   ): Promise<SendOnboardingEmailResult> {
+    return this.sendViaResend({
+      to: input.to,
+      subject: 'Completa tu onboarding en Finara',
+      html:
+        `<p>Hola ${escapeHtml(input.contactName)},</p>` +
+        '<p>Completa los datos de tu negocio para iniciar la revisión:</p>' +
+        `<p><a href="${escapeHtml(input.onboardingUrl)}">Abrir onboarding</a></p>`,
+      text: `Hola ${input.contactName}, completa los datos de tu negocio en: ${input.onboardingUrl}`,
+    });
+  }
+
+  /**
+   * Notifica al contacto del expediente el resultado de la revisión (aprobación o rechazo con motivo).
+   */
+  async sendOnboardingDecisionEmail(
+    input: SendOnboardingDecisionEmailInput,
+  ): Promise<SendOnboardingEmailResult> {
+    if (input.decision === 'approved') {
+      return this.sendViaResend({
+        to: input.to,
+        subject: 'Tu solicitud de onboarding ha sido aprobada — Finara',
+        html:
+          `<p>Hola ${escapeHtml(input.contactName)},</p>` +
+          '<p>Tu solicitud de onboarding ha sido <strong>aprobada</strong>. Tu cuenta merchant ya está activa y puedes operar con Finara.</p>' +
+          '<p>Si tienes dudas, contacta con soporte.</p>',
+        text:
+          `Hola ${input.contactName},\n\n` +
+          'Tu solicitud de onboarding ha sido aprobada. Tu cuenta merchant ya está activa.\n\n' +
+          '— Finara',
+      });
+    }
+
+    const reason = (input.rejectionReason ?? '').trim() || 'No se indicó un motivo detallado.';
+    return this.sendViaResend({
+      to: input.to,
+      subject: 'Actualización sobre tu solicitud de onboarding — Finara',
+      html:
+        `<p>Hola ${escapeHtml(input.contactName)},</p>` +
+        '<p>Lamentamos informarte que tu solicitud de onboarding ha sido <strong>rechazada</strong>.</p>' +
+        '<p><strong>Motivo indicado por el equipo:</strong></p>' +
+        `<p>${escapeHtml(reason).replaceAll('\n', '<br />')}</p>`,
+      text:
+        `Hola ${input.contactName},\n\n` +
+        'Tu solicitud de onboarding ha sido rechazada.\n\n' +
+        'Motivo indicado por el equipo:\n' +
+        `${reason}\n\n` +
+        '— Finara',
+    });
+  }
+
+  private async sendViaResend(parts: {
+    to: string;
+    subject: string;
+    html: string;
+    text: string;
+  }): Promise<SendOnboardingEmailResult> {
     const apiKey = this.config.get<string>('RESEND_API_KEY')?.trim();
     const from = this.config.get<string>('ONBOARDING_EMAIL_FROM')?.trim();
 
@@ -36,13 +100,10 @@ export class OnboardingEmailService {
       },
       body: JSON.stringify({
         from,
-        to: input.to,
-        subject: 'Completa tu onboarding en Finara',
-        html:
-          `<p>Hola ${escapeHtml(input.contactName)},</p>` +
-          '<p>Completa los datos de tu negocio para iniciar la revisión:</p>' +
-          `<p><a href="${escapeHtml(input.onboardingUrl)}">Abrir onboarding</a></p>`,
-        text: `Hola ${input.contactName}, completa los datos de tu negocio en: ${input.onboardingUrl}`,
+        to: parts.to,
+        subject: parts.subject,
+        html: parts.html,
+        text: parts.text,
       }),
     });
 

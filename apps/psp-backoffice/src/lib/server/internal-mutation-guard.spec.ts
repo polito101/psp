@@ -17,8 +17,15 @@ function clearForwardedOriginTrustEnv(): void {
 }
 
 describe("enforceInternalMutationRequest", () => {
-  afterEach(() => {
+  const snapshot = { ...process.env };
+
+  beforeEach(() => {
+    process.env = { ...snapshot };
     clearForwardedOriginTrustEnv();
+  });
+
+  afterEach(() => {
+    process.env = { ...snapshot };
   });
 
   it("rejects missing mutation header", () => {
@@ -35,7 +42,6 @@ describe("enforceInternalMutationRequest", () => {
   });
 
   it("rejects cross-origin requests", () => {
-    clearForwardedOriginTrustEnv();
     const result = enforceInternalMutationRequest(
       req({ "x-backoffice-mutation": "1", origin: "https://evil.example" }),
     );
@@ -44,7 +50,6 @@ describe("enforceInternalMutationRequest", () => {
   });
 
   it("with forwarded-origin trust off, rejects Origin aligned only via spoofed X-Forwarded-Host", () => {
-    clearForwardedOriginTrustEnv();
     const result = enforceInternalMutationRequest(
       new NextRequest("http://127.0.0.1:10000/api/internal/test", {
         method: "POST",
@@ -63,7 +68,6 @@ describe("enforceInternalMutationRequest", () => {
 
   describe("with TRUST_BACKOFFICE_FORWARDED_ORIGIN_HEADERS", () => {
     beforeEach(() => {
-      clearForwardedOriginTrustEnv();
       process.env.TRUST_BACKOFFICE_FORWARDED_ORIGIN_HEADERS = "true";
     });
 
@@ -115,7 +119,6 @@ describe("enforceInternalMutationRequest", () => {
 
   describe("with RENDER=true (implicit forwarded-origin trust)", () => {
     beforeEach(() => {
-      clearForwardedOriginTrustEnv();
       process.env.RENDER = "true";
     });
 
