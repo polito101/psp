@@ -1,22 +1,11 @@
 ---
-description: SSOT y convenciones del panel apps/psp-backoffice; leer y mantener contexto local al editar el app.
+description: Enrutador minimo al SSOT del backoffice (sin duplicar contexto).
 globs:
   - "apps/psp-backoffice/**"
 ---
 
 # Backoffice (`apps/psp-backoffice`)
 
-## Documento de contexto
-
-- **SSOT del app:** `apps/psp-backoffice/BACKOFFICE_CONTEXT.md`. Léelo al iniciar tareas sustanciales en este árbol.
-- **SSOT del monorepo:** `PROJECT_CONTEXT.md` (raíz) para contratos de API, pagos v2, infra y decisiones transversales.
-
-## Mantenimiento
-
-- Tras cambios relevantes (rutas, BFF, auth, stack UI, patrones de datos cliente), **actualiza** `apps/psp-backoffice/BACKOFFICE_CONTEXT.md` en el mismo cambio.
-- Si el cambio afecta integración global (nuevo endpoint consumido, variable nueva compartida, riesgo de seguridad), añade o ajusta el **resumen correspondiente** en `PROJECT_CONTEXT.md` de la raíz para que el repo siga teniendo una sola visión ejecutiva.
-
-## Coherencia
-
-- No exponer `PSP_INTERNAL_API_SECRET` ni `X-Internal-Secret` al cliente; los llamados a la API interna van por **`src/app/api/internal/*`** con la política de auth documentada en el contexto del backoffice.
-- Alinear tipado y fetch con los contratos descritos en el contexto del backoffice y, cuando aplique, tipos generados (`openapi-typescript`).
+- Leer y mantener: `apps/psp-backoffice/BACKOFFICE_CONTEXT.md` (SSOT unico del app).
+- Si el cambio impacta integración monorepo/API, reflejar resumen en `PROJECT_CONTEXT.md`.
+- No duplicar convenciones del backoffice en reglas.

@@ -1,10 +1,12 @@
 # PROJECT_CONTEXT
 
-Ultima actualizacion: 2026-05-02
+Ultima actualizacion: 2026-05-04
 
 ## 1) Resumen del proyecto
 
 Repositorio backend-first de un PSP (pasarela de pagos), con API principal en `apps/psp-api`.
+
+**Jerarquia de contexto (SSOT):** cada app tiene su documento local (`apps/psp-api/API_CONTEXT.md`, `apps/web-finara/WEB_FINARA_CONTEXT.md`, `apps/psp-backoffice/BACKOFFICE_CONTEXT.md`). Las decisiones **más relevantes o transversales** (varias apps, contratos críticos, seguridad e infra compartida) deben quedar **reflejadas en este `PROJECT_CONTEXT.md` de la raíz** (resumen ejecutivo), además del detalle en el contexto del app cuando aplique.
 
 La API esta construida con NestJS y expone REST versionado por URI, con foco operativo en `/api/v2/payments` (orquestador):
 - onboarding de merchants
@@ -15,11 +17,11 @@ La API esta construida con NestJS y expone REST versionado por URI, con foco ope
 - health checks
 
 Ademas del servicio API, el repo incluye:
-- sitio marketing Next.js (landing Finara) en `apps/web-finara` (deploy Render: servicio `web-finara` en `render.yaml`). El CTA «Create account» enlaza a **`/merchant-signup`** (formulario que llama al Route Handler `POST /api/merchant-onboarding`, proxy servidor → `POST {PSP_API_BASE_URL}/api/v1/merchant-onboarding/applications`). **`PSP_API_BASE_URL` en Render debe coincidir con la URL pública del servicio `psp-api` en el Dashboard** (hostname único tipo `psp-api-xxxx.onrender.com`); el blueprint del repo puede sobrescribir variables si se sincroniza. Ese proxy aplica rate limit por IP (o fingerprint) y reenvío controlado de `X-Forwarded-For` / `X-Real-IP` hacia la API; en Render `RENDER=true` habilita la lectura segura de cabeceras de borde. El login merchant público sigue en `NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL` (mismo código `psp-backoffice` en modo merchant). Esa URL se valida en `getMerchantBackofficeLoginUrl` (absoluta, solo `https`, sin credenciales en userinfo, path normalizado a `/login`; si falla, fallback `https://psp-backoffice.onrender.com/login` y un único `console.warn`). La API debe tener `TRUST_PROXY=true` (p. ej. en `render.yaml`) para que el `ThrottlerGuard` use esa IP.
+- sitio marketing Next.js (landing Finara) en `apps/web-finara` (**`apps/web-finara/WEB_FINARA_CONTEXT.md`**; deploy Render: servicio `web-finara` en `render.yaml`). El CTA «Create account» enlaza a **`/merchant-signup`** (formulario que llama al Route Handler `POST /api/merchant-onboarding`, proxy servidor → `POST {PSP_API_BASE_URL}/api/v1/merchant-onboarding/applications`). **`PSP_API_BASE_URL` en Render debe coincidir con la URL pública del servicio `psp-api` en el Dashboard** (hostname único tipo `psp-api-xxxx.onrender.com`); el blueprint del repo puede sobrescribir variables si se sincroniza. Ese proxy aplica rate limit por IP (o fingerprint) y reenvío controlado de `X-Forwarded-For` / `X-Real-IP` hacia la API; en Render `RENDER=true` habilita la lectura segura de cabeceras de borde. El login merchant público sigue en `NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL` (mismo código `psp-backoffice` en modo merchant). Esa URL se valida en `getMerchantBackofficeLoginUrl` (absoluta, solo `https`, sin credenciales en userinfo, path normalizado a `/login`; si falla, fallback `https://psp-backoffice.onrender.com/login` y un único `console.warn`). La API debe tener `TRUST_PROXY=true` (p. ej. en `render.yaml`) para que el `ThrottlerGuard` use esa IP.
 - panel PSP en `apps/psp-backoffice`: **dos despliegues** del mismo app (merchant vs admin) vía `BACKOFFICE_PORTAL_MODE`/`NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE` (`/login` vs `/admin/login`); detalle en **`apps/psp-backoffice/BACKOFFICE_CONTEXT.md`** y **`render.yaml`** (`psp-backoffice`, `psp-backoffice-admin`).
 - infraestructura en `infra/terraform`
 - entorno local con PostgreSQL + Redis via `docker-compose.yml` (Postgres expuesto en el host en **5433** para no chocar con un PostgreSQL local en 5432; credenciales `psp` / `psp_dev_password` / DB `psp`)
-- documentacion operativa en `docs/` y `apps/psp-api/README.md`
+- documentacion operativa en `docs/`, `apps/psp-api/README.md` y **`apps/psp-api/API_CONTEXT.md`** (SSOT del app API)
 
 ## 2) Stack tecnologico
 
@@ -48,6 +50,7 @@ C:/AA psp/
 │   └── workflows/
 ├── apps/
 │   ├── psp-api/
+│   │   ├── API_CONTEXT.md          (SSOT del app API; decisiones globales también en PROJECT_CONTEXT raíz)
 │   │   ├── prisma/
 │   │   │   ├── schema.prisma
 │   │   │   └── migrations/
@@ -81,6 +84,7 @@ C:/AA psp/
 │   │   ├── nest-cli.json
 │   │   └── README.md
 │   ├── web-finara/
+│   │   ├── WEB_FINARA_CONTEXT.md     (SSOT del app landing)
 │   │   ├── app/, components/, lib/   (landing Next.js 16; `/merchant-signup`, `POST /api/merchant-onboarding`; Analytics Vercel opcional)
 │   │   └── package.json
 │   └── psp-backoffice/
@@ -104,7 +108,7 @@ C:/AA psp/
 
 - **npm (raíz):** el `package.json` de la raíz es solo metadatos (`private`, sin dependencias de aplicación). Las dependencias y sus `package-lock.json` viven en `apps/psp-api`, `apps/psp-backoffice` y `apps/web-finara`; la CI incluye `api-ci` y `sandbox-deploy` con `npm ci` desde `apps/psp-api/package-lock.json`, **`backoffice-ci`** (lint, typecheck, test Vitest, Playwright `npm run test:e2e` contra `psp-api` real levantado en el job con Postgres/Redis + migraciones, build del panel), y **`web-finara-ci`** (`npm ci` + `npm run typecheck` con `next typegen` + `tsc --noEmit` + `npm run build` del sitio marketing) con caché npm por `package-lock.json` de cada app.
 
-En `.cursor/rules/` conviven `project-context.mdc`, `vibecoding-master.mdc`, `testing-status.mdc`, **`psp-backoffice-context.mdc`** (al editar `apps/psp-backoffice/**`) y **`agent-behavior.mdc`**: guías de comportamiento del agente (aclarar supuestos ante ambigüedad, simplicidad, cambios mínimos, criterios de éxito verificables) y mantenimiento vivo de cobertura de tests.
+En `.cursor/rules/` se mantiene una capa mínima: `reglas-generales.mdc` (entry point del agente: flujo de trabajo, superpowers, SSOT y prioridades), `api-context.mdc`, `web-finara-context.mdc` y `psp-backoffice-context.mdc` (enrutadores por app), y `testing-status.mdc` (mantenimiento del SSOT de pruebas). El detalle por app vive en `API_CONTEXT.md`, `WEB_FINARA_CONTEXT.md`, `BACKOFFICE_CONTEXT.md`; la visión global y las decisiones más importantes en `PROJECT_CONTEXT.md` (raíz); estado de tests en `docs/testing-status.md`.
 
 ## 4) Patrones de diseno y convenciones detectadas
 
@@ -181,4 +185,4 @@ Este archivo se actualiza en cada cambio estructural relevante, sin esperar pedi
 
 Objetivo operativo: archivo breve, factual y alineado al estado real del codigo.
 
-El backoffice mantiene su propio **`apps/psp-backoffice/BACKOFFICE_CONTEXT.md`**; al cambiar rutas, BFF, auth o stack UI del panel, actualizar ese archivo en el mismo diff y reflejar aqui solo lo que deba ser visible a nivel monorepo (API, seguridad cruzada, resumen de rutas).
+Cada app mantiene su contexto local: **`apps/psp-api/API_CONTEXT.md`**, **`apps/web-finara/WEB_FINARA_CONTEXT.md`**, **`apps/psp-backoffice/BACKOFFICE_CONTEXT.md`**. Al cambiar solo detalle interno del app, actualizar ese archivo en el mismo diff. Si el cambio es **transversal o prioritario** (nuevo contrato entre servicios, política de seguridad compartida, CI, despliegue, decisión arquitectónica que afecte a más de un app), actualizar también **`PROJECT_CONTEXT.md`** (raíz) para que siga siendo la visión ejecutiva única.
