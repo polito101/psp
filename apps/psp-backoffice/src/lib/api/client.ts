@@ -1,4 +1,6 @@
 import type {
+  MerchantIndustry,
+  MerchantRegistrationStatus,
   MerchantOnboardingApplicationDetail,
   MerchantOnboardingApplicationsResponse,
   MerchantFinancePayoutsFilters,
@@ -597,6 +599,32 @@ export async function patchMerchantOpsActive(
 ): Promise<MerchantsOpsMerchantSummary> {
   const encoded = encodeURIComponent(merchantId);
   const response = await internalBffFetch(`/api/internal/merchants/ops/${encoded}/active`, {
+    ...internalBffInit,
+    method: "PATCH",
+    headers: backofficeMutationHeaders,
+    body: JSON.stringify(body),
+  });
+  return parseResponse<MerchantsOpsMerchantSummary>(response);
+}
+
+export type PatchMerchantAccountBody = {
+  name?: string;
+  email?: string;
+  contactName?: string;
+  contactPhone?: string;
+  websiteUrl?: string | null;
+  isActive?: boolean;
+  registrationStatus?: MerchantRegistrationStatus;
+  registrationNumber?: string | null;
+  industry?: MerchantIndustry;
+};
+
+export async function patchMerchantOpsAccount(
+  merchantId: string,
+  body: PatchMerchantAccountBody,
+): Promise<MerchantsOpsMerchantSummary> {
+  const encoded = encodeURIComponent(merchantId);
+  const response = await internalBffFetch(`/api/internal/merchants/ops/${encoded}/account`, {
     ...internalBffInit,
     method: "PATCH",
     headers: backofficeMutationHeaders,

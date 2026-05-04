@@ -5,12 +5,18 @@ import { mapProxyError, proxyPublicPost } from "@/lib/server/backoffice-api";
 
 type RouteContext = { params: Promise<{ token: string }> };
 
+const industrySchema = z.enum(["CLOUD_COMPUTING", "CRYPTO", "FOREX", "GAMBLING", "PSP", "OTHER"]);
+
 const businessProfileSchema = z.object({
-  tradeName: z.string().min(2).max(160),
-  legalName: z.string().min(2).max(200),
-  country: z.string().length(2).transform((v) => v.toUpperCase()),
-  website: z.string().url().max(2048).optional().or(z.literal("").transform(() => undefined)),
-  businessType: z.string().min(2).max(120),
+  companyName: z.string().trim().min(2).max(160),
+  industry: industrySchema,
+  websiteUrl: z
+    .string()
+    .trim()
+    .url()
+    .max(2048)
+    .optional()
+    .or(z.literal("").transform(() => undefined)),
 });
 
 export async function POST(request: NextRequest, context: RouteContext) {

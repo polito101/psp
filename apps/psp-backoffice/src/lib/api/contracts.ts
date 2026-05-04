@@ -175,11 +175,32 @@ export type SettlementRequestsListResponse = {
   items: SettlementRequestRow[];
 };
 
+export type MerchantRegistrationStatus =
+  | "LEAD"
+  | "IN_REVIEW"
+  | "APPROVED"
+  | "REJECTED"
+  | "ACTIVE";
+
+export type MerchantIndustry =
+  | "CLOUD_COMPUTING"
+  | "CRYPTO"
+  | "FOREX"
+  | "GAMBLING"
+  | "PSP"
+  | "OTHER";
+
+export type MerchantAccountStatus = "ENABLED" | "DISABLED";
+
 export type MerchantsOpsDirectoryRow = {
   id: string;
+  mid: string;
   name: string;
+  email: string | null;
   isActive: boolean;
   deactivatedAt: string | null;
+  registrationStatus: MerchantRegistrationStatus;
+  industry: MerchantIndustry;
   apiKeyExpiresAt: string | null;
   apiKeyRevokedAt: string | null;
   createdAt: string;
@@ -190,9 +211,18 @@ export type MerchantsOpsDirectoryResponse = MerchantsOpsDirectoryRow[];
 
 export type MerchantsOpsMerchantSummary = {
   id: string;
+  mid: string;
   name: string;
+  email: string | null;
+  contactName: string | null;
+  contactPhone: string | null;
+  websiteUrl: string | null;
   isActive: boolean;
   deactivatedAt: string | null;
+  registrationNumber: string | null;
+  registrationStatus: MerchantRegistrationStatus;
+  industry: MerchantIndustry;
+  createdAt?: string;
 };
 
 export type MerchantsOpsRecentPayment = {
@@ -237,6 +267,8 @@ export type MerchantsOpsDetailResponse = {
   recentPayments: MerchantsOpsRecentPayment[];
   settlementRequests: SettlementRequestRow[];
   paymentMethods: MerchantPaymentMethodRow[];
+  latestOnboardingApplication: MerchantOnboardingApplicationDetail | null;
+  onboardingEvents: MerchantOnboardingEvent[];
 };
 
 export type OpsVolumeHourlyMetric = "volume_gross" | "volume_net" | "succeeded_count";
