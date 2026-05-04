@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import {
@@ -19,14 +19,6 @@ const MAX_SECURE_COMPARE_STRING_CHARS = 1024;
 
 /** Límite del token admin en login público (alineado con el esquema Zod del route). */
 export const MAX_ADMIN_SESSION_TOKEN_CHARS = 512;
-
-/**
- * Formato `merchantToken` para login: `${unixExp}:${hexHmacSha256}` (hex 64 chars), ver `validateMerchantPortalLogin`.
- * Longitud máxima ~90 (24 + ':' + 64).
- */
-export const MERCHANT_PORTAL_TOKEN_REGEX = /^\d{1,24}:[0-9a-f]{64}$/i;
-
-const MERCHANT_PORTAL_TOKEN_MAX_CHARS = 96;
 
 function secureCompare(left: string, right: string): boolean {
   if (left.length > MAX_SECURE_COMPARE_STRING_CHARS || right.length > MAX_SECURE_COMPARE_STRING_CHARS) {
@@ -122,106 +114,6 @@ export function validateAdminTokenForSession(
   return { ok: true };
 }
 
-/** Antigüedad máxima permitida de `exp` respecto a `now` (ventana anti-replay hacia el pasado). */
-const MERCHANT_LOGIN_MAX_AGE_SEC = 300;
-/** Tolera `exp` ligeramente en el futuro por desfase de reloj del cliente (segundos). */
-const MERCHANT_LOGIN_CLOCK_SKEW_SEC = 60;
-
-/**
- * Valida login merchant: `merchantToken` = `${unixExp}:${hexHmac}` donde
- * HMAC-SHA256(`${merchantId}.${unixExp}`, BACKOFFICE_MERCHANT_PORTAL_SECRET) en hex.
- */
-export function validateMerchantPortalLogin(
-  merchantId: string,
-  merchantToken: string,
-):
-  | { ok: true }
-  | { ok: false; response: NextResponse } {
-  const id = merchantId.trim();
-  const token = merchantToken.trim();
-  if (!id || !token) {
-    return {
-      ok: false,
-      response: NextResponse.json({ message: "Invalid credentials" }, { status: 401 }),
-    };
-  }
-
-  if (token.length > MERCHANT_PORTAL_TOKEN_MAX_CHARS) {
-    return {
-      ok: false,
-      response: NextResponse.json({ message: "Invalid credentials" }, { status: 401 }),
-    };
-  }
-
-  let portalSecret: string;
-  try {
-    portalSecret = getMerchantPortalSecret();
-  } catch {
-    return {
-      ok: false,
-      response: NextResponse.json({ message: "Backoffice auth is misconfigured" }, { status: 500 }),
-    };
-  }
-
-  const colon = token.indexOf(":");
-  if (colon < 1) {
-    return {
-      ok: false,
-      response: NextResponse.json({ message: "Invalid credentials" }, { status: 401 }),
-    };
-  }
-  const expPart = token.slice(0, colon);
-  const sigPart = token.slice(colon + 1);
-  const expSec = Number.parseInt(expPart, 10);
-  if (!Number.isFinite(expSec) || expSec < 0 || !/^[0-9a-f]{64}$/i.test(sigPart)) {
-    return {
-      ok: false,
-      response: NextResponse.json({ message: "Invalid credentials" }, { status: 401 }),
-    };
-  }
-
-  const nowSec = Math.floor(Date.now() / 1000);
-  if (expSec < nowSec - MERCHANT_LOGIN_MAX_AGE_SEC || expSec > nowSec + MERCHANT_LOGIN_CLOCK_SKEW_SEC) {
-    return {
-      ok: false,
-      response: NextResponse.json({ message: "Invalid credentials" }, { status: 401 }),
-    };
-  }
-
-  const payload = `${id}.${expSec}`;
-  const expected = createHmac("sha256", portalSecret).update(payload, "utf8").digest("hex");
-  if (!secureCompare(sigPart.toLowerCase(), expected)) {
-    return {
-      ok: false,
-      response: NextResponse.json({ message: "Invalid credentials" }, { status: 401 }),
-    };
-  }
-
-  return { ok: true };
-}
-
-function getMerchantPortalSecret(): string {
-  const s = process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET;
-  if (!s) {
-    throw new Error("Missing BACKOFFICE_MERCHANT_PORTAL_SECRET in backoffice environment");
-  }
-  const pspInternal = process.env.PSP_INTERNAL_API_SECRET;
-  if (pspInternal && secureCompare(s, pspInternal)) {
-    throw new Error("BACKOFFICE_MERCHANT_PORTAL_SECRET must be different from PSP_INTERNAL_API_SECRET");
-  }
-  const adminSecret = process.env.BACKOFFICE_ADMIN_SECRET;
-  if (adminSecret && secureCompare(s, adminSecret)) {
-    throw new Error("BACKOFFICE_MERCHANT_PORTAL_SECRET must be different from BACKOFFICE_ADMIN_SECRET");
-  }
-  const sessionSecret = process.env.BACKOFFICE_SESSION_JWT_SECRET;
-  if (sessionSecret && secureCompare(s, sessionSecret)) {
-    throw new Error(
-      "BACKOFFICE_MERCHANT_PORTAL_SECRET must be different from BACKOFFICE_SESSION_JWT_SECRET",
-    );
-  }
-  return s;
-}
-
 export type InternalRouteAuthResult =
   | { ok: true; claims: SessionClaims }
   | { ok: false; response: NextResponse };
@@ -258,6 +150,12 @@ export async function enforceInternalRouteAuth(request: NextRequest): Promise<In
       return {
         ok: false,
         response: NextResponse.json({ message: "Forbidden" }, { status: 403 }),
+      };
+    }
+    if (claims.role === "merchant" && claims.onboardingStatus !== "ACTIVE") {
+      return {
+        ok: false,
+        response: NextResponse.json({ message: "Merchant onboarding is not active" }, { status: 403 }),
       };
     }
     return { ok: true, claims };

@@ -30,13 +30,31 @@ describe("session-claims", () => {
 
   it("assertScopeAccess allows merchant for own id", () => {
     expect(() =>
-      assertScopeAccess({ sub: "m", role: "merchant", merchantId: "mrc_1" }, "mrc_1"),
+      assertScopeAccess(
+        {
+          sub: "m",
+          role: "merchant",
+          merchantId: "mrc_1",
+          onboardingStatus: "ACTIVE",
+          rejectionReason: null,
+        },
+        "mrc_1",
+      ),
     ).not.toThrow();
   });
 
   it("assertScopeAccess forbids merchant for other id", () => {
     expect(() =>
-      assertScopeAccess({ sub: "m", role: "merchant", merchantId: "mrc_1" }, "mrc_2"),
+      assertScopeAccess(
+        {
+          sub: "m",
+          role: "merchant",
+          merchantId: "mrc_1",
+          onboardingStatus: "ACTIVE",
+          rejectionReason: null,
+        },
+        "mrc_2",
+      ),
     ).toThrow(ForbiddenScopeError);
   });
 });

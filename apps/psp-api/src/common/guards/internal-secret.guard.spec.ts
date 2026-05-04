@@ -271,6 +271,19 @@ describe('InternalSecretGuard', () => {
     ).toBe(true);
   });
 
+  it('allows merchant portal login with internal secret only (no backoffice role)', () => {
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+    expect(
+      guard.canActivate(
+        makeContext(
+          { 'x-internal-secret': VALID_SECRET },
+          '/api/v1/merchant-onboarding/ops/merchant-login',
+          {},
+        ),
+      ),
+    ).toBe(true);
+  });
+
   it('throws Forbidden when non-ops request sends merchant backoffice role', () => {
     const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
     expect(() =>

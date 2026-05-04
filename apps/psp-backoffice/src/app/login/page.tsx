@@ -3,12 +3,12 @@
 import { type FormEvent, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { AlertCircle, ArrowRight, KeyRound, Loader2, Lock, ShieldCheck, Store } from "lucide-react";
+import { AlertCircle, ArrowRight, KeyRound, Loader2, Lock, Mail, ShieldCheck, Store } from "lucide-react";
 
 export default function LoginPage() {
   const router = useRouter();
-  const [merchantId, setMerchantId] = useState("");
-  const [merchantToken, setMerchantToken] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
 
@@ -19,8 +19,8 @@ export default function LoginPage() {
     try {
       const body = {
         mode: "merchant" as const,
-        merchantId: merchantId.trim(),
-        merchantToken: merchantToken.trim(),
+        email: email.trim(),
+        password,
       };
 
       const res = await fetch("/api/auth/session", {
@@ -115,8 +115,7 @@ export default function LoginPage() {
               </span>
             </h1>
             <p className="mt-3 max-w-md text-pretty text-base leading-relaxed text-slate-300">
-              Consulta transacciones, finanzas y el estado de tu comercio con credenciales que te
-              proporciona Finara.
+              Usa el correo y la contraseña iniciales que te enviamos al crear tu solicitud de alta.
             </p>
 
             <ul className="mt-8 grid max-w-md grid-cols-1 gap-3 text-sm sm:grid-cols-3">
@@ -135,10 +134,10 @@ export default function LoginPage() {
                 </div>
               </li>
               <li className="flex items-start gap-2 rounded-xl border border-white/10 bg-white/[0.04] p-3 backdrop-blur">
-                <KeyRound size={14} aria-hidden className="mt-0.5 shrink-0 text-orange-300" />
+                <Store size={14} aria-hidden className="mt-0.5 shrink-0 text-orange-300" />
                 <div>
-                  <p className="font-medium text-white">Token</p>
-                  <p className="text-xs text-slate-400">Validez breve</p>
+                  <p className="font-medium text-white">Acceso</p>
+                  <p className="text-xs text-slate-400">Email verificado</p>
                 </div>
               </li>
             </ul>
@@ -168,51 +167,51 @@ export default function LoginPage() {
                     Inicia sesión
                   </h2>
                   <p className="text-pretty text-sm leading-relaxed text-slate-600">
-                    Introduce tu Merchant ID y el token temporal (expUnix:hexHmac).
+                    Correo electrónico y contraseña del alta.
                   </p>
                 </div>
 
                 <form className="mt-6 space-y-5" onSubmit={onSubmit}>
                   <div className="space-y-1.5">
-                    <label htmlFor="merchantId" className="block text-sm font-medium text-slate-700">
-                      Merchant ID
+                    <label htmlFor="email" className="block text-sm font-medium text-slate-700">
+                      Correo electrónico
                     </label>
                     <div className="group relative">
                       <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400 transition-colors group-focus-within:text-[var(--primary)]">
-                        <Store size={16} aria-hidden />
+                        <Mail size={16} aria-hidden />
                       </span>
                       <input
-                        id="merchantId"
-                        name="merchantId"
-                        type="text"
-                        autoComplete="off"
-                        placeholder="merch_..."
-                        value={merchantId}
-                        onChange={(ev) => setMerchantId(ev.target.value)}
-                        className="block w-full rounded-lg border border-slate-300 bg-white py-2.5 pl-10 pr-3 font-mono text-sm text-slate-900 shadow-sm transition-all placeholder:font-sans placeholder:text-slate-400 hover:border-slate-400 focus:border-[var(--primary)] focus:outline-none focus:ring-4 focus:ring-[var(--primary)]/15 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
+                        id="email"
+                        name="email"
+                        type="email"
+                        autoComplete="email"
+                        placeholder="tu@empresa.com"
+                        value={email}
+                        onChange={(ev) => setEmail(ev.target.value)}
+                        className="block w-full rounded-lg border border-slate-300 bg-white py-2.5 pl-10 pr-3 text-sm text-slate-900 shadow-sm transition-all placeholder:text-slate-400 hover:border-slate-400 focus:border-[var(--primary)] focus:outline-none focus:ring-4 focus:ring-[var(--primary)]/15 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
                         required
                       />
                     </div>
                   </div>
                   <div className="space-y-1.5">
-                    <label htmlFor="merchantToken" className="block text-sm font-medium text-slate-700">
-                      Token merchant{" "}
-                      <span className="font-normal text-slate-500">(expUnix:hexHmac)</span>
+                    <label htmlFor="password" className="block text-sm font-medium text-slate-700">
+                      Contraseña
                     </label>
                     <div className="group relative">
                       <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400 transition-colors group-focus-within:text-[var(--primary)]">
                         <KeyRound size={16} aria-hidden />
                       </span>
                       <input
-                        id="merchantToken"
-                        name="merchantToken"
+                        id="password"
+                        name="password"
                         type="password"
-                        autoComplete="off"
-                        placeholder="1700000000:abcd..."
-                        value={merchantToken}
-                        onChange={(ev) => setMerchantToken(ev.target.value)}
+                        autoComplete="current-password"
+                        placeholder="••••••••"
+                        value={password}
+                        onChange={(ev) => setPassword(ev.target.value)}
                         className="block w-full rounded-lg border border-slate-300 bg-white py-2.5 pl-10 pr-3 text-sm text-slate-900 shadow-sm transition-all placeholder:text-slate-400 hover:border-slate-400 focus:border-[var(--primary)] focus:outline-none focus:ring-4 focus:ring-[var(--primary)]/15 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
                         required
+                        minLength={8}
                       />
                     </div>
                   </div>

@@ -1,8 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
-import { signSession } from "@/lib/server/auth/session-claims";
+import { signSession, type MerchantOnboardingSessionStatus } from "@/lib/server/auth/session-claims";
 import { proxy } from "./proxy";
 import { BACKOFFICE_SESSION_COOKIE_NAME } from "@/lib/server/internal-route-auth";
+
+async function mintMerchantJwt(
+  merchantId: string,
+  onboardingStatus: MerchantOnboardingSessionStatus = "ACTIVE",
+): Promise<string> {
+  return signSession(
+    { sub: "m", role: "merchant", merchantId, onboardingStatus, rejectionReason: null },
+    process.env.BACKOFFICE_SESSION_JWT_SECRET!,
+  );
+}
 
 describe("proxy (merchant portal)", () => {
   const snapshot = { ...process.env };
@@ -45,11 +55,34 @@ describe("proxy (merchant portal)", () => {
   });
 
   it("redirects authenticated merchant away from /login", async () => {
-    const jwt = await signSession(
-      { sub: "m", role: "merchant", merchantId: "mrc_1" },
-      process.env.BACKOFFICE_SESSION_JWT_SECRET!,
-    );
+    const jwt = await mintMerchantJwt("mrc_1");
     const req = new NextRequest(new URL("http://localhost:3005/login"));
+    req.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt);
+    const res = await proxy(req);
+    expect(res?.status).toBe(307);
+    expect(res?.headers.get("location")).toMatch(/\/$/);
+  });
+
+  it("redirects merchant with pending onboarding from / to /merchant-status", async () => {
+    const jwt = await mintMerchantJwt("mrc_1", "DOCUMENTATION_PENDING");
+    const req = new NextRequest(new URL("http://localhost:3005/"));
+    req.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt);
+    const res = await proxy(req);
+    expect(res?.status).toBe(307);
+    expect(res?.headers.get("location")).toContain("/merchant-status");
+  });
+
+  it("allows /merchant-status for merchant with pending onboarding", async () => {
+    const jwt = await mintMerchantJwt("mrc_1", "DOCUMENTATION_PENDING");
+    const req = new NextRequest(new URL("http://localhost:3005/merchant-status"));
+    req.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt);
+    const res = await proxy(req);
+    expect(res?.status).toBe(200);
+  });
+
+  it("redirects active merchant away from /merchant-status", async () => {
+    const jwt = await mintMerchantJwt("mrc_1", "ACTIVE");
+    const req = new NextRequest(new URL("http://localhost:3005/merchant-status"));
     req.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt);
     const res = await proxy(req);
     expect(res?.status).toBe(307);
@@ -66,10 +99,7 @@ describe("proxy (merchant portal)", () => {
   });
 
   it("redirects merchant away from /monitor", async () => {
-    const jwt = await signSession(
-      { sub: "m", role: "merchant", merchantId: "mrc_1" },
-      process.env.BACKOFFICE_SESSION_JWT_SECRET!,
-    );
+    const jwt = await mintMerchantJwt("mrc_1");
     const req = new NextRequest(new URL("http://localhost:3005/monitor"));
     req.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt);
     const res = await proxy(req);
@@ -78,10 +108,7 @@ describe("proxy (merchant portal)", () => {
   });
 
   it("redirects merchant from /merchants/lookup to own finance", async () => {
-    const jwt = await signSession(
-      { sub: "m", role: "merchant", merchantId: "mrc_1" },
-      process.env.BACKOFFICE_SESSION_JWT_SECRET!,
-    );
+    const jwt = await mintMerchantJwt("mrc_1");
     const req = new NextRequest(new URL("http://localhost:3005/merchants/lookup"));
     req.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt);
     const res = await proxy(req);
@@ -90,10 +117,7 @@ describe("proxy (merchant portal)", () => {
   });
 
   it("redirects merchant trying to access another merchant's finance to own finance", async () => {
-    const jwt = await signSession(
-      { sub: "m", role: "merchant", merchantId: "mrc_1" },
-      process.env.BACKOFFICE_SESSION_JWT_SECRET!,
-    );
+    const jwt = await mintMerchantJwt("mrc_1");
     const req = new NextRequest(new URL("http://localhost:3005/merchants/mrc_other/finance"));
     req.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt);
     const res = await proxy(req);
@@ -102,10 +126,7 @@ describe("proxy (merchant portal)", () => {
   });
 
   it("blocks merchant from /monitor sub-paths (not only the exact path)", async () => {
-    const jwt = await signSession(
-      { sub: "m", role: "merchant", merchantId: "mrc_1" },
-      process.env.BACKOFFICE_SESSION_JWT_SECRET!,
-    );
+    const jwt = await mintMerchantJwt("mrc_1");
     const req = new NextRequest(new URL("http://localhost:3005/monitor/anything"));
     req.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt);
     const res = await proxy(req);
@@ -176,10 +197,7 @@ describe("proxy (admin portal)", () => {
   });
 
   it("treats merchant JWT as unauthenticated on admin portal", async () => {
-    const jwt = await signSession(
-      { sub: "m", role: "merchant", merchantId: "mrc_1" },
-      process.env.BACKOFFICE_SESSION_JWT_SECRET!,
-    );
+    const jwt = await mintMerchantJwt("mrc_1");
     const req = new NextRequest(new URL("http://localhost:3005/transactions"));
     req.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt);
     const res = await proxy(req);
@@ -190,6 +208,15 @@ describe("proxy (admin portal)", () => {
   it("authenticated admin redirected from legacy /login to home", async () => {
     const jwt = await signSession({ sub: "a", role: "admin" }, process.env.BACKOFFICE_SESSION_JWT_SECRET!);
     const req = new NextRequest(new URL("http://localhost:3005/login"));
+    req.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt);
+    const res = await proxy(req);
+    expect(res?.status).toBe(307);
+    expect(res?.headers.get("location")).toMatch(/\/$/);
+  });
+
+  it("redirects authenticated admin away from /merchant-status", async () => {
+    const jwt = await signSession({ sub: "a", role: "admin" }, process.env.BACKOFFICE_SESSION_JWT_SECRET!);
+    const req = new NextRequest(new URL("http://localhost:3005/merchant-status"));
     req.cookies.set(BACKOFFICE_SESSION_COOKIE_NAME, jwt);
     const res = await proxy(req);
     expect(res?.status).toBe(307);

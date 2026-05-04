@@ -15,5 +15,14 @@ export async function mintTestMerchantSessionJwt(merchantId: string): Promise<st
     throw new Error("BACKOFFICE_SESSION_JWT_SECRET required for test JWT");
   }
   const mid = merchantId.trim();
-  return signSession({ sub: `merchant:${mid}`, role: "merchant", merchantId: mid }, secret);
+  return signSession(
+    {
+      sub: `merchant:${mid}`,
+      role: "merchant",
+      merchantId: mid,
+      onboardingStatus: "ACTIVE",
+      rejectionReason: null,
+    },
+    secret,
+  );
 }

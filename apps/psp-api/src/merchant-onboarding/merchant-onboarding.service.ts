@@ -173,9 +173,6 @@ export class MerchantOnboardingService {
     const webhookSecretCiphertext = encryptUtf8(webhookSecretPlain);
     const placeholderHash = await bcrypt.hash(randomBytes(16).toString('hex'), 12);
 
-    const initialPasswordPlain = randomBytes(18).toString('base64url');
-    const merchantPortalPasswordHash = await bcrypt.hash(initialPasswordPlain, 12);
-
     let txResult: CreateApplicationTxResult;
     try {
       txResult = await this.prisma.$transaction(async (tx): Promise<CreateApplicationTxResult> => {
@@ -194,7 +191,6 @@ export class MerchantOnboardingService {
             name: dto.name,
             apiKeyHash: placeholderHash,
             webhookSecretCiphertext,
-            merchantPortalPasswordHash,
             isActive: false,
             deactivatedAt: now,
           },
@@ -274,8 +270,6 @@ export class MerchantOnboardingService {
       to: contactEmail,
       contactName: dto.name,
       onboardingUrl,
-      loginEmail: contactEmail,
-      initialPassword: initialPasswordPlain,
     });
     await this.recordEmailDeliveryEvent(applicationId, emailResult);
 
@@ -511,6 +505,7 @@ export class MerchantOnboardingService {
    */
   async approveApplication(applicationId: string) {
     const now = new Date();
+    let portalInitialPasswordPlain: string | undefined;
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const claim = await tx.merchantOnboardingApplication.updateMany({
@@ -542,9 +537,16 @@ export class MerchantOnboardingService {
 
       await this.createDecisionEvent(tx, application.id, 'application_approved', 'Solicitud aprobada.');
 
+      portalInitialPasswordPlain = randomBytes(18).toString('base64url');
+      const merchantPortalPasswordHash = await bcrypt.hash(portalInitialPasswordPlain, 12);
+
       await tx.merchant.update({
         where: { id: application.merchantId },
-        data: { isActive: true, deactivatedAt: null },
+        data: {
+          isActive: true,
+          deactivatedAt: null,
+          merchantPortalPasswordHash,
+        },
       });
 
       const updated = await tx.merchantOnboardingApplication.update({
@@ -568,10 +570,16 @@ export class MerchantOnboardingService {
       return updated;
     });
 
+    if (!portalInitialPasswordPlain) {
+      throw new Error('merchant_onboarding.approve_missing_portal_password');
+    }
+
     await this.notifyMerchantDecisionEmail(updated.id, {
       to: updated.contactEmail,
       contactName: updated.contactName,
       decision: 'approved',
+      portalLoginEmail: updated.contactEmail,
+      portalInitialPassword: portalInitialPasswordPlain,
     });
 
     return updated;
@@ -769,6 +777,8 @@ export class MerchantOnboardingService {
       contactName: string;
       decision: 'approved' | 'rejected';
       rejectionReason?: string;
+      portalLoginEmail?: string;
+      portalInitialPassword?: string;
     },
   ): Promise<void> {
     let emailResult: EmailDeliveryResult;
@@ -778,6 +788,8 @@ export class MerchantOnboardingService {
         contactName: input.contactName,
         decision: input.decision,
         rejectionReason: input.rejectionReason,
+        portalLoginEmail: input.portalLoginEmail,
+        portalInitialPassword: input.portalInitialPassword,
       });
     } catch (error) {
       emailResult = { ok: false, errorMessage: getErrorMessage(error) };

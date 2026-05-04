@@ -51,6 +51,9 @@ export function isPaymentsV2OpsPath(path: string): boolean {
 
 /** Incluye payments ops, settlements y merchants ops: el upstream exige cabeceras RBAC fail-closed. */
 export function requiresBackofficeScopePath(path: string): boolean {
+  if (path.includes("/merchant-onboarding/ops/merchant-login")) {
+    return false;
+  }
   return (
     path.includes("/payments/ops/") ||
     path.includes("/settlements/") ||

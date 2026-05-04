@@ -142,14 +142,13 @@ describe('MerchantOnboardingService', () => {
       where: { contactEmail: 'ada@example.com' },
       select: { id: true },
     });
-    expect(tx.merchant.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        name: 'Ada Lovelace',
-        merchantPortalPasswordHash: expect.any(String),
-        isActive: false,
-        deactivatedAt: now,
-      }),
+    const createdMerchantData = tx.merchant.create.mock.calls[0][0].data as Record<string, unknown>;
+    expect(createdMerchantData).toMatchObject({
+      name: 'Ada Lovelace',
+      isActive: false,
+      deactivatedAt: now,
     });
+    expect(createdMerchantData).not.toHaveProperty('merchantPortalPasswordHash');
     expect(tx.merchantOnboardingApplication.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         merchantId: 'merchant_1',
@@ -203,8 +202,6 @@ describe('MerchantOnboardingService', () => {
     expect(emailService.sendOnboardingLink).toHaveBeenCalledWith({
       to: 'ada@example.com',
       contactName: 'Ada Lovelace',
-      loginEmail: 'ada@example.com',
-      initialPassword: expect.any(String),
       onboardingUrl: 'https://onboarding.example.com/onboarding/plain_token',
     });
     expect(result).toEqual({
@@ -549,7 +546,11 @@ describe('MerchantOnboardingService', () => {
     });
     expect(tx.merchant.update).toHaveBeenCalledWith({
       where: { id: 'merchant_1' },
-      data: { isActive: true, deactivatedAt: null },
+      data: {
+        isActive: true,
+        deactivatedAt: null,
+        merchantPortalPasswordHash: expect.any(String),
+      },
     });
     expect(tx.merchantOnboardingEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -569,6 +570,8 @@ describe('MerchantOnboardingService', () => {
       to: 'ada@example.com',
       contactName: 'Ada Lovelace',
       decision: 'approved',
+      portalLoginEmail: 'ada@example.com',
+      portalInitialPassword: expect.any(String),
     });
     expect(prisma.merchantOnboardingEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({

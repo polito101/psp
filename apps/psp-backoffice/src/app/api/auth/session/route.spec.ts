@@ -1,23 +1,31 @@
-import { createHmac } from "node:crypto";
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { jwtVerify } from "jose";
 import { POST } from "./route";
 import { BACKOFFICE_SESSION_COOKIE_NAME } from "@/lib/server/internal-route-auth";
 import { resetLoginRateLimitForTests } from "@/lib/server/login-rate-limit";
+import { ProxyUpstreamError, proxyInternalPost } from "@/lib/server/backoffice-api";
+
+vi.mock("@/lib/server/backoffice-api", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@/lib/server/backoffice-api")>();
+  return { ...mod, proxyInternalPost: vi.fn() };
+});
+
+const proxyInternalPostMock = vi.mocked(proxyInternalPost);
 
 describe("POST /api/auth/session (admin portal)", () => {
   const snapshot = { ...process.env };
 
   beforeEach(() => {
     resetLoginRateLimitForTests();
+    proxyInternalPostMock.mockReset();
     process.env = { ...snapshot };
     process.env.BACKOFFICE_PORTAL_MODE = "admin";
     process.env.NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE = "admin";
     process.env.BACKOFFICE_SESSION_JWT_SECRET = "session-jwt-secret-dev-only-32b";
     process.env.BACKOFFICE_ADMIN_SECRET = "admin-secret";
     process.env.PSP_INTERNAL_API_SECRET = "internal-only";
-    process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET = "portal-hmac-secret-32bytes!!";
+    process.env.PSP_API_BASE_URL = "http://localhost:3000";
     process.env.TRUST_X_FORWARDED_FOR = "true";
   });
 
@@ -36,6 +44,7 @@ describe("POST /api/auth/session (admin portal)", () => {
     const raw = res.headers.get("set-cookie") ?? "";
     expect(raw).toContain(BACKOFFICE_SESSION_COOKIE_NAME);
     expect(raw.toLowerCase()).toContain("httponly");
+    expect(proxyInternalPostMock).not.toHaveBeenCalled();
   });
 
   it("rejects admin token longer than MAX_ADMIN_SESSION_TOKEN_CHARS", async () => {
@@ -49,20 +58,18 @@ describe("POST /api/auth/session (admin portal)", () => {
   });
 
   it("returns 404 for merchant login body on admin portal", async () => {
-    const mid = "mrc_test";
-    const exp = Math.floor(Date.now() / 1000);
-    const signingInput = `${mid}.${exp}`;
-    const sig = createHmac("sha256", process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET!)
-      .update(signingInput, "utf8")
-      .digest("hex");
-    const merchantToken = `${exp}:${sig}`;
     const req = new NextRequest("http://localhost:3005/api/auth/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "merchant", merchantId: mid, merchantToken }),
+      body: JSON.stringify({
+        mode: "merchant",
+        email: "a@b.co",
+        password: "secret123",
+      }),
     });
     const res = await POST(req);
     expect(res.status).toBe(404);
+    expect(proxyInternalPostMock).not.toHaveBeenCalled();
   });
 
   it("returns 429 after too many login attempts when no client IP and no fingerprint headers (sentinel bucket)", async () => {
@@ -147,48 +154,56 @@ describe("POST /api/auth/session (merchant portal)", () => {
 
   beforeEach(() => {
     resetLoginRateLimitForTests();
+    proxyInternalPostMock.mockReset();
     process.env = { ...snapshot };
     process.env.BACKOFFICE_PORTAL_MODE = "merchant";
     process.env.NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE = "merchant";
     process.env.BACKOFFICE_SESSION_JWT_SECRET = "session-jwt-secret-dev-only-32b";
     process.env.BACKOFFICE_ADMIN_SECRET = "admin-secret";
     process.env.PSP_INTERNAL_API_SECRET = "internal-only";
-    process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET = "portal-hmac-secret-32bytes!!";
+    process.env.PSP_API_BASE_URL = "http://localhost:3000";
   });
 
   afterEach(() => {
     process.env = { ...snapshot };
   });
 
-  it("rejects merchant token that does not match exp:hex64 format", async () => {
+  it("rejects merchant password longer than schema max", async () => {
     const req = new NextRequest("http://localhost:3005/api/auth/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         mode: "merchant",
-        merchantId: "mrc_test",
-        merchantToken: "a".repeat(10_000),
+        email: "a@b.co",
+        password: "x".repeat(129),
       }),
     });
     const res = await POST(req);
     expect(res.status).toBe(400);
+    expect(proxyInternalPostMock).not.toHaveBeenCalled();
   });
 
-  it("creates merchant session with merchantId in JWT", async () => {
-    const mid = "mrc_test";
-    const exp = Math.floor(Date.now() / 1000);
-    const signingInput = `${mid}.${exp}`;
-    const sig = createHmac("sha256", process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET!)
-      .update(signingInput, "utf8")
-      .digest("hex");
-    const merchantToken = `${exp}:${sig}`;
+  it("creates merchant session JWT with onboarding claims when API validates login", async () => {
+    proxyInternalPostMock.mockResolvedValue({
+      merchantId: "mrc_test",
+      onboardingStatus: "ACTIVE",
+      rejectionReason: null,
+    });
     const req = new NextRequest("http://localhost:3005/api/auth/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "merchant", merchantId: mid, merchantToken }),
+      body: JSON.stringify({
+        mode: "merchant",
+        email: "User@Example.com",
+        password: "correct horse",
+      }),
     });
     const res = await POST(req);
     expect(res.status).toBe(200);
+    expect(proxyInternalPostMock).toHaveBeenCalledWith({
+      path: "/api/v1/merchant-onboarding/ops/merchant-login",
+      body: { email: "user@example.com", password: "correct horse" },
+    });
     const raw = res.headers.get("set-cookie") ?? "";
     const match = raw.match(new RegExp(`${BACKOFFICE_SESSION_COOKIE_NAME}=([^;]+)`));
     expect(match).toBeTruthy();
@@ -199,7 +214,44 @@ describe("POST /api/auth/session (merchant portal)", () => {
       { algorithms: ["HS256"] },
     );
     expect(payload.role).toBe("merchant");
-    expect(payload.merchantId).toBe(mid);
+    expect(payload.merchantId).toBe("mrc_test");
+    expect(payload.onboardingStatus).toBe("ACTIVE");
+  });
+
+  it("returns 401 when upstream merchant login rejects credentials", async () => {
+    proxyInternalPostMock.mockRejectedValue(new ProxyUpstreamError(401, "{}", false));
+    const req = new NextRequest("http://localhost:3005/api/auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "merchant",
+        email: "a@b.co",
+        password: "wrong-password",
+      }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { message?: string };
+    expect(body.message).toBe("Invalid credentials");
+  });
+
+  it("returns 500 when upstream returns unknown onboardingStatus", async () => {
+    proxyInternalPostMock.mockResolvedValue({
+      merchantId: "mrc_test",
+      onboardingStatus: "NOT_A_REAL_STATUS",
+      rejectionReason: null,
+    });
+    const req = new NextRequest("http://localhost:3005/api/auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "merchant",
+        email: "a@b.co",
+        password: "secret123",
+      }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(500);
   });
 
   it("returns 404 for admin login body on merchant portal", async () => {
@@ -210,6 +262,7 @@ describe("POST /api/auth/session (merchant portal)", () => {
     });
     const res = await POST(req);
     expect(res.status).toBe(404);
+    expect(proxyInternalPostMock).not.toHaveBeenCalled();
   });
 });
 
@@ -218,13 +271,14 @@ describe("POST /api/auth/session (portal env mismatch)", () => {
 
   beforeEach(() => {
     resetLoginRateLimitForTests();
+    proxyInternalPostMock.mockReset();
     process.env = { ...snapshot };
     process.env.BACKOFFICE_PORTAL_MODE = "admin";
     process.env.NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE = "merchant";
     process.env.BACKOFFICE_SESSION_JWT_SECRET = "session-jwt-secret-dev-only-32b";
     process.env.BACKOFFICE_ADMIN_SECRET = "admin-secret";
     process.env.PSP_INTERNAL_API_SECRET = "internal-only";
-    process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET = "portal-hmac-secret-32bytes!!";
+    process.env.PSP_API_BASE_URL = "http://localhost:3000";
   });
 
   afterEach(() => {

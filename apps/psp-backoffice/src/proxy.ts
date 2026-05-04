@@ -7,10 +7,14 @@ import {
   getPortalLoginPath,
   sessionRoleMatchesPortal,
 } from "@/lib/server/portal-mode";
+import {
+  isMerchantOnboardingSessionStatus,
+  type MerchantOnboardingSessionStatus,
+} from "@/lib/server/auth/session-claims";
 
 type ProxySession =
   | { role: "admin" }
-  | { role: "merchant"; merchantId: string };
+  | { role: "merchant"; merchantId: string; onboardingStatus: MerchantOnboardingSessionStatus };
 
 function isDistinctSessionSecret(secret: string): boolean {
   const adminSecret = process.env.BACKOFFICE_ADMIN_SECRET;
@@ -47,9 +51,11 @@ async function readSessionFromRequest(req: NextRequest): Promise<ProxySession | 
     if (payload.role === "merchant" && typeof payload.merchantId === "string") {
       if (!sessionRoleMatchesPortal(portalMode, "merchant")) return null;
       const merchantId = payload.merchantId.trim();
-      if (merchantId) {
-        return { role: "merchant", merchantId };
+      const onboardingRaw = (payload as Record<string, unknown>)["onboardingStatus"];
+      if (!merchantId || !isMerchantOnboardingSessionStatus(onboardingRaw)) {
+        return null;
       }
+      return { role: "merchant", merchantId, onboardingStatus: onboardingRaw };
     }
     return null;
   } catch {
@@ -93,7 +99,20 @@ export async function proxy(req: NextRequest) {
     return NextResponse.redirect(new URL("/", req.nextUrl));
   }
 
+  if (pathname === "/merchant-status" && session?.role !== "merchant") {
+    return NextResponse.redirect(new URL(hasSession ? "/" : loginPath, req.nextUrl));
+  }
+
   if (session?.role === "merchant") {
+    if (session.onboardingStatus !== "ACTIVE") {
+      if (pathname !== "/merchant-status") {
+        return NextResponse.redirect(new URL("/merchant-status", req.nextUrl));
+      }
+      return NextResponse.next();
+    }
+    if (pathname === "/merchant-status") {
+      return NextResponse.redirect(new URL("/", req.nextUrl));
+    }
     if (pathname === "/monitor" || pathname.startsWith("/monitor/")) {
       return NextResponse.redirect(new URL("/", req.nextUrl));
     }

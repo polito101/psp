@@ -1,16 +1,18 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { signSession } from "@/lib/server/auth/session-claims";
+import {
+  isMerchantOnboardingSessionStatus,
+  signSession,
+} from "@/lib/server/auth/session-claims";
 import {
   BACKOFFICE_ADMIN_COOKIE_NAME,
   BACKOFFICE_SESSION_COOKIE_NAME,
   getSessionJwtSecret,
   MAX_ADMIN_SESSION_TOKEN_CHARS,
-  MERCHANT_PORTAL_TOKEN_REGEX,
   validateAdminTokenForSession,
-  validateMerchantPortalLogin,
 } from "@/lib/server/internal-route-auth";
+import { ProxyUpstreamError, proxyInternalPost } from "@/lib/server/backoffice-api";
 import { resolveLoginRateLimitKey } from "@/lib/server/client-ip";
 import { checkLoginRateLimit } from "@/lib/server/login-rate-limit";
 import {
@@ -27,8 +29,8 @@ const loginBodySchema = z.discriminatedUnion("mode", [
   }),
   z.object({
     mode: z.literal("merchant"),
-    merchantId: z.string().trim().min(1).max(64),
-    merchantToken: z.string().regex(MERCHANT_PORTAL_TOKEN_REGEX),
+    email: z.string().trim().email().max(320),
+    password: z.string().min(8).max(128),
   }),
 ]);
 
@@ -97,13 +99,40 @@ export async function POST(request: NextRequest) {
     }
     jwt = await signSession({ sub: "admin:session", role: "admin" }, jwtSecret);
   } else {
-    const validation = validateMerchantPortalLogin(data.merchantId, data.merchantToken);
-    if (!validation.ok) {
-      return validation.response;
+    let upstream: {
+      merchantId: string;
+      onboardingStatus: string;
+      rejectionReason: string | null;
+    };
+    try {
+      upstream = await proxyInternalPost<typeof upstream>({
+        path: "/api/v1/merchant-onboarding/ops/merchant-login",
+        body: { email: data.email.trim().toLowerCase(), password: data.password },
+      });
+    } catch (err) {
+      if (err instanceof ProxyUpstreamError && err.upstreamStatus === 401) {
+        return NextResponse.json({ message: "Invalid credentials" }, { status: 401 });
+      }
+      throw err;
     }
-    const merchantId = data.merchantId.trim();
+
+    if (!isMerchantOnboardingSessionStatus(upstream.onboardingStatus)) {
+      return NextResponse.json({ message: "Backoffice auth is misconfigured" }, { status: 500 });
+    }
+
+    const merchantId = upstream.merchantId.trim();
+    if (!merchantId) {
+      return NextResponse.json({ message: "Invalid credentials" }, { status: 401 });
+    }
+
     jwt = await signSession(
-      { sub: `merchant:${merchantId}`, role: "merchant", merchantId },
+      {
+        sub: `merchant:${merchantId}`,
+        role: "merchant",
+        merchantId,
+        onboardingStatus: upstream.onboardingStatus,
+        rejectionReason: upstream.rejectionReason ?? null,
+      },
       jwtSecret,
     );
   }

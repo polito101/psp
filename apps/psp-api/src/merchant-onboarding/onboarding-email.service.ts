@@ -16,6 +16,9 @@ export type SendOnboardingDecisionEmailInput = {
   decision: 'approved' | 'rejected';
   /** Obligatorio cuando `decision === 'rejected'` (validado en el servicio de dominio). */
   rejectionReason?: string;
+  /** Credenciales del portal merchant tras aprobación (evita bcrypt en el endpoint público de alta). */
+  portalLoginEmail?: string;
+  portalInitialPassword?: string;
 };
 
 export type SendOnboardingEmailResult =
@@ -78,6 +81,33 @@ export class OnboardingEmailService {
     input: SendOnboardingDecisionEmailInput,
   ): Promise<SendOnboardingEmailResult> {
     if (input.decision === 'approved') {
+      const loginEmail = input.portalLoginEmail?.trim();
+      const portalPassword = input.portalInitialPassword;
+      const hasPortalCredentials =
+        !!loginEmail &&
+        typeof portalPassword === 'string' &&
+        portalPassword.length > 0;
+
+      if (hasPortalCredentials) {
+        return this.sendViaResend({
+          to: input.to,
+          subject: 'Tu solicitud de onboarding ha sido aprobada — Finara',
+          html:
+            `<p>Hola ${escapeHtml(input.contactName)},</p>` +
+            '<p>Tu solicitud de onboarding ha sido <strong>aprobada</strong>. Tu cuenta merchant ya está activa y puedes operar con Finara.</p>' +
+            '<p>Acceso al portal merchant:</p>' +
+            `<p><strong>Email:</strong> ${escapeHtml(loginEmail)}</p>` +
+            `<p><strong>Contraseña inicial:</strong> ${escapeHtml(portalPassword)}</p>` +
+            '<p>Te recomendamos cambiar la contraseña cuando el producto lo permita. Si tienes dudas, contacta con soporte.</p>',
+          text:
+            `Hola ${input.contactName},\n\n` +
+            'Tu solicitud de onboarding ha sido aprobada. Tu cuenta merchant ya está activa.\n\n' +
+            `Email (portal): ${loginEmail}\n` +
+            `Contraseña inicial: ${portalPassword}\n\n` +
+            '— Finara',
+        });
+      }
+
       return this.sendViaResend({
         to: input.to,
         subject: 'Tu solicitud de onboarding ha sido aprobada — Finara',

@@ -189,7 +189,13 @@ describe("proxyInternalGet RBAC", () => {
     await proxyInternalGet<{ items: unknown[] }>({
       path: "/api/v2/payments/ops/transactions",
       searchParams: new URLSearchParams({ merchantId: "m1" }),
-      backofficeScope: { sub: "m", role: "merchant", merchantId: "m1" },
+      backofficeScope: {
+        sub: "m",
+        role: "merchant",
+        merchantId: "m1",
+        onboardingStatus: "ACTIVE",
+        rejectionReason: null,
+      },
     });
 
     const init = fetchSpy.mock.calls[0]![1] as RequestInit;
