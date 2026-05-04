@@ -80,14 +80,14 @@ export function MerchantOnboardingForm({ token }: MerchantOnboardingFormProps) {
     }
 
     const formData = new FormData(event.currentTarget);
-    const country = String(formData.get("country") ?? "").trim().toUpperCase();
-    const body = {
-      tradeName: String(formData.get("tradeName") ?? "").trim(),
-      legalName: String(formData.get("legalName") ?? "").trim(),
-      country,
-      website: String(formData.get("website") ?? "").trim(),
-      businessType: String(formData.get("businessType") ?? "").trim(),
+    const websiteUrlRaw = String(formData.get("websiteUrl") ?? "").trim();
+    const body: Record<string, string> = {
+      companyName: String(formData.get("companyName") ?? "").trim(),
+      industry: String(formData.get("industry") ?? "").trim(),
     };
+    if (websiteUrlRaw) {
+      body.websiteUrl = websiteUrlRaw;
+    }
 
     setSubmitState("submitting");
     submitAbortRef.current?.abort();
@@ -150,7 +150,7 @@ export function MerchantOnboardingForm({ token }: MerchantOnboardingFormProps) {
             </div>
             <div className="min-w-0 text-left">
               <h2 className="text-lg font-semibold text-white">Perfil de negocio</h2>
-              <p className="mt-1 text-sm text-[#8b8baa]">Datos legales y comerciales de la empresa.</p>
+              <p className="mt-1 text-sm text-[#8b8baa]">Nombre de empresa y sector para la revisión comercial.</p>
             </div>
           </div>
 
@@ -184,95 +184,63 @@ export function MerchantOnboardingForm({ token }: MerchantOnboardingFormProps) {
             </div>
           ) : (
             <form className="space-y-6" onSubmit={handleSubmit}>
-              <div className="grid gap-5 sm:grid-cols-2">
-                <div className="space-y-2 sm:col-span-1">
-                  <label className={labelClass} htmlFor="tradeName">
-                    Nombre comercial
-                  </label>
-                  <Input
-                    id="tradeName"
-                    name="tradeName"
-                    minLength={2}
-                    maxLength={160}
-                    required
-                    autoComplete="organization"
-                    className={fieldClass}
-                  />
-                </div>
-                <div className="space-y-2 sm:col-span-1">
-                  <label className={labelClass} htmlFor="legalName">
-                    Razón social
-                  </label>
-                  <Input
-                    id="legalName"
-                    name="legalName"
-                    minLength={2}
-                    maxLength={200}
-                    required
-                    autoComplete="organization"
-                    className={fieldClass}
-                  />
-                </div>
-              </div>
-
-              <div className="grid gap-5 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <label className={labelClass} htmlFor="country">
-                    País
-                  </label>
-                  <Input
-                    id="country"
-                    name="country"
-                    maxLength={2}
-                    minLength={2}
-                    pattern="[A-Za-z]{2}"
-                    placeholder="ES"
-                    required
-                    autoComplete="country"
-                    className={cn(fieldClass, "uppercase")}
-                  />
-                  <p className="text-xs text-[#8b8baa]">Código ISO de 2 letras, por ejemplo ES.</p>
-                </div>
-                <div className="space-y-2">
-                  <label className={labelClass} htmlFor="businessType">
-                    Tipo de negocio
-                  </label>
-                  <Select
-                    id="businessType"
-                    name="businessType"
-                    required
-                    defaultValue=""
-                    className={cn(fieldClass, "py-0")}
-                  >
-                    <option value="" disabled className="bg-[#111118] text-slate-200">
-                      Selecciona una opción
-                    </option>
-                    <option value="ecommerce" className="bg-[#111118]">
-                      Ecommerce
-                    </option>
-                    <option value="marketplace" className="bg-[#111118]">
-                      Marketplace
-                    </option>
-                    <option value="retail" className="bg-[#111118]">
-                      Retail
-                    </option>
-                    <option value="services" className="bg-[#111118]">
-                      Servicios
-                    </option>
-                    <option value="other" className="bg-[#111118]">
-                      Otro
-                    </option>
-                  </Select>
-                </div>
+              <div className="space-y-2">
+                <label className={labelClass} htmlFor="companyName">
+                  Nombre de la empresa
+                </label>
+                <Input
+                  id="companyName"
+                  name="companyName"
+                  minLength={2}
+                  maxLength={160}
+                  required
+                  autoComplete="organization"
+                  className={fieldClass}
+                />
               </div>
 
               <div className="space-y-2">
-                <label className={labelClass} htmlFor="website">
+                <label className={labelClass} htmlFor="industry">
+                  Sector
+                </label>
+                <Select
+                  id="industry"
+                  name="industry"
+                  required
+                  defaultValue=""
+                  className={cn(fieldClass, "py-0")}
+                >
+                  <option value="" disabled className="bg-[#111118] text-slate-200">
+                    Selecciona una opción
+                  </option>
+                  <option value="CLOUD_COMPUTING" className="bg-[#111118]">
+                    Cloud computing
+                  </option>
+                  <option value="CRYPTO" className="bg-[#111118]">
+                    Crypto
+                  </option>
+                  <option value="FOREX" className="bg-[#111118]">
+                    Forex
+                  </option>
+                  <option value="GAMBLING" className="bg-[#111118]">
+                    Gambling
+                  </option>
+                  <option value="PSP" className="bg-[#111118]">
+                    PSP
+                  </option>
+                  <option value="OTHER" className="bg-[#111118]">
+                    Otro
+                  </option>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <label className={labelClass} htmlFor="websiteUrl">
                   Sitio web <span className="font-normal text-[#8b8baa]">(opcional)</span>
                 </label>
                 <Input
-                  id="website"
-                  name="website"
+                  id="websiteUrl"
+                  name="websiteUrl"
                   type="url"
                   maxLength={2048}
                   placeholder="https://example.com"

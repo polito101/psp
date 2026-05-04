@@ -23,6 +23,7 @@ describe('MerchantOnboardingService', () => {
   const createTx = () => ({
     $executeRaw: jest.fn().mockResolvedValue(undefined),
     merchant: {
+      findUnique: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue({ id: 'merchant_1', name: 'Ada Lovelace' }),
       update: jest.fn().mockResolvedValue({ id: 'merchant_1', isActive: true }),
     },
@@ -71,6 +72,7 @@ describe('MerchantOnboardingService', () => {
       prisma: {
         merchant: {
           findFirst: jest.fn().mockResolvedValue(null),
+          findUnique: jest.fn().mockResolvedValue(null),
         },
         merchantOnboardingApplication: {
           findFirst: jest.fn().mockResolvedValue(null),
@@ -129,7 +131,7 @@ describe('MerchantOnboardingService', () => {
 
   it('creates merchant inactive, application, checklist, token, and events', async () => {
     jest.useFakeTimers().setSystemTime(now.getTime());
-    const { service, tx, tokenService, emailService } = createService();
+    const { service, prisma, tx, tokenService, emailService } = createService();
 
     const result = await service.createApplication({
       name: 'Ada Lovelace',
@@ -138,6 +140,10 @@ describe('MerchantOnboardingService', () => {
     });
 
     expect(tx.$executeRaw).toHaveBeenCalled();
+    expect(prisma.merchant.findUnique).toHaveBeenCalledWith({
+      where: { email: 'ada@example.com' },
+      select: { id: true },
+    });
     expect(tx.merchantOnboardingApplication.findFirst).toHaveBeenCalledWith({
       where: { contactEmail: 'ada@example.com' },
       select: { id: true },
@@ -145,9 +151,13 @@ describe('MerchantOnboardingService', () => {
     const createdMerchantData = tx.merchant.create.mock.calls[0][0].data as Record<string, unknown>;
     expect(createdMerchantData).toMatchObject({
       name: 'Ada Lovelace',
+      email: 'ada@example.com',
+      contactName: 'Ada Lovelace',
+      contactPhone: '+34600000000',
       isActive: false,
       deactivatedAt: now,
     });
+    expect(createdMerchantData.mid).toEqual(expect.any(String));
     expect(createdMerchantData).not.toHaveProperty('merchantPortalPasswordHash');
     expect(tx.merchantOnboardingApplication.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -294,34 +304,51 @@ describe('MerchantOnboardingService', () => {
     });
   });
 
-  it('returns neutral success for duplicate public emails without exposing records', async () => {
+  it('rejects createApplication when contact email is already in use (onboarding application)', async () => {
     const { service, prisma, tx, emailService } = createService();
     prisma.merchantOnboardingApplication.findFirst.mockResolvedValue({ id: 'existing_app' });
 
-    const result = await service.createApplication({
-      name: 'Ada Lovelace',
-      email: 'ADA@example.com',
-      phone: '+34600000000',
-    });
+    await expect(
+      service.createApplication({
+        name: 'Ada Lovelace',
+        email: 'ADA@EXAMPLE.COM',
+        phone: '+34600000000',
+      }),
+    ).rejects.toThrow(ConflictException);
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(tx.merchant.create).not.toHaveBeenCalled();
     expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      ok: true,
-      message: 'If the email can receive onboarding links, we will send next steps shortly.',
-    });
   });
 
-  it('returns neutral success when another request commits the same contact_email under the advisory lock', async () => {
+  it('rejects createApplication when merchant email is already in use', async () => {
+    const { service, prisma, tx, emailService } = createService();
+    prisma.merchant.findUnique.mockResolvedValue({ id: 'merchant_existing' });
+
+    await expect(
+      service.createApplication({
+        name: 'Ada Lovelace',
+        email: 'ada@example.com',
+        phone: '+34600000000',
+      }),
+    ).rejects.toThrow(ConflictException);
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(tx.merchant.create).not.toHaveBeenCalled();
+    expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
+  });
+
+  it('rejects when another request commits the same contact_email under the advisory lock', async () => {
     const { service, tx, emailService } = createService();
     tx.merchantOnboardingApplication.findFirst.mockResolvedValueOnce({ id: 'winner_app' });
 
-    const result = await service.createApplication({
-      name: 'Ada Lovelace',
-      email: 'ada@example.com',
-      phone: '+34600000000',
-    });
+    await expect(
+      service.createApplication({
+        name: 'Ada Lovelace',
+        email: 'ada@example.com',
+        phone: '+34600000000',
+      }),
+    ).rejects.toThrow(ConflictException);
 
     expect(tx.$executeRaw).toHaveBeenCalled();
     expect(tx.merchantOnboardingApplication.findFirst).toHaveBeenCalledWith({
@@ -330,13 +357,9 @@ describe('MerchantOnboardingService', () => {
     });
     expect(tx.merchant.create).not.toHaveBeenCalled();
     expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      ok: true,
-      message: 'If the email can receive onboarding links, we will send next steps shortly.',
-    });
   });
 
-  it('returns neutral success when DB unique constraint on contact_email races past findFirst', async () => {
+  it('throws Conflict when DB unique constraint on contact_email races past findFirst', async () => {
     const dupError = {
       name: 'PrismaClientKnownRequestError',
       message: 'Unique constraint failed on the fields: (`contact_email`)',
@@ -347,18 +370,16 @@ describe('MerchantOnboardingService', () => {
     const { service, prisma, tx, emailService } = createService();
     prisma.$transaction.mockRejectedValueOnce(dupError);
 
-    const result = await service.createApplication({
-      name: 'Ada Lovelace',
-      email: 'ada@example.com',
-      phone: '+34600000000',
-    });
+    await expect(
+      service.createApplication({
+        name: 'Ada Lovelace',
+        email: 'ada@example.com',
+        phone: '+34600000000',
+      }),
+    ).rejects.toThrow(ConflictException);
 
     expect(tx.merchant.create).not.toHaveBeenCalled();
     expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      ok: true,
-      message: 'If the email can receive onboarding links, we will send next steps shortly.',
-    });
   });
 
   it('rethrows P2002 that is not the onboarding contact_email unique violation', async () => {
@@ -394,16 +415,15 @@ describe('MerchantOnboardingService', () => {
     });
     tx.merchantOnboardingApplication.update.mockResolvedValue({
       id: 'app_1',
+      merchantId: 'merchant_1',
       status: 'IN_REVIEW',
       tradeName: 'Ada Shop',
     });
 
     const result = await service.submitBusinessProfile('plain_token', {
-      tradeName: 'Ada Shop',
-      legalName: 'Ada Shop SL',
-      country: 'ES',
-      website: 'https://adashop.example',
-      businessType: 'ecommerce',
+      companyName: 'Ada Shop',
+      industry: 'FOREX',
+      websiteUrl: 'https://adashop.example',
     });
 
     expect(tx.merchantOnboardingToken.updateMany).toHaveBeenCalledWith({
@@ -420,12 +440,20 @@ describe('MerchantOnboardingService', () => {
       data: expect.objectContaining({
         status: 'IN_REVIEW',
         tradeName: 'Ada Shop',
-        legalName: 'Ada Shop SL',
-        country: 'ES',
+        legalName: null,
+        country: null,
         website: 'https://adashop.example',
-        businessType: 'ecommerce',
+        businessType: 'FOREX',
         submittedAt: now,
       }),
+    });
+    expect(tx.merchant.update).toHaveBeenCalledWith({
+      where: { id: 'merchant_1' },
+      data: {
+        name: 'Ada Shop',
+        industry: 'FOREX',
+        websiteUrl: 'https://adashop.example',
+      },
     });
     expect(tx.merchantOnboardingChecklistItem.updateMany).toHaveBeenCalledWith({
       where: { applicationId: 'app_1', key: 'business_profile_submitted' },
@@ -457,11 +485,9 @@ describe('MerchantOnboardingService', () => {
 
     await expect(
       service.submitBusinessProfile('plain_token', {
-        tradeName: 'Ada Shop',
-        legalName: 'Ada Shop SL',
-        country: 'ES',
-        website: 'https://adashop.example',
-        businessType: 'ecommerce',
+        companyName: 'Ada Shop',
+        industry: 'FOREX',
+        websiteUrl: 'https://adashop.example',
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(tx.merchantOnboardingApplication.update).not.toHaveBeenCalled();

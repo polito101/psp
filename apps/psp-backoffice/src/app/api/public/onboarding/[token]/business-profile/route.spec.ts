@@ -30,7 +30,7 @@ describe("POST /api/public/onboarding/[token]/business-profile", () => {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tradeName: "A", country: "ESP" }),
+        body: JSON.stringify({ companyName: "A", industry: "FOREX" }),
       },
     );
 
@@ -48,11 +48,9 @@ describe("POST /api/public/onboarding/[token]/business-profile", () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          tradeName: "Ada Shop",
-          legalName: "Ada Shop SL",
-          country: "es",
-          website: "",
-          businessType: "ecommerce",
+          companyName: "Ada Shop",
+          industry: "FOREX",
+          websiteUrl: "",
         }),
       },
     );
@@ -63,11 +61,9 @@ describe("POST /api/public/onboarding/[token]/business-profile", () => {
     expect(proxyPublicPostMock).toHaveBeenCalledWith({
       path: "/api/v1/merchant-onboarding/tokens/tok_123/business-profile",
       body: {
-        tradeName: "Ada Shop",
-        legalName: "Ada Shop SL",
-        country: "ES",
-        website: undefined,
-        businessType: "ecommerce",
+        companyName: "Ada Shop",
+        industry: "FOREX",
+        websiteUrl: undefined,
       },
     });
   });
@@ -86,11 +82,9 @@ describe("POST /api/public/onboarding/[token]/business-profile", () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          tradeName: "Ada Shop",
-          legalName: "Ada Shop SL",
-          country: "ES",
-          website: "https://ada.example",
-          businessType: "ecommerce",
+          companyName: "Ada Shop",
+          industry: "FOREX",
+          websiteUrl: "https://ada.example",
         }),
       },
     );

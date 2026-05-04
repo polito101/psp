@@ -1,33 +1,21 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, IsUrl, Length, MaxLength, MinLength } from 'class-validator';
+import { IsEnum, IsOptional, IsString, IsUrl, MaxLength, MinLength } from 'class-validator';
+import { MerchantIndustry } from '../../generated/prisma/enums';
 
 export class SubmitBusinessProfileDto {
-  @ApiProperty({ example: 'Ada Shop' })
+  @ApiProperty({ example: 'Levels Ltd' })
   @IsString()
   @MinLength(2)
   @MaxLength(160)
-  tradeName!: string;
+  companyName!: string;
 
-  @ApiProperty({ example: 'Ada Shop SL' })
-  @IsString()
-  @MinLength(2)
-  @MaxLength(200)
-  legalName!: string;
+  @ApiProperty({ enum: MerchantIndustry, example: MerchantIndustry.FOREX })
+  @IsEnum(MerchantIndustry)
+  industry!: MerchantIndustry;
 
-  @ApiProperty({ example: 'ES' })
-  @IsString()
-  @Length(2, 2)
-  country!: string;
-
-  @ApiPropertyOptional({ example: 'https://adashop.example' })
+  @ApiPropertyOptional({ example: 'https://levels.example' })
   @IsOptional()
   @IsUrl({ require_tld: false })
   @MaxLength(2048)
-  website?: string;
-
-  @ApiProperty({ example: 'ecommerce' })
-  @IsString()
-  @MinLength(2)
-  @MaxLength(120)
-  businessType!: string;
+  websiteUrl?: string;
 }
