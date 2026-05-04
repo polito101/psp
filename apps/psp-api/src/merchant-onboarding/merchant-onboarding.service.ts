@@ -10,6 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import { createHash, randomBytes } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import { encryptUtf8 } from '../crypto/secret-box';
+import { allocateUniqueMerchantMid } from '../merchants/allocate-unique-merchant-mid';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   MerchantOnboardingActorType,
@@ -186,9 +187,11 @@ export class MerchantOnboardingService {
           return { kind: 'duplicate' };
         }
 
+        const mid = await allocateUniqueMerchantMid(tx);
         const merchant = await tx.merchant.create({
           data: {
             name: dto.name,
+            mid,
             apiKeyHash: placeholderHash,
             webhookSecretCiphertext,
             isActive: false,
