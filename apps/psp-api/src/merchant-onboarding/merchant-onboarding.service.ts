@@ -505,7 +505,8 @@ export class MerchantOnboardingService {
    */
   async approveApplication(applicationId: string) {
     const now = new Date();
-    let portalInitialPasswordPlain: string | undefined;
+    const portalInitialPasswordPlain = randomBytes(18).toString('base64url');
+    const merchantPortalPasswordHash = await bcrypt.hash(portalInitialPasswordPlain, 12);
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const claim = await tx.merchantOnboardingApplication.updateMany({
@@ -537,9 +538,6 @@ export class MerchantOnboardingService {
 
       await this.createDecisionEvent(tx, application.id, 'application_approved', 'Solicitud aprobada.');
 
-      portalInitialPasswordPlain = randomBytes(18).toString('base64url');
-      const merchantPortalPasswordHash = await bcrypt.hash(portalInitialPasswordPlain, 12);
-
       await tx.merchant.update({
         where: { id: application.merchantId },
         data: {
@@ -569,10 +567,6 @@ export class MerchantOnboardingService {
 
       return updated;
     });
-
-    if (!portalInitialPasswordPlain) {
-      throw new Error('merchant_onboarding.approve_missing_portal_password');
-    }
 
     await this.notifyMerchantDecisionEmail(updated.id, {
       to: updated.contactEmail,

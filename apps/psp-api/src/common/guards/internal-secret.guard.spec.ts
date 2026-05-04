@@ -284,6 +284,19 @@ describe('InternalSecretGuard', () => {
     ).toBe(true);
   });
 
+  it('requires admin role for merchant-onboarding ops paths that extend merchant-login prefix', () => {
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+    expect(() =>
+      guard.canActivate(
+        makeContext(
+          { 'x-internal-secret': VALID_SECRET },
+          '/api/v1/merchant-onboarding/ops/merchant-login-audit',
+          {},
+        ),
+      ),
+    ).toThrow(ForbiddenException);
+  });
+
   it('throws Forbidden when non-ops request sends merchant backoffice role', () => {
     const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
     expect(() =>

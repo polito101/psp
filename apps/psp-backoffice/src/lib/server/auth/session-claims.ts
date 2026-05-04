@@ -1,5 +1,36 @@
 import { SignJWT, jwtVerify, type JWTPayload } from "jose";
 
+/**
+ * Techo de bytes UTF-8 para `rejectionReason` dentro del JWT de cookie.
+ * Las cookies suelen limitarse ~4096 B; el payload ya incluye sub, merchantId, claims y la firma.
+ */
+export const MAX_REJECTION_REASON_JWT_UTF8_BYTES = 768;
+
+/**
+ * Recorta `input` al máximo de bytes UTF-8 sin partir una secuencia multibyte.
+ */
+export function truncateUtf8ToMaxBytes(input: string, maxBytes: number): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(input).length <= maxBytes) {
+    return input;
+  }
+  let low = 0;
+  let high = input.length;
+  let best = 0;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const slice = input.slice(0, mid);
+    const len = encoder.encode(slice).length;
+    if (len <= maxBytes) {
+      best = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return input.slice(0, best);
+}
+
 /** Alineado con `MerchantOnboardingStatus` en la API (expediente del merchant). */
 export type MerchantOnboardingSessionStatus =
   | "ACCOUNT_CREATED"
@@ -118,7 +149,13 @@ export async function signSession(claims: SessionClaims, secret: string): Promis
       ? {
           merchantId: claims.merchantId,
           onboardingStatus: claims.onboardingStatus,
-          rejectionReason: claims.rejectionReason,
+          rejectionReason:
+            claims.rejectionReason === null
+              ? null
+              : truncateUtf8ToMaxBytes(
+                  claims.rejectionReason,
+                  MAX_REJECTION_REASON_JWT_UTF8_BYTES,
+                ),
         }
       : {}),
   })

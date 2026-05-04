@@ -49,9 +49,14 @@ export function isPaymentsV2OpsPath(path: string): boolean {
   return path.includes("/payments/ops/");
 }
 
+/** Match exacto del login merchant interno (`.../ops/merchant-login`), sin sufijos tipo `-audit`. */
+function isMerchantOnboardingOpsMerchantLoginPath(path: string): boolean {
+  return /(^|\/)merchant-onboarding\/ops\/merchant-login$/.test(path);
+}
+
 /** Incluye payments ops, settlements y merchants ops: el upstream exige cabeceras RBAC fail-closed. */
 export function requiresBackofficeScopePath(path: string): boolean {
-  if (path.includes("/merchant-onboarding/ops/merchant-login")) {
+  if (isMerchantOnboardingOpsMerchantLoginPath(path)) {
     return false;
   }
   return (
