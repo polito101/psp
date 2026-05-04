@@ -1,4 +1,11 @@
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomBytes } from 'crypto';
 import * as bcrypt from 'bcryptjs';
@@ -498,6 +505,7 @@ export class MerchantOnboardingService {
    */
   async approveApplication(applicationId: string) {
     const now = new Date();
+    let portalInitialPasswordPlain: string | undefined;
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const claim = await tx.merchantOnboardingApplication.updateMany({
@@ -529,9 +537,16 @@ export class MerchantOnboardingService {
 
       await this.createDecisionEvent(tx, application.id, 'application_approved', 'Solicitud aprobada.');
 
+      portalInitialPasswordPlain = randomBytes(18).toString('base64url');
+      const merchantPortalPasswordHash = await bcrypt.hash(portalInitialPasswordPlain, 12);
+
       await tx.merchant.update({
         where: { id: application.merchantId },
-        data: { isActive: true, deactivatedAt: null },
+        data: {
+          isActive: true,
+          deactivatedAt: null,
+          merchantPortalPasswordHash,
+        },
       });
 
       const updated = await tx.merchantOnboardingApplication.update({
@@ -555,10 +570,16 @@ export class MerchantOnboardingService {
       return updated;
     });
 
+    if (!portalInitialPasswordPlain) {
+      throw new Error('merchant_onboarding.approve_missing_portal_password');
+    }
+
     await this.notifyMerchantDecisionEmail(updated.id, {
       to: updated.contactEmail,
       contactName: updated.contactName,
       decision: 'approved',
+      portalLoginEmail: updated.contactEmail,
+      portalInitialPassword: portalInitialPasswordPlain,
     });
 
     return updated;
@@ -690,6 +711,39 @@ export class MerchantOnboardingService {
     return { ok: true, message: PUBLIC_RESEND_MESSAGE };
   }
 
+  /**
+   * Valida credenciales del portal merchant por email de contacto del expediente más reciente (interno).
+   */
+  async validateMerchantPortalLogin(email: string, password: string) {
+    const contactEmail = normalizeEmail(email);
+    const application = await this.prisma.merchantOnboardingApplication.findFirst({
+      where: { contactEmail },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        merchantId: true,
+        status: true,
+        rejectionReason: true,
+        merchant: { select: { merchantPortalPasswordHash: true } },
+      },
+    });
+
+    const hash = application?.merchant?.merchantPortalPasswordHash;
+    if (!application || hash == null) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    const ok = await bcrypt.compare(password, hash);
+    if (!ok) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    return {
+      merchantId: application.merchantId,
+      onboardingStatus: application.status as string,
+      rejectionReason: application.rejectionReason,
+    };
+  }
+
   private publicCreateResponse(onboardingUrl?: string) {
     return {
       ok: true,
@@ -706,6 +760,8 @@ export class MerchantOnboardingService {
     to: string;
     contactName: string;
     onboardingUrl: string;
+    loginEmail?: string;
+    initialPassword?: string;
   }): Promise<EmailDeliveryResult> {
     try {
       return await this.emailService.sendOnboardingLink(input);
@@ -721,6 +777,8 @@ export class MerchantOnboardingService {
       contactName: string;
       decision: 'approved' | 'rejected';
       rejectionReason?: string;
+      portalLoginEmail?: string;
+      portalInitialPassword?: string;
     },
   ): Promise<void> {
     let emailResult: EmailDeliveryResult;
@@ -730,6 +788,8 @@ export class MerchantOnboardingService {
         contactName: input.contactName,
         decision: input.decision,
         rejectionReason: input.rejectionReason,
+        portalLoginEmail: input.portalLoginEmail,
+        portalInitialPassword: input.portalInitialPassword,
       });
     } catch (error) {
       emailResult = { ok: false, errorMessage: getErrorMessage(error) };

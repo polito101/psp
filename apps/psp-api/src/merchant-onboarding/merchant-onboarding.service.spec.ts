@@ -1,5 +1,12 @@
-import { BadRequestException, ConflictException, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Logger,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as bcrypt from 'bcryptjs';
 import { MerchantOnboardingService } from './merchant-onboarding.service';
 import { OnboardingEmailService } from './onboarding-email.service';
 import { OnboardingTokenService } from './onboarding-token.service';
@@ -135,13 +142,13 @@ describe('MerchantOnboardingService', () => {
       where: { contactEmail: 'ada@example.com' },
       select: { id: true },
     });
-    expect(tx.merchant.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        name: 'Ada Lovelace',
-        isActive: false,
-        deactivatedAt: now,
-      }),
+    const createdMerchantData = tx.merchant.create.mock.calls[0][0].data as Record<string, unknown>;
+    expect(createdMerchantData).toMatchObject({
+      name: 'Ada Lovelace',
+      isActive: false,
+      deactivatedAt: now,
     });
+    expect(createdMerchantData).not.toHaveProperty('merchantPortalPasswordHash');
     expect(tx.merchantOnboardingApplication.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         merchantId: 'merchant_1',
@@ -539,7 +546,11 @@ describe('MerchantOnboardingService', () => {
     });
     expect(tx.merchant.update).toHaveBeenCalledWith({
       where: { id: 'merchant_1' },
-      data: { isActive: true, deactivatedAt: null },
+      data: {
+        isActive: true,
+        deactivatedAt: null,
+        merchantPortalPasswordHash: expect.any(String),
+      },
     });
     expect(tx.merchantOnboardingEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -559,6 +570,8 @@ describe('MerchantOnboardingService', () => {
       to: 'ada@example.com',
       contactName: 'Ada Lovelace',
       decision: 'approved',
+      portalLoginEmail: 'ada@example.com',
+      portalInitialPassword: expect.any(String),
     });
     expect(prisma.merchantOnboardingEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -929,5 +942,75 @@ describe('MerchantOnboardingService', () => {
     expect(prisma.merchantOnboardingApplication.count).not.toHaveBeenCalled();
     expect(result.items).toHaveLength(50);
     expect(result.total).toBe(51);
+  });
+
+  describe('validateMerchantPortalLogin', () => {
+    it('returns merchant id, onboarding status and rejection reason when password matches', async () => {
+      const { service, prisma } = createService();
+      const password = 'validpass12';
+      const hash = await bcrypt.hash(password, 4);
+      prisma.merchantOnboardingApplication.findFirst.mockResolvedValue({
+        merchantId: 'm_1',
+        status: 'IN_REVIEW',
+        rejectionReason: 'Prior check',
+        merchant: { merchantPortalPasswordHash: hash },
+      });
+
+      const result = await service.validateMerchantPortalLogin('  USER@EXAMPLE.COM ', password);
+
+      expect(prisma.merchantOnboardingApplication.findFirst).toHaveBeenCalledWith({
+        where: { contactEmail: 'user@example.com' },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          merchantId: true,
+          status: true,
+          rejectionReason: true,
+          merchant: { select: { merchantPortalPasswordHash: true } },
+        },
+      });
+      expect(result).toEqual({
+        merchantId: 'm_1',
+        onboardingStatus: 'IN_REVIEW',
+        rejectionReason: 'Prior check',
+      });
+    });
+
+    it('throws Unauthorized when password does not match', async () => {
+      const { service, prisma } = createService();
+      const hash = await bcrypt.hash('othersecret', 4);
+      prisma.merchantOnboardingApplication.findFirst.mockResolvedValue({
+        merchantId: 'm_1',
+        status: 'APPROVED',
+        rejectionReason: null,
+        merchant: { merchantPortalPasswordHash: hash },
+      });
+
+      await expect(
+        service.validateMerchantPortalLogin('user@example.com', 'wrongpassword'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+
+    it('throws Unauthorized when no application exists for email', async () => {
+      const { service, prisma } = createService();
+      prisma.merchantOnboardingApplication.findFirst.mockResolvedValue(null);
+
+      await expect(service.validateMerchantPortalLogin('none@example.com', 'password12')).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+    });
+
+    it('throws Unauthorized when merchant portal password hash is missing', async () => {
+      const { service, prisma } = createService();
+      prisma.merchantOnboardingApplication.findFirst.mockResolvedValue({
+        merchantId: 'm_1',
+        status: 'ACCOUNT_CREATED',
+        rejectionReason: null,
+        merchant: { merchantPortalPasswordHash: null },
+      });
+
+      await expect(
+        service.validateMerchantPortalLogin('user@example.com', 'password12'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    });
   });
 });

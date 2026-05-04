@@ -110,11 +110,33 @@ export function AppShell({
   const showLoginLink = !session && pathname !== loginHref;
 
   const isEntryPage = pathname === "/login" || pathname === "/admin/login";
+  const isMerchantStatusPage = pathname === "/merchant-status";
   if (pathname.startsWith("/onboarding/")) {
     return <div className="min-h-screen">{children}</div>;
   }
   if (isEntryPage) {
     return <div className="min-h-screen bg-slate-50">{children}</div>;
+  }
+  if (isMerchantStatusPage) {
+    return (
+      <div className="min-h-screen bg-slate-50">
+        <header className="border-b border-slate-200 bg-white">
+          <div className="mx-auto flex w-full max-w-[1400px] flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
+            <p className="text-sm font-medium text-slate-800">Estado del expediente</p>
+            <button
+              type="button"
+              onClick={logout}
+              title="Elimina la cookie de sesión JWT (backoffice_session)"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            >
+              <LogOut size={14} aria-hidden />
+              Cerrar sesión
+            </button>
+          </div>
+        </header>
+        <div className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6">{children}</div>
+      </div>
+    );
   }
 
   return (

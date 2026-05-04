@@ -25,19 +25,13 @@ Variables:
 - `PSP_INTERNAL_API_SECRET`: secreto interno usado solo en server-side BFF.
 - `BACKOFFICE_ADMIN_SECRET`: credencial de login **admin** (solo modo `admin`; omitir en deploy solo-merchant).
 - `BACKOFFICE_SESSION_JWT_SECRET`: firma del JWT de sesión en cookie HttpOnly (distinta de `PSP_INTERNAL_API_SECRET` y de `BACKOFFICE_ADMIN_SECRET` si aplica).
-- `BACKOFFICE_MERCHANT_PORTAL_SECRET`: clave HMAC para login **merchant** (token con caducidad; ver abajo); omitir en deploy solo-admin.
 - `NEXT_PUBLIC_TRANSACTIONS_REFRESH_MS`: intervalo de auto-refresh del monitor.
 
-Login merchant: el campo **merchantToken** debe ser `expUnix:hexHmac` donde `hexHmac` = HMAC-SHA256 en hex de la cadena `` `${merchantId}.${expUnix}` `` con `BACKOFFICE_MERCHANT_PORTAL_SECRET`. `expUnix` debe estar dentro de unos minutos del reloj del servidor (anti-replay).
-
-```bash
-# merchantId = mrc_abc (ajusta BACKOFFICE_MERCHANT_PORTAL_SECRET en el entorno)
-node -e "const c=require('crypto');const id=process.argv[1];const s=process.env.BACKOFFICE_MERCHANT_PORTAL_SECRET;const exp=Math.floor(Date.now()/1000);const sig=c.createHmac('sha256',s).update(id+'.'+exp,'utf8').digest('hex');console.log(exp+':'+sig)" "mrc_abc"
-```
+Login **merchant**: correo de contacto del onboarding y contraseña inicial enviada por email al crear la solicitud. El BFF valida contra `psp-api` (`merchant-login` interno) y emite JWT con `onboardingStatus` / `rejectionReason`. Si el expediente no está `ACTIVE`, el proxy solo permite la página **`/merchant-status`** hasta activación.
 
 ## Rutas principales
 
-- **`/login`** — Portal **merchant** (`BACKOFFICE_PORTAL_MODE=merchant`): solo credenciales merchant; redirige a **`/admin/login`** en portal admin.
+- **`/login`** — Portal **merchant**: correo + contraseña del alta.
 - **`/admin/login`** — Portal **admin** (`BACKOFFICE_PORTAL_MODE=admin`): formulario mínimo con `BACKOFFICE_ADMIN_SECRET`.
 - Sin sesión válida alineada al portal, `/api/internal/*` responde **401/403** y el proxy de página redirige al login del portal.
 - `/` — Inicio con estadísticas del día (UTC) y gráfico de volumen hoy vs ayer.
@@ -72,6 +66,6 @@ Salida esperada: `src/lib/api/generated/openapi.d.ts`.
 - El secreto vive solo en variables server-side de Next.
 - Los endpoints `src/app/api/internal/*` exigen `Authorization: Bearer <JWT_de_sesión>` o cookie HttpOnly `backoffice_session=<JWT>`. Hacia `psp-api`, las rutas `/api/v2/payments/ops/*` llevan siempre `X-Backoffice-Role` (y `X-Backoffice-Merchant-Id` si el rol es merchant).
 - En local con portal **admin** (`BACKOFFICE_PORTAL_MODE=admin` en `.env.local`), abre **`/admin/login`** o `POST /api/auth/session` con `{ "mode": "admin", "token": "..." }`.
-- En local con portal **merchant** (default), usa **`/login`** o `POST /api/auth/session` con `{ "mode": "merchant", "merchantId": "...", "merchantToken": "..." }`; el cliente en `src/lib/api/client.ts` envía `credentials: "include"` en las peticiones al BFF.
+- En local con portal **merchant** (default), usa **`/login`** o `POST /api/auth/session` con `{ "mode": "merchant", "email": "...", "password": "..." }`; el cliente en `src/lib/api/client.ts` envía `credentials: "include"` en las peticiones al BFF.
 - Playwright/CI del repo arranca el panel en modo **admin** para el smoke de `/merchants`; ver `playwright.config.ts` y `BACKOFFICE_CONTEXT.md`.
 - En producción, no exponer el backoffice sin un gateway/SSO delante que inyecte la credencial (header o cookie) para usuarios autenticados/autorizados.

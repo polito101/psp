@@ -10,6 +10,77 @@ describe('OnboardingEmailService', () => {
     jest.restoreAllMocks();
   });
 
+  it('includes escaped portal credentials and onboarding link in the email body', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers(),
+      json: jest.fn().mockResolvedValue({ id: 'email_1' }),
+    } as unknown as Response);
+
+    const config = {
+      get: jest.fn((key: string) => {
+        if (key === 'RESEND_API_KEY') return 'resend-key';
+        if (key === 'ONBOARDING_EMAIL_FROM') return 'Finara <onboarding@example.com>';
+        return undefined;
+      }),
+    } as unknown as ConfigService;
+    const service = new OnboardingEmailService(config);
+
+    await service.sendOnboardingLink({
+      to: 'merchant@example.com',
+      contactName: 'Ada <Admin>',
+      loginEmail: 'merchant@example.com',
+      initialPassword: 'p&ss"<word>',
+      onboardingUrl: 'https://example.com/onboarding/secret?next=<portal>',
+    });
+
+    const fetchBody = JSON.parse(
+      (global.fetch as jest.Mock).mock.calls[0][1].body as string,
+    ) as { html: string; text: string };
+    expect(fetchBody.html).toContain('Hola Ada &lt;Admin&gt;');
+    expect(fetchBody.html).toContain('merchant@example.com');
+    expect(fetchBody.html).toContain('p&amp;ss&quot;&lt;word&gt;');
+    expect(fetchBody.html).toContain(
+      'href="https://example.com/onboarding/secret?next=&lt;portal&gt;"',
+    );
+    expect(fetchBody.text).toContain('Email: merchant@example.com');
+    expect(fetchBody.text).toContain('Password: p&ss"<word>');
+    expect(fetchBody.text).toContain(
+      'Onboarding: https://example.com/onboarding/secret?next=<portal>',
+    );
+  });
+
+  it('includes portal credentials in approved decision email when provided', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers(),
+      json: jest.fn().mockResolvedValue({ id: 'email_approved_cred' }),
+    } as unknown as Response);
+
+    const config = {
+      get: jest.fn((key: string) => {
+        if (key === 'RESEND_API_KEY') return 'resend-key';
+        if (key === 'ONBOARDING_EMAIL_FROM') return 'Finara <onboarding@example.com>';
+        return undefined;
+      }),
+    } as unknown as ConfigService;
+    const service = new OnboardingEmailService(config);
+
+    await service.sendOnboardingDecisionEmail({
+      to: 'merchant@example.com',
+      contactName: 'Ada',
+      decision: 'approved',
+      portalLoginEmail: 'merchant@example.com',
+      portalInitialPassword: 'secret_pw',
+    });
+
+    const fetchBody = JSON.parse(
+      (global.fetch as jest.Mock).mock.calls[0][1].body as string,
+    ) as { html: string; text: string };
+    expect(fetchBody.html).toContain('Contraseña inicial:</strong> secret_pw');
+    expect(fetchBody.text).toContain('Contraseña inicial: secret_pw');
+  });
+
   it('does not read or log the Resend error response body', async () => {
     const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
     const text = jest.fn().mockResolvedValue('token=https://example.com/onboarding/secret');
@@ -32,6 +103,8 @@ describe('OnboardingEmailService', () => {
     const result = await service.sendOnboardingLink({
       to: 'merchant@example.com',
       contactName: 'Ada',
+      loginEmail: 'merchant@example.com',
+      initialPassword: 'initial_password',
       onboardingUrl: 'https://example.com/onboarding/secret',
     });
 
@@ -64,6 +137,8 @@ describe('OnboardingEmailService', () => {
     const result = await service.sendOnboardingLink({
       to: 'merchant@example.com',
       contactName: 'Ada',
+      loginEmail: 'merchant@example.com',
+      initialPassword: 'initial_password',
       onboardingUrl: 'https://example.com/onboarding',
     });
 

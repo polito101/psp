@@ -29,7 +29,12 @@ export async function readLayoutSessionFromCookies(): Promise<LayoutSession | nu
     if (claims.role === "admin") {
       return { role: "admin" };
     }
-    return { role: "merchant", merchantId: claims.merchantId };
+    return {
+      role: "merchant",
+      merchantId: claims.merchantId,
+      onboardingStatus: claims.onboardingStatus,
+      rejectionReason: claims.rejectionReason,
+    };
   } catch {
     return null;
   }

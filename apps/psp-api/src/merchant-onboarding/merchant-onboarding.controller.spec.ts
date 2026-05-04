@@ -2,6 +2,7 @@ import { MerchantOnboardingController } from './merchant-onboarding.controller';
 import { MerchantOnboardingOpsController } from './merchant-onboarding-ops.controller';
 import { CreateMerchantOnboardingApplicationDto } from './dto/create-merchant-onboarding-application.dto';
 import { ListMerchantOnboardingApplicationsQueryDto } from './dto/list-merchant-onboarding-applications-query.dto';
+import { MerchantPortalLoginDto } from './dto/merchant-portal-login.dto';
 import { RejectMerchantOnboardingDto } from './dto/reject-merchant-onboarding.dto';
 import { SubmitBusinessProfileDto } from './dto/submit-business-profile.dto';
 import { MerchantOnboardingService } from './merchant-onboarding.service';
@@ -16,6 +17,7 @@ type ServiceMethods = Pick<
   | 'approveApplication'
   | 'rejectApplication'
   | 'resendLink'
+  | 'validateMerchantPortalLogin'
 >;
 
 describe('MerchantOnboardingController', () => {
@@ -32,6 +34,7 @@ describe('MerchantOnboardingController', () => {
       approveApplication: jest.fn(),
       rejectApplication: jest.fn(),
       resendLink: jest.fn(),
+      validateMerchantPortalLogin: jest.fn(),
     };
     controller = new MerchantOnboardingController(service as unknown as MerchantOnboardingService);
   });
@@ -93,6 +96,7 @@ describe('MerchantOnboardingOpsController', () => {
       approveApplication: jest.fn(),
       rejectApplication: jest.fn(),
       resendLink: jest.fn(),
+      validateMerchantPortalLogin: jest.fn(),
     };
     controller = new MerchantOnboardingOpsController(
       service as unknown as MerchantOnboardingService,
@@ -149,5 +153,19 @@ describe('MerchantOnboardingOpsController', () => {
 
     expect(result).toBe(expected);
     expect(service.resendLink).toHaveBeenCalledWith('app_123');
+  });
+
+  it('delegates internal merchant portal login to the service', () => {
+    const dto: MerchantPortalLoginDto = {
+      email: 'merchant@example.com',
+      password: 'password12',
+    };
+    const expected = { merchantId: 'm_1', onboardingStatus: 'APPROVED', rejectionReason: null };
+    service.validateMerchantPortalLogin.mockReturnValue(expected as never);
+
+    const result = controller.loginMerchant(dto);
+
+    expect(result).toBe(expected);
+    expect(service.validateMerchantPortalLogin).toHaveBeenCalledWith(dto.email, dto.password);
   });
 });

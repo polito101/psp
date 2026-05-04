@@ -156,7 +156,6 @@ jobs:
           NEXT_PUBLIC_BACKOFFICE_PORTAL_MODE: admin
           BACKOFFICE_ADMIN_SECRET: admin-secret
           BACKOFFICE_SESSION_JWT_SECRET: session-jwt-secret-dev-only-32b
-          BACKOFFICE_MERCHANT_PORTAL_SECRET: portal-hmac-secret-32bytes!!
           PSP_INTERNAL_API_SECRET: internal-only
           PSP_API_BASE_URL: http://127.0.0.1:3003
         run: npm run test:e2e

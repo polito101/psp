@@ -121,8 +121,6 @@ services:
         value: merchant
       - key: BACKOFFICE_SESSION_JWT_SECRET
         generateValue: true
-      - key: BACKOFFICE_MERCHANT_PORTAL_SECRET
-        generateValue: true
       - key: NEXT_PUBLIC_TRANSACTIONS_REFRESH_MS
         value: "15000"
 

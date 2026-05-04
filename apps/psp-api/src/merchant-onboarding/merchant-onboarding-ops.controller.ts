@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/co
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { InternalSecretGuard } from '../common/guards/internal-secret.guard';
 import { ListMerchantOnboardingApplicationsQueryDto } from './dto/list-merchant-onboarding-applications-query.dto';
+import { MerchantPortalLoginDto } from './dto/merchant-portal-login.dto';
 import { RejectMerchantOnboardingDto } from './dto/reject-merchant-onboarding.dto';
 import { MerchantOnboardingService } from './merchant-onboarding.service';
 
@@ -40,5 +41,11 @@ export class MerchantOnboardingOpsController {
   @ApiOperation({ summary: 'Reenviar link de onboarding (interno)' })
   resendLink(@Param('applicationId') applicationId: string) {
     return this.service.resendLink(applicationId);
+  }
+
+  @Post('merchant-login')
+  @ApiOperation({ summary: 'Validar login portal merchant por email (interno)' })
+  loginMerchant(@Body() dto: MerchantPortalLoginDto) {
+    return this.service.validateMerchantPortalLogin(dto.email, dto.password);
   }
 }

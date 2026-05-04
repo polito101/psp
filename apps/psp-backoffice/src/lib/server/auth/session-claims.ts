@@ -1,8 +1,38 @@
 import { SignJWT, jwtVerify, type JWTPayload } from "jose";
 
+/** Alineado con `MerchantOnboardingStatus` en la API (expediente del merchant). */
+export type MerchantOnboardingSessionStatus =
+  | "ACCOUNT_CREATED"
+  | "DOCUMENTATION_PENDING"
+  | "IN_REVIEW"
+  | "APPROVED"
+  | "REJECTED"
+  | "ACTIVE";
+
+const MERCHANT_ONBOARDING_STATUSES: ReadonlySet<string> = new Set([
+  "ACCOUNT_CREATED",
+  "DOCUMENTATION_PENDING",
+  "IN_REVIEW",
+  "APPROVED",
+  "REJECTED",
+  "ACTIVE",
+]);
+
+export function isMerchantOnboardingSessionStatus(
+  value: unknown,
+): value is MerchantOnboardingSessionStatus {
+  return typeof value === "string" && MERCHANT_ONBOARDING_STATUSES.has(value);
+}
+
 export type SessionClaims =
   | { sub: string; role: "admin" }
-  | { sub: string; role: "merchant"; merchantId: string };
+  | {
+      sub: string;
+      role: "merchant";
+      merchantId: string;
+      onboardingStatus: MerchantOnboardingSessionStatus;
+      rejectionReason: string | null;
+    };
 
 export class ForbiddenScopeError extends Error {
   constructor(message = "FORBIDDEN_SCOPE") {
@@ -33,7 +63,20 @@ export function validateSessionClaims(raw: unknown): SessionClaims {
     if (!merchantId) {
       throw new Error("Invalid session claims: merchantId required for merchant role");
     }
-    return { sub, role: "merchant", merchantId };
+    const onboardingStatusRaw = o.onboardingStatus;
+    if (!isMerchantOnboardingSessionStatus(onboardingStatusRaw)) {
+      throw new Error("Invalid session claims: onboardingStatus required for merchant role");
+    }
+    let rejectionReason: string | null = null;
+    if (o.rejectionReason !== undefined && o.rejectionReason !== null) {
+      if (typeof o.rejectionReason !== "string") {
+        throw new Error("Invalid session claims: rejectionReason must be string or null");
+      }
+      rejectionReason = o.rejectionReason;
+    } else if (o.rejectionReason === null) {
+      rejectionReason = null;
+    }
+    return { sub, role: "merchant", merchantId, onboardingStatus: onboardingStatusRaw, rejectionReason };
   }
   throw new Error("Invalid session claims: role must be admin or merchant");
 }
@@ -53,7 +96,15 @@ export function claimsFromJwtPayload(payload: JWTPayload): SessionClaims {
     return validateSessionClaims({ sub, role: "admin" });
   }
   if (role === "merchant") {
-    return validateSessionClaims({ sub, role: "merchant", merchantId: merchantId ?? "" });
+    const onboardingStatus = (payload as Record<string, unknown>)["onboardingStatus"];
+    const rejectionReasonRaw = (payload as Record<string, unknown>)["rejectionReason"];
+    return validateSessionClaims({
+      sub,
+      role: "merchant",
+      merchantId: merchantId ?? "",
+      onboardingStatus,
+      ...(rejectionReasonRaw !== undefined ? { rejectionReason: rejectionReasonRaw } : {}),
+    });
   }
   throw new Error("Invalid session token payload");
 }
@@ -63,7 +114,13 @@ export async function signSession(claims: SessionClaims, secret: string): Promis
   const key = new TextEncoder().encode(secret);
   const jwt = new SignJWT({
     role: claims.role,
-    ...(claims.role === "merchant" ? { merchantId: claims.merchantId } : {}),
+    ...(claims.role === "merchant"
+      ? {
+          merchantId: claims.merchantId,
+          onboardingStatus: claims.onboardingStatus,
+          rejectionReason: claims.rejectionReason,
+        }
+      : {}),
   })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(claims.sub)

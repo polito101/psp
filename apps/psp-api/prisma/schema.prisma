@@ -71,6 +71,7 @@ model Merchant {
   feeBps                  Int       @default(290) @map("fee_bps")
   isActive                Boolean   @default(true) @map("is_active")
   deactivatedAt           DateTime? @map("deactivated_at")
+  merchantPortalPasswordHash String? @map("merchant_portal_password_hash")
   createdAt               DateTime  @default(now()) @map("created_at")
 
   paymentLinks          PaymentLink[]

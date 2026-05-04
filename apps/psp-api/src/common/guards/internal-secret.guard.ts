@@ -83,6 +83,10 @@ export class InternalSecretGuard implements CanActivate {
   }
 
   private isMerchantOnboardingOpsPath(path: string): boolean {
+    // Login merchant vía backoffice: solo `X-Internal-Secret`, sin rol admin.
+    if (path.includes('/merchant-onboarding/ops/merchant-login')) {
+      return false;
+    }
     return path.includes('/merchant-onboarding/ops/');
   }
 
