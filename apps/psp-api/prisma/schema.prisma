@@ -60,31 +60,56 @@ enum MerchantOnboardingActorType {
   ADMIN
 }
 
-model Merchant {
-  id                      String    @id @default(cuid())
-  name                    String
-  apiKeyHash              String    @map("api_key_hash")
-  apiKeyExpiresAt         DateTime? @map("api_key_expires_at")
-  apiKeyRevokedAt         DateTime? @map("api_key_revoked_at")
-  webhookUrl              String?   @map("webhook_url")
-  webhookSecretCiphertext String    @map("webhook_secret_ciphertext")
-  feeBps                  Int       @default(290) @map("fee_bps")
-  isActive                Boolean   @default(true) @map("is_active")
-  deactivatedAt           DateTime? @map("deactivated_at")
-  merchantPortalPasswordHash String? @map("merchant_portal_password_hash")
-  createdAt               DateTime  @default(now()) @map("created_at")
+enum MerchantRegistrationStatus {
+  LEAD
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  ACTIVE
+}
 
-  paymentLinks          PaymentLink[]
-  payments              Payment[]
-  ledgerLines           LedgerLine[]
-  webhooks              WebhookDelivery[]
-  rateTables            MerchantRateTable[]
-  feeQuotes             PaymentFeeQuote[]
-  settlements           PaymentSettlement[]
-  payouts               Payout[]
-  merchantPaymentMethods MerchantPaymentMethod[]
-  settlementRequests    SettlementRequest[]
-  onboardingApplications MerchantOnboardingApplication[]
+enum MerchantIndustry {
+  CLOUD_COMPUTING
+  CRYPTO
+  FOREX
+  GAMBLING
+  PSP
+  OTHER
+}
+
+model Merchant {
+  id                         String                     @id @default(cuid())
+  name                       String
+  email                      String?                    @unique @db.VarChar(320)
+  contactName                String?                    @map("contact_name") @db.VarChar(160)
+  contactPhone               String?                    @map("contact_phone") @db.VarChar(64)
+  websiteUrl                 String?                    @map("website_url") @db.VarChar(2048)
+  mid                        String                     @unique @db.VarChar(6)
+  registrationNumber         String?                    @map("registration_number") @db.VarChar(64)
+  registrationStatus         MerchantRegistrationStatus @default(LEAD) @map("registration_status")
+  industry                   MerchantIndustry           @default(OTHER)
+  apiKeyHash                 String                     @map("api_key_hash")
+  apiKeyExpiresAt            DateTime?                  @map("api_key_expires_at")
+  apiKeyRevokedAt            DateTime?                  @map("api_key_revoked_at")
+  webhookUrl                 String?                    @map("webhook_url")
+  webhookSecretCiphertext    String                     @map("webhook_secret_ciphertext")
+  feeBps                     Int                        @default(290) @map("fee_bps")
+  isActive                   Boolean                    @default(true) @map("is_active")
+  deactivatedAt              DateTime?                  @map("deactivated_at")
+  merchantPortalPasswordHash String?                    @map("merchant_portal_password_hash")
+  createdAt                  DateTime                   @default(now()) @map("created_at")
+
+  paymentLinks            PaymentLink[]
+  payments                Payment[]
+  ledgerLines             LedgerLine[]
+  webhooks                WebhookDelivery[]
+  rateTables              MerchantRateTable[]
+  feeQuotes               PaymentFeeQuote[]
+  settlements             PaymentSettlement[]
+  payouts                 Payout[]
+  merchantPaymentMethods  MerchantPaymentMethod[]
+  settlementRequests      SettlementRequest[]
+  onboardingApplications  MerchantOnboardingApplication[]
 }
 
 model PaymentLink {
