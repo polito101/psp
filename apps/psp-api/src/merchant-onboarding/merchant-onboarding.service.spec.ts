@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
+import { MerchantMidAllocationFailedError } from '../merchants/allocate-unique-merchant-mid';
 import { MerchantOnboardingService } from './merchant-onboarding.service';
 import { OnboardingEmailService } from './onboarding-email.service';
 import { OnboardingTokenService } from './onboarding-token.service';
@@ -20,49 +21,54 @@ describe('MerchantOnboardingService', () => {
     process.env.NODE_ENV = 'test';
   });
 
-  const createTx = () => ({
-    $executeRaw: jest.fn().mockResolvedValue(undefined),
-    merchant: {
-      create: jest.fn().mockResolvedValue({ id: 'merchant_1', name: 'Ada Lovelace' }),
-      update: jest.fn().mockResolvedValue({ id: 'merchant_1', isActive: true }),
-    },
-    merchantOnboardingApplication: {
-      findFirst: jest.fn().mockResolvedValue(null),
-      create: jest.fn().mockResolvedValue({
-        id: 'app_1',
-        merchantId: 'merchant_1',
-        contactName: 'Ada Lovelace',
-        contactEmail: 'ada@example.com',
-        status: 'ACCOUNT_CREATED',
-      }),
-      update: jest.fn().mockResolvedValue({
-        id: 'app_1',
-        merchantId: 'merchant_1',
-        status: 'DOCUMENTATION_PENDING',
-      }),
-      findUnique: jest.fn().mockResolvedValue({
-        id: 'app_1',
-        merchantId: 'merchant_1',
-        status: 'APPROVED',
-        contactName: 'Ada Lovelace',
-        contactEmail: 'ada@example.com',
-        merchant: { id: 'merchant_1', isActive: false },
-      }),
-      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-    },
-    merchantOnboardingChecklistItem: {
-      createMany: jest.fn().mockResolvedValue({ count: 5 }),
-      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-    },
-    merchantOnboardingToken: {
-      create: jest.fn().mockResolvedValue({ id: 'tok_1' }),
-      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-      update: jest.fn().mockResolvedValue({ id: 'tok_1', usedAt: now }),
-    },
-    merchantOnboardingEvent: {
-      create: jest.fn().mockResolvedValue({ id: 'evt_1' }),
-    },
-  });
+  const createTx = () => {
+    let nextSeq = 600_001;
+    return {
+      $executeRaw: jest.fn().mockResolvedValue(undefined),
+      $queryRaw: jest.fn(async () => [{ seq: BigInt(nextSeq++) }]),
+      merchant: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'merchant_1', name: 'Ada Lovelace' }),
+        update: jest.fn().mockResolvedValue({ id: 'merchant_1', isActive: true }),
+      },
+      merchantOnboardingApplication: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({
+          id: 'app_1',
+          merchantId: 'merchant_1',
+          contactName: 'Ada Lovelace',
+          contactEmail: 'ada@example.com',
+          status: 'ACCOUNT_CREATED',
+        }),
+        update: jest.fn().mockResolvedValue({
+          id: 'app_1',
+          merchantId: 'merchant_1',
+          status: 'DOCUMENTATION_PENDING',
+        }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'app_1',
+          merchantId: 'merchant_1',
+          status: 'APPROVED',
+          contactName: 'Ada Lovelace',
+          contactEmail: 'ada@example.com',
+          merchant: { id: 'merchant_1', isActive: false },
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      merchantOnboardingChecklistItem: {
+        createMany: jest.fn().mockResolvedValue({ count: 5 }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      merchantOnboardingToken: {
+        create: jest.fn().mockResolvedValue({ id: 'tok_1' }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        update: jest.fn().mockResolvedValue({ id: 'tok_1', usedAt: now }),
+      },
+      merchantOnboardingEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt_1' }),
+      },
+    };
+  };
 
   const createPrisma = () => {
     const tx = createTx();
@@ -71,6 +77,7 @@ describe('MerchantOnboardingService', () => {
       prisma: {
         merchant: {
           findFirst: jest.fn().mockResolvedValue(null),
+          findUnique: jest.fn().mockResolvedValue(null),
         },
         merchantOnboardingApplication: {
           findFirst: jest.fn().mockResolvedValue(null),
@@ -129,7 +136,7 @@ describe('MerchantOnboardingService', () => {
 
   it('creates merchant inactive, application, checklist, token, and events', async () => {
     jest.useFakeTimers().setSystemTime(now.getTime());
-    const { service, tx, tokenService, emailService } = createService();
+    const { service, prisma, tx, tokenService, emailService } = createService();
 
     const result = await service.createApplication({
       name: 'Ada Lovelace',
@@ -142,12 +149,20 @@ describe('MerchantOnboardingService', () => {
       where: { contactEmail: 'ada@example.com' },
       select: { id: true },
     });
+    expect(tx.merchant.findUnique).toHaveBeenCalledWith({
+      where: { email: 'ada@example.com' },
+      select: { id: true },
+    });
     const createdMerchantData = tx.merchant.create.mock.calls[0][0].data as Record<string, unknown>;
     expect(createdMerchantData).toMatchObject({
       name: 'Ada Lovelace',
+      email: 'ada@example.com',
+      contactName: 'Ada Lovelace',
+      contactPhone: '+34600000000',
       isActive: false,
       deactivatedAt: now,
     });
+    expect(createdMerchantData.mid).toEqual(expect.any(String));
     expect(createdMerchantData).not.toHaveProperty('merchantPortalPasswordHash');
     expect(tx.merchantOnboardingApplication.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -294,33 +309,61 @@ describe('MerchantOnboardingService', () => {
     });
   });
 
-  it('returns neutral success for duplicate public emails without exposing records', async () => {
+  it('returns neutral success when contact email is already in use (onboarding application)', async () => {
     const { service, prisma, tx, emailService } = createService();
-    prisma.merchantOnboardingApplication.findFirst.mockResolvedValue({ id: 'existing_app' });
+    tx.merchantOnboardingApplication.findFirst.mockResolvedValue({ id: 'existing_app' });
 
-    const result = await service.createApplication({
-      name: 'Ada Lovelace',
-      email: 'ADA@example.com',
-      phone: '+34600000000',
-    });
-
-    expect(prisma.$transaction).not.toHaveBeenCalled();
-    expect(tx.merchant.create).not.toHaveBeenCalled();
-    expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
-    expect(result).toEqual({
+    await expect(
+      service.createApplication({
+        name: 'Ada Lovelace',
+        email: 'ADA@EXAMPLE.COM',
+        phone: '+34600000000',
+      }),
+    ).resolves.toEqual({
       ok: true,
       message: 'If the email can receive onboarding links, we will send next steps shortly.',
     });
+
+    expect(prisma.$transaction).toHaveBeenCalled();
+    expect(tx.$executeRaw).toHaveBeenCalled();
+    expect(tx.merchant.create).not.toHaveBeenCalled();
+    expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
+  });
+
+  it('returns neutral success when merchant email is already in use', async () => {
+    const { service, prisma, tx, emailService } = createService();
+    tx.merchant.findUnique.mockResolvedValue({ id: 'merchant_existing' });
+
+    await expect(
+      service.createApplication({
+        name: 'Ada Lovelace',
+        email: 'ada@example.com',
+        phone: '+34600000000',
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      message: 'If the email can receive onboarding links, we will send next steps shortly.',
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalled();
+    expect(tx.$executeRaw).toHaveBeenCalled();
+    expect(tx.merchant.create).not.toHaveBeenCalled();
+    expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
   });
 
   it('returns neutral success when another request commits the same contact_email under the advisory lock', async () => {
     const { service, tx, emailService } = createService();
     tx.merchantOnboardingApplication.findFirst.mockResolvedValueOnce({ id: 'winner_app' });
 
-    const result = await service.createApplication({
-      name: 'Ada Lovelace',
-      email: 'ada@example.com',
-      phone: '+34600000000',
+    await expect(
+      service.createApplication({
+        name: 'Ada Lovelace',
+        email: 'ada@example.com',
+        phone: '+34600000000',
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      message: 'If the email can receive onboarding links, we will send next steps shortly.',
     });
 
     expect(tx.$executeRaw).toHaveBeenCalled();
@@ -330,10 +373,6 @@ describe('MerchantOnboardingService', () => {
     });
     expect(tx.merchant.create).not.toHaveBeenCalled();
     expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      ok: true,
-      message: 'If the email can receive onboarding links, we will send next steps shortly.',
-    });
   });
 
   it('returns neutral success when DB unique constraint on contact_email races past findFirst', async () => {
@@ -347,18 +386,19 @@ describe('MerchantOnboardingService', () => {
     const { service, prisma, tx, emailService } = createService();
     prisma.$transaction.mockRejectedValueOnce(dupError);
 
-    const result = await service.createApplication({
-      name: 'Ada Lovelace',
-      email: 'ada@example.com',
-      phone: '+34600000000',
+    await expect(
+      service.createApplication({
+        name: 'Ada Lovelace',
+        email: 'ada@example.com',
+        phone: '+34600000000',
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      message: 'If the email can receive onboarding links, we will send next steps shortly.',
     });
 
     expect(tx.merchant.create).not.toHaveBeenCalled();
     expect(emailService.sendOnboardingLink).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      ok: true,
-      message: 'If the email can receive onboarding links, we will send next steps shortly.',
-    });
   });
 
   it('rethrows P2002 that is not the onboarding contact_email unique violation', async () => {
@@ -381,6 +421,45 @@ describe('MerchantOnboardingService', () => {
     ).rejects.toBe(err);
   });
 
+  it('maps merchant mid P2002 at transaction boundary to ConflictException', async () => {
+    const err = {
+      name: 'PrismaClientKnownRequestError',
+      message: 'Unique constraint failed on the fields: (`mid`)',
+      code: 'P2002',
+      clientVersion: 'test',
+      meta: { modelName: 'Merchant', target: ['mid'] },
+    };
+    const { service, prisma } = createService();
+    prisma.$transaction.mockRejectedValueOnce(err);
+
+    await expect(
+      service.createApplication({
+        name: 'Ada Lovelace',
+        email: 'ada@example.com',
+        phone: '+34600000000',
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('maps MerchantMidAllocationFailedError at transaction boundary to ConflictException', async () => {
+    const { service, prisma } = createService();
+    prisma.$transaction.mockRejectedValueOnce(
+      new MerchantMidAllocationFailedError('retries_exhausted'),
+    );
+
+    await expect(
+      service.createApplication({
+        name: 'Ada Lovelace',
+        email: 'ada@example.com',
+        phone: '+34600000000',
+      }),
+    ).rejects.toMatchObject({
+      response: {
+        message: 'No se pudo completar el registro en este momento. Vuelve a intentarlo.',
+      },
+    });
+  });
+
   it('submits business profile with a valid token and moves to IN_REVIEW', async () => {
     jest.useFakeTimers().setSystemTime(now.getTime());
     const { service, prisma, tx } = createService();
@@ -394,16 +473,15 @@ describe('MerchantOnboardingService', () => {
     });
     tx.merchantOnboardingApplication.update.mockResolvedValue({
       id: 'app_1',
+      merchantId: 'merchant_1',
       status: 'IN_REVIEW',
       tradeName: 'Ada Shop',
     });
 
     const result = await service.submitBusinessProfile('plain_token', {
-      tradeName: 'Ada Shop',
-      legalName: 'Ada Shop SL',
-      country: 'ES',
-      website: 'https://adashop.example',
-      businessType: 'ecommerce',
+      companyName: 'Ada Shop',
+      industry: 'FOREX',
+      websiteUrl: 'https://adashop.example',
     });
 
     expect(tx.merchantOnboardingToken.updateMany).toHaveBeenCalledWith({
@@ -420,12 +498,20 @@ describe('MerchantOnboardingService', () => {
       data: expect.objectContaining({
         status: 'IN_REVIEW',
         tradeName: 'Ada Shop',
-        legalName: 'Ada Shop SL',
-        country: 'ES',
+        legalName: null,
+        country: null,
         website: 'https://adashop.example',
-        businessType: 'ecommerce',
+        businessType: 'FOREX',
         submittedAt: now,
       }),
+    });
+    expect(tx.merchant.update).toHaveBeenCalledWith({
+      where: { id: 'merchant_1' },
+      data: {
+        name: 'Ada Shop',
+        industry: 'FOREX',
+        websiteUrl: 'https://adashop.example',
+      },
     });
     expect(tx.merchantOnboardingChecklistItem.updateMany).toHaveBeenCalledWith({
       where: { applicationId: 'app_1', key: 'business_profile_submitted' },
@@ -457,11 +543,9 @@ describe('MerchantOnboardingService', () => {
 
     await expect(
       service.submitBusinessProfile('plain_token', {
-        tradeName: 'Ada Shop',
-        legalName: 'Ada Shop SL',
-        country: 'ES',
-        website: 'https://adashop.example',
-        businessType: 'ecommerce',
+        companyName: 'Ada Shop',
+        industry: 'FOREX',
+        websiteUrl: 'https://adashop.example',
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(tx.merchantOnboardingApplication.update).not.toHaveBeenCalled();
@@ -635,6 +719,10 @@ describe('MerchantOnboardingService', () => {
   it('does not approve when the conditional status claim loses the race', async () => {
     jest.useFakeTimers().setSystemTime(now.getTime());
     const { service, prisma, tx, emailService } = createService();
+    prisma.merchantOnboardingApplication.findUnique.mockResolvedValueOnce({
+      id: 'app_1',
+      status: 'IN_REVIEW',
+    });
     tx.merchantOnboardingApplication.updateMany.mockResolvedValue({ count: 0 });
     tx.merchantOnboardingApplication.findUnique.mockResolvedValue({
       id: 'app_1',
@@ -649,6 +737,25 @@ describe('MerchantOnboardingService', () => {
     expect(tx.merchant.update).not.toHaveBeenCalled();
     expect(emailService.sendOnboardingDecisionEmail).not.toHaveBeenCalled();
     jest.useRealTimers();
+  });
+
+  it('approveApplication skips bcrypt and transaction when application does not exist', async () => {
+    const { service, prisma } = createService();
+    prisma.merchantOnboardingApplication.findUnique.mockResolvedValueOnce(null);
+
+    await expect(service.approveApplication('missing')).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('approveApplication skips bcrypt and transaction when application is not IN_REVIEW', async () => {
+    const { service, prisma } = createService();
+    prisma.merchantOnboardingApplication.findUnique.mockResolvedValueOnce({
+      id: 'app_1',
+      status: 'DOCUMENTATION_PENDING',
+    });
+
+    await expect(service.approveApplication('app_1')).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('rejects application and keeps merchant inactive', async () => {

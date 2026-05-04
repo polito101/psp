@@ -1,12 +1,18 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomBytes } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import { encryptUtf8 } from '../crypto/secret-box';
+import {
+  MerchantMidAllocationFailedError,
+  createMerchantWithUniqueMid,
+} from './allocate-unique-merchant-mid';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaymentProviderName } from '../payments-v2/domain/payment-provider-names';
 import { PAYMENT_PROVIDER_NAMES } from '../payments-v2/domain/payment-provider-names';
+import type { MerchantIndustry, MerchantRegistrationStatus } from '../generated/prisma/enums';
 import { PayoutScheduleType, SettlementMode } from '../generated/prisma/enums';
 import type { Prisma } from '../generated/prisma/client';
+import type { PatchMerchantAccountDto } from './dto/patch-merchant-account.dto';
 
 type CreateRateTableInput = {
   provider: PaymentProviderName;
@@ -19,6 +25,9 @@ type CreateRateTableInput = {
   payoutScheduleParam: number;
   contractRef?: string;
 };
+
+/** Máximo de eventos de onboarding incluidos en `getOpsDetail` (los más recientes). */
+const MERCHANT_OPS_ONBOARDING_EVENTS_LIMIT = 100;
 
 @Injectable()
 export class MerchantsService {
@@ -39,45 +48,58 @@ export class MerchantsService {
       ? new Date(Date.now() + dto.keyTtlDays * 86_400_000)
       : null;
 
-    const { merchant, apiKeyPlain } = await this.prisma.$transaction(async (tx) => {
-      const merchant = await tx.merchant.create({
-        data: {
+    let merchant: Awaited<ReturnType<Prisma.TransactionClient['merchant']['create']>>;
+    let apiKeyPlain: string;
+    try {
+      const out = await this.prisma.$transaction(async (tx) => {
+        const m = await createMerchantWithUniqueMid(tx, (mid) => ({
           name: dto.name,
+          mid,
           apiKeyHash: placeholderHash,
           webhookUrl: dto.webhookUrl ?? null,
           webhookSecretCiphertext,
-        },
+        }));
+
+        const plain = `psp.${m.id}.${randomBytes(32).toString('base64url')}`;
+        const apiKeyHash = await bcrypt.hash(plain, 12);
+
+        await tx.merchant.update({
+          where: { id: m.id },
+          data: { apiKeyHash, apiKeyExpiresAt },
+        });
+
+        await tx.merchantRateTable.createMany({
+          data: PAYMENT_PROVIDER_NAMES.map((provider) => ({
+            merchantId: m.id,
+            currency: 'EUR',
+            provider,
+            percentageBps: m.feeBps,
+            fixedMinor: 0,
+            minimumMinor: 0,
+            settlementMode: SettlementMode.NET,
+            payoutScheduleType: PayoutScheduleType.T_PLUS_N,
+            payoutScheduleParam: 1,
+          })),
+        });
+
+        await this.ensureMockPaymentMethodsForMerchant(tx, m.id);
+
+        return { merchant: m, apiKeyPlain: plain };
       });
-
-      const apiKeyPlain = `psp.${merchant.id}.${randomBytes(32).toString('base64url')}`;
-      const apiKeyHash = await bcrypt.hash(apiKeyPlain, 12);
-
-      await tx.merchant.update({
-        where: { id: merchant.id },
-        data: { apiKeyHash, apiKeyExpiresAt },
-      });
-
-      await tx.merchantRateTable.createMany({
-        data: PAYMENT_PROVIDER_NAMES.map((provider) => ({
-          merchantId: merchant.id,
-          currency: 'EUR',
-          provider,
-          percentageBps: merchant.feeBps,
-          fixedMinor: 0,
-          minimumMinor: 0,
-          settlementMode: SettlementMode.NET,
-          payoutScheduleType: PayoutScheduleType.T_PLUS_N,
-          payoutScheduleParam: 1,
-        })),
-      });
-
-      await this.ensureMockPaymentMethodsForMerchant(tx, merchant.id);
-
-      return { merchant, apiKeyPlain };
-    });
+      merchant = out.merchant;
+      apiKeyPlain = out.apiKeyPlain;
+    } catch (error) {
+      if (error instanceof MerchantMidAllocationFailedError) {
+        throw new ConflictException(
+          'No se pudo completar el registro en este momento. Vuelve a intentarlo.',
+        );
+      }
+      throw error;
+    }
 
     return {
       id: merchant.id,
+      mid: merchant.mid,
       name: merchant.name,
       apiKey: apiKeyPlain,
       apiKeyExpiresAt,
@@ -96,16 +118,15 @@ export class MerchantsService {
     const placeholderHash = await bcrypt.hash(randomBytes(16).toString('hex'), 12);
     const now = new Date();
 
-    const merchant = await tx.merchant.create({
-      data: {
-        name,
-        apiKeyHash: placeholderHash,
-        webhookUrl: null,
-        webhookSecretCiphertext,
-        isActive: false,
-        deactivatedAt: now,
-      },
-    });
+    const merchant = await createMerchantWithUniqueMid(tx, (mid) => ({
+      name,
+      mid,
+      apiKeyHash: placeholderHash,
+      webhookUrl: null,
+      webhookSecretCiphertext,
+      isActive: false,
+      deactivatedAt: now,
+    }));
 
     const apiKeyPlain = `psp.${merchant.id}.${randomBytes(32).toString('base64url')}`;
     const apiKeyHash = await bcrypt.hash(apiKeyPlain, 12);
@@ -243,7 +264,11 @@ export class MerchantsService {
     return this.prisma.merchant.findMany({
       select: {
         id: true,
+        mid: true,
         name: true,
+        email: true,
+        registrationStatus: true,
+        industry: true,
         isActive: true,
         deactivatedAt: true,
         apiKeyExpiresAt: true,
@@ -283,7 +308,15 @@ export class MerchantsService {
       where: { id: merchantId },
       select: {
         id: true,
+        mid: true,
         name: true,
+        email: true,
+        contactName: true,
+        contactPhone: true,
+        websiteUrl: true,
+        registrationNumber: true,
+        registrationStatus: true,
+        industry: true,
         isActive: true,
         deactivatedAt: true,
         apiKeyExpiresAt: true,
@@ -294,7 +327,7 @@ export class MerchantsService {
     if (!merchant) {
       throw new NotFoundException('Merchant not found');
     }
-    const [recentPayments, settlementRequests, paymentMethods] = await Promise.all([
+    const [recentPayments, settlementRequests, paymentMethods, latestOnboardingApplication] = await Promise.all([
       this.prisma.payment.findMany({
         where: { merchantId },
         orderBy: { createdAt: 'desc' },
@@ -316,8 +349,113 @@ export class MerchantsService {
         where: { merchantId },
         include: { definition: true },
       }),
+      this.prisma.merchantOnboardingApplication.findFirst({
+        where: { merchantId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        include: {
+          events: {
+            orderBy: { createdAt: 'desc' },
+            take: MERCHANT_OPS_ONBOARDING_EVENTS_LIMIT,
+          },
+        },
+      }),
     ]);
-    return { merchant, recentPayments, settlementRequests, paymentMethods };
+    const eventsNewestFirst = latestOnboardingApplication?.events ?? [];
+    const onboardingEventsChronological =
+      eventsNewestFirst.length > 0 ? [...eventsNewestFirst].reverse() : [];
+    const latestWithEventsOrdered = latestOnboardingApplication
+      ? { ...latestOnboardingApplication, events: onboardingEventsChronological }
+      : null;
+    return {
+      merchant,
+      recentPayments,
+      settlementRequests,
+      paymentMethods,
+      latestOnboardingApplication: latestWithEventsOrdered,
+      onboardingEvents: onboardingEventsChronological,
+      onboardingEventsLimit: MERCHANT_OPS_ONBOARDING_EVENTS_LIMIT,
+    };
+  }
+
+  async patchMerchantAccount(merchantId: string, patch: PatchMerchantAccountDto) {
+    const existing = await this.prisma.merchant.findUnique({
+      where: { id: merchantId },
+      select: { id: true },
+    });
+    if (!existing) {
+      throw new NotFoundException('Merchant not found');
+    }
+
+    if (patch.email !== undefined) {
+      const normalized = this.normalizeMerchantEmail(patch.email);
+      const conflicting = await this.prisma.merchant.findFirst({
+        where: { email: normalized, id: { not: merchantId } },
+        select: { id: true },
+      });
+      if (conflicting) {
+        throw new ConflictException('Merchant email already exists');
+      }
+    }
+
+    const data: Prisma.MerchantUpdateInput = {};
+
+    if (patch.name !== undefined) {
+      data.name = patch.name.trim();
+    }
+    if (patch.email !== undefined) {
+      data.email = this.normalizeMerchantEmail(patch.email);
+    }
+    if (patch.contactName !== undefined) {
+      data.contactName = patch.contactName.trim();
+    }
+    if (patch.contactPhone !== undefined) {
+      data.contactPhone = patch.contactPhone.trim();
+    }
+    if (patch.websiteUrl !== undefined) {
+      data.websiteUrl = patch.websiteUrl === null ? null : patch.websiteUrl.trim();
+    }
+    if (patch.registrationNumber !== undefined) {
+      data.registrationNumber = patch.registrationNumber === null ? null : patch.registrationNumber.trim();
+    }
+    if (patch.registrationStatus !== undefined) {
+      const registrationStatus: MerchantRegistrationStatus = patch.registrationStatus;
+      data.registrationStatus = registrationStatus;
+    }
+    if (patch.industry !== undefined) {
+      const industry: MerchantIndustry = patch.industry;
+      data.industry = industry;
+    }
+    if (patch.isActive !== undefined) {
+      data.isActive = patch.isActive;
+      data.deactivatedAt = patch.isActive ? null : new Date();
+    }
+
+    if (Object.keys(data).length > 0) {
+      await this.prisma.merchant.update({
+        where: { id: merchantId },
+        data,
+      });
+    }
+
+    const updated = await this.prisma.merchant.findUniqueOrThrow({
+      where: { id: merchantId },
+      select: {
+        id: true,
+        mid: true,
+        name: true,
+        email: true,
+        contactName: true,
+        contactPhone: true,
+        websiteUrl: true,
+        isActive: true,
+        deactivatedAt: true,
+        registrationNumber: true,
+        registrationStatus: true,
+        industry: true,
+        createdAt: true,
+      },
+    });
+    return updated;
   }
 
   async listMerchantPaymentMethods(merchantId: string) {
@@ -357,6 +495,10 @@ export class MerchantsService {
       },
       include: { definition: true },
     });
+  }
+
+  private normalizeMerchantEmail(email: string): string {
+    return email.trim().toLowerCase();
   }
 
   private async ensureMockPaymentMethodsForMerchant(tx: Prisma.TransactionClient, merchantId: string) {

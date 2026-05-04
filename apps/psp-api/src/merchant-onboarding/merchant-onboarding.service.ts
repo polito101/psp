@@ -10,6 +10,11 @@ import { ConfigService } from '@nestjs/config';
 import { createHash, randomBytes } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import { encryptUtf8 } from '../crypto/secret-box';
+import {
+  MerchantMidAllocationFailedError,
+  createMerchantWithUniqueMid,
+  isMerchantMidUniqueViolation,
+} from '../merchants/allocate-unique-merchant-mid';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   MerchantOnboardingActorType,
@@ -44,6 +49,9 @@ const PUBLIC_RESEND_MESSAGE =
 
 /** Índice único en DB (`20260501120000_merchant_onboarding_contact_email_unique`). */
 const CONTACT_EMAIL_UNIQUE_INDEX_NAME = 'merchant_onboarding_applications_contact_email_key';
+
+/** Índice único `Merchant.email` (merchant admin account). */
+const MERCHANT_EMAIL_UNIQUE_INDEX_NAME = 'Merchant_email_key';
 
 type PrismaKnownRequestLike = {
   code?: unknown;
@@ -80,6 +88,37 @@ function isContactEmailUniqueViolation(error: unknown): boolean {
 
   const modelName = meta?.modelName;
   if (typeof modelName === 'string' && modelName !== 'MerchantOnboardingApplication') {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * P2002 de unicidad sobre el email del merchant (`Merchant.email`).
+ */
+function isMerchantEmailUniqueViolation(error: unknown): boolean {
+  const err = error as PrismaKnownRequestLike;
+  if (typeof err.code !== 'string' || err.code !== 'P2002') {
+    return false;
+  }
+  const meta = err.meta;
+
+  const rawTarget = meta?.target;
+  const targetParts: string[] = Array.isArray(rawTarget)
+    ? rawTarget.filter((t): t is string => typeof t === 'string')
+    : typeof rawTarget === 'string'
+      ? [rawTarget]
+      : [];
+
+  const hitsEmailConstraint = targetParts.some(
+    (t) => t === 'email' || t === MERCHANT_EMAIL_UNIQUE_INDEX_NAME,
+  );
+  if (!hitsEmailConstraint) {
+    return false;
+  }
+
+  const modelName = meta?.modelName;
+  if (typeof modelName === 'string' && modelName !== 'Merchant') {
     return false;
   }
   return true;
@@ -147,24 +186,18 @@ export class MerchantOnboardingService {
   ) {}
 
   /**
-   * Crea una solicitud pública de onboarding sin revelar si el email ya existe.
-   * El merchant queda inactivo hasta que el backoffice apruebe la aplicación.
+   * Crea una solicitud pública de onboarding. El merchant queda inactivo hasta aprobación.
    *
    * Concurrencia: `pg_advisory_xact_lock` por email dentro de la transacción evita duplicados
-   * mientras el UNIQUE de `contact_email` se crea fuera de la migración (`prisma:ops:indexes`).
-   * Con índice ya aplicado, P2002 sigue siendo red de seguridad (misma respuesta neutral).
+   * mientras el UNIQUE de `contact_email` se aplique fuera de la migración (`prisma:ops:indexes`).
+   * Duplicados (`Merchant.email` o `contactEmail` del expediente) se deduplican en DB pero la respuesta
+   * HTTP es neutral (`2xx` + mismo cuerpo que creación) para no filtrar existencia del email.
+   *
+   * Mitigación timing: no hay `find*` previos a la transacción que eviten el trabajo costoso
+   * (`createTokenValues`, `bcrypt.hash`, etc.); la detección de duplicados ocurre tras el lock en la TX.
    */
   async createApplication(dto: CreateMerchantOnboardingApplicationDto) {
     const contactEmail = normalizeEmail(dto.email);
-    // Atajo idempotente; bajo carrera la comprobación definitiva es tras advisory lock en la TX.
-    const existing = await this.prisma.merchantOnboardingApplication.findFirst({
-      where: { contactEmail },
-      select: { id: true },
-    });
-
-    if (existing) {
-      return this.publicCreateResponse();
-    }
 
     const now = new Date();
     const token = await this.createTokenValues(now);
@@ -186,15 +219,25 @@ export class MerchantOnboardingService {
           return { kind: 'duplicate' };
         }
 
-        const merchant = await tx.merchant.create({
-          data: {
-            name: dto.name,
-            apiKeyHash: placeholderHash,
-            webhookSecretCiphertext,
-            isActive: false,
-            deactivatedAt: now,
-          },
+        const merchantDup = await tx.merchant.findUnique({
+          where: { email: contactEmail },
+          select: { id: true },
         });
+        if (merchantDup) {
+          return { kind: 'duplicate' };
+        }
+
+        const merchant = await createMerchantWithUniqueMid(tx, (mid) => ({
+          name: dto.name,
+          email: contactEmail,
+          contactName: dto.name,
+          contactPhone: dto.phone,
+          mid,
+          apiKeyHash: placeholderHash,
+          webhookSecretCiphertext,
+          isActive: false,
+          deactivatedAt: now,
+        }));
 
         const application = await tx.merchantOnboardingApplication.create({
           data: {
@@ -253,15 +296,32 @@ export class MerchantOnboardingService {
         return { kind: 'created', applicationId: application.id };
       });
     } catch (error) {
-      if (isContactEmailUniqueViolation(error)) {
-        this.logger.debug('merchant_onboarding.create_application.duplicate_contact_email');
+      if (isContactEmailUniqueViolation(error) || isMerchantEmailUniqueViolation(error)) {
+        this.logger.log(
+          'Public merchant onboarding create skipped: unique constraint violation (race)',
+        );
         return this.publicCreateResponse();
+      }
+      if (
+        error instanceof MerchantMidAllocationFailedError ||
+        isMerchantMidUniqueViolation(error)
+      ) {
+        const detail =
+          error instanceof MerchantMidAllocationFailedError
+            ? `MID allocation failed (${error.reason})`
+            : 'merchant mid unique violation surfaced outside MID retry loop';
+        this.logger.warn(`Public merchant onboarding: ${detail}`);
+        throw new ConflictException(
+          'No se pudo completar el registro en este momento. Vuelve a intentarlo.',
+        );
       }
       throw error;
     }
 
     if (txResult.kind === 'duplicate') {
-      this.logger.debug('merchant_onboarding.create_application.duplicate_after_contact_email_lock');
+      this.logger.log(
+        'Public merchant onboarding create skipped: duplicate detected after advisory lock',
+      );
       return this.publicCreateResponse();
     }
 
@@ -340,12 +400,21 @@ export class MerchantOnboardingService {
         where: { id: tokenRow.applicationId },
         data: {
           status: MerchantOnboardingStatus.IN_REVIEW,
-          tradeName: dto.tradeName,
-          legalName: dto.legalName,
-          country: dto.country,
-          website: dto.website ?? null,
-          businessType: dto.businessType,
+          tradeName: dto.companyName,
+          legalName: null,
+          country: null,
+          website: dto.websiteUrl ?? null,
+          businessType: dto.industry,
           submittedAt: now,
+        },
+      });
+
+      await tx.merchant.update({
+        where: { id: application.merchantId },
+        data: {
+          name: dto.companyName,
+          industry: dto.industry,
+          websiteUrl: dto.websiteUrl ?? null,
         },
       });
 
@@ -505,7 +574,21 @@ export class MerchantOnboardingService {
    */
   async approveApplication(applicationId: string) {
     const now = new Date();
-    let portalInitialPasswordPlain: string | undefined;
+
+    const preflight = await this.prisma.merchantOnboardingApplication.findUnique({
+      where: { id: applicationId },
+      select: { id: true, status: true },
+    });
+
+    if (!preflight) {
+      throw new NotFoundException('Merchant onboarding application not found');
+    }
+    if (preflight.status !== MerchantOnboardingStatus.IN_REVIEW) {
+      throw new ConflictException('Application must be in review before a decision');
+    }
+
+    const portalInitialPasswordPlain = randomBytes(18).toString('base64url');
+    const merchantPortalPasswordHash = await bcrypt.hash(portalInitialPasswordPlain, 12);
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const claim = await tx.merchantOnboardingApplication.updateMany({
@@ -537,9 +620,6 @@ export class MerchantOnboardingService {
 
       await this.createDecisionEvent(tx, application.id, 'application_approved', 'Solicitud aprobada.');
 
-      portalInitialPasswordPlain = randomBytes(18).toString('base64url');
-      const merchantPortalPasswordHash = await bcrypt.hash(portalInitialPasswordPlain, 12);
-
       await tx.merchant.update({
         where: { id: application.merchantId },
         data: {
@@ -569,10 +649,6 @@ export class MerchantOnboardingService {
 
       return updated;
     });
-
-    if (!portalInitialPasswordPlain) {
-      throw new Error('merchant_onboarding.approve_missing_portal_password');
-    }
 
     await this.notifyMerchantDecisionEmail(updated.id, {
       to: updated.contactEmail,

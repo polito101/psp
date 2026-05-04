@@ -9,6 +9,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { PatchMerchantAccountDto } from './dto/patch-merchant-account.dto';
 import { PatchMerchantActiveDto } from './dto/patch-merchant-active.dto';
 import { PatchMerchantPaymentMethodDto } from './dto/patch-merchant-payment-method.dto';
 import { InternalSecretGuard } from '../common/guards/internal-secret.guard';
@@ -64,6 +65,16 @@ export class MerchantsController {
   @UseGuards(InternalSecretGuard)
   opsSetActive(@Param('id') id: string, @Body() body: PatchMerchantActiveDto) {
     return this.merchants.setMerchantActive(id, body.isActive);
+  }
+
+  @Patch('ops/:id/account')
+  @ApiOperation({ summary: 'Actualizar cuenta administrativa del merchant (interno admin)' })
+  @ApiParam({ name: 'id', description: 'ID del merchant' })
+  @ApiBody({ type: PatchMerchantAccountDto })
+  @ApiSecurity('InternalSecret')
+  @UseGuards(InternalSecretGuard)
+  opsPatchAccount(@Param('id') id: string, @Body() body: PatchMerchantAccountDto) {
+    return this.merchants.patchMerchantAccount(id, body);
   }
 
   @Get('ops/:id/payment-methods')

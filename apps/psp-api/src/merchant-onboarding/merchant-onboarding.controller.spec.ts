@@ -5,6 +5,7 @@ import { ListMerchantOnboardingApplicationsQueryDto } from './dto/list-merchant-
 import { MerchantPortalLoginDto } from './dto/merchant-portal-login.dto';
 import { RejectMerchantOnboardingDto } from './dto/reject-merchant-onboarding.dto';
 import { SubmitBusinessProfileDto } from './dto/submit-business-profile.dto';
+import { MerchantIndustry } from '../generated/prisma/enums';
 import { MerchantOnboardingService } from './merchant-onboarding.service';
 
 type ServiceMethods = Pick<
@@ -66,11 +67,9 @@ describe('MerchantOnboardingController', () => {
 
   it('delegates public business profile submission to the service', () => {
     const dto: SubmitBusinessProfileDto = {
-      tradeName: 'Acme PSP',
-      legalName: 'Acme PSP SL',
-      country: 'ES',
-      website: 'https://acme.test',
-      businessType: 'payments',
+      companyName: 'Acme PSP',
+      industry: MerchantIndustry.PSP,
+      websiteUrl: 'https://acme.test',
     };
     const expected = { status: 'UNDER_REVIEW' };
     service.submitBusinessProfile.mockReturnValue(expected as never);

@@ -149,6 +149,13 @@ jobs:
           echo "psp-api failed to become ready; log tail:"
           tail -n 200 /tmp/psp-api-e2e.log || true
           exit 1
+      - name: Seed E2E merchant (directorio ops no vacío)
+        run: |
+          curl -fsS -X POST "http://127.0.0.1:3003/api/v1/merchants" \
+            -H "Content-Type: application/json" \
+            -H "X-Internal-Secret: internal-only" \
+            -d '{"name":"E2E Directory Merchant"}' \
+            | node -e "const b=JSON.parse(require('fs').readFileSync(0,'utf8')); if(!b.id) process.exit(1);"
       - name: E2E (Playwright)
         env:
           NODE_ENV: development

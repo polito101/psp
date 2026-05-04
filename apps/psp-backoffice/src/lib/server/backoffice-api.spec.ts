@@ -326,4 +326,13 @@ describe("requiresBackofficeScopePath", () => {
     expect(requiresBackofficeScopePath("/api/v1/merchant-onboarding/ops/applications/x")).toBe(true);
     expect(requiresBackofficeScopePath("/api/v1/merchants")).toBe(false);
   });
+
+  it("exempts exactly merchant-login from RBAC proxy headers, not longer path prefixes", () => {
+    expect(requiresBackofficeScopePath("/api/v1/merchant-onboarding/ops/merchant-login")).toBe(
+      false,
+    );
+    expect(requiresBackofficeScopePath("/api/v1/merchant-onboarding/ops/merchant-login-audit")).toBe(
+      true,
+    );
+  });
 });
