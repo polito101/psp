@@ -120,5 +120,30 @@ describe('allocate-unique-merchant-mid', () => {
 
       expect($queryRaw).toHaveBeenCalledTimes(1);
     });
+
+    it('si $queryRaw falla, lanza MerchantMidAllocationFailedError con la causa original', async () => {
+      const dbError = Object.assign(new Error('relation "merchant_mid_seq" does not exist'), {
+        code: '42P01',
+      });
+      const $queryRaw = jest.fn().mockRejectedValue(dbError);
+      const create = jest.fn();
+      const tx = { merchant: { create }, $queryRaw } as unknown as Prisma.TransactionClient;
+
+      await expect(
+        createMerchantWithUniqueMid(tx, (mid) => ({
+          name: 'x',
+          mid,
+          apiKeyHash: 'h',
+          webhookSecretCiphertext: 'ct',
+        })),
+      ).rejects.toMatchObject({
+        name: 'MerchantMidAllocationFailedError',
+        reason: 'sequence_unavailable',
+        cause: dbError,
+      });
+
+      expect($queryRaw).toHaveBeenCalledTimes(1);
+      expect(create).not.toHaveBeenCalled();
+    });
   });
 });

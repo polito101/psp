@@ -7,12 +7,21 @@ import { Prisma } from '../generated/prisma/client';
 export class MerchantMidAllocationFailedError extends Error {
   override readonly name = 'MerchantMidAllocationFailedError';
 
-  constructor(readonly reason: 'retries_exhausted' | 'sequence_unavailable') {
+  /** Preservado cuando el fallo envuelve un error subyacente (p. ej. `nextval` en DB). */
+  readonly cause?: unknown;
+
+  constructor(
+    readonly reason: 'retries_exhausted' | 'sequence_unavailable',
+    options?: { cause?: unknown },
+  ) {
     super(
       reason === 'sequence_unavailable'
         ? 'Merchant MID sequence returned no value'
         : 'Merchant MID allocation retries exhausted',
     );
+    if (options?.cause !== undefined) {
+      this.cause = options.cause;
+    }
   }
 }
 
@@ -77,9 +86,14 @@ async function backoffBeforeMidCollisionRetry(collisionAttempt: number): Promise
 
 async function allocateNextMerchantMidFromSequence(tx: Prisma.TransactionClient): Promise<string> {
   const regclass = `'${MERCHANT_MID_SEQUENCE}'::regclass`;
-  const rows = await tx.$queryRaw<Array<{ seq: bigint }>>(
-    Prisma.sql`SELECT nextval(${Prisma.raw(regclass)}) AS seq`,
-  );
+  let rows: Array<{ seq: bigint }>;
+  try {
+    rows = await tx.$queryRaw<Array<{ seq: bigint }>>(
+      Prisma.sql`SELECT nextval(${Prisma.raw(regclass)}) AS seq`,
+    );
+  } catch (error) {
+    throw new MerchantMidAllocationFailedError('sequence_unavailable', { cause: error });
+  }
 
   const seq = rows[0]?.seq;
   if (seq == null) {
