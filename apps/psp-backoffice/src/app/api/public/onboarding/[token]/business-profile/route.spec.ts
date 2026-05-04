@@ -30,7 +30,7 @@ describe("POST /api/public/onboarding/[token]/business-profile", () => {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyName: "A", industry: "FOREX" }),
+        body: JSON.stringify({ companyName: "A" }),
       },
     );
 
