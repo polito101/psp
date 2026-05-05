@@ -1,11 +1,20 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { randomBytes } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import { encryptUtf8 } from '../crypto/secret-box';
 import {
+  MERCHANT_MID_ALLOCATION_CONFLICT_MESSAGE,
+  MERCHANT_MID_ALLOCATION_UNAVAILABLE_MESSAGE,
   MerchantMidAllocationFailedError,
   createMerchantWithUniqueMid,
 } from './allocate-unique-merchant-mid';
+import { midAllocationConflictDiagnostics } from './mid-allocation-conflict-log';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaymentProviderName } from '../payments-v2/domain/payment-provider-names';
 import { PAYMENT_PROVIDER_NAMES } from '../payments-v2/domain/payment-provider-names';
@@ -31,6 +40,8 @@ const MERCHANT_OPS_ONBOARDING_EVENTS_LIMIT = 100;
 
 @Injectable()
 export class MerchantsService {
+  private readonly logger = new Logger(MerchantsService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   /**
@@ -90,9 +101,14 @@ export class MerchantsService {
       apiKeyPlain = out.apiKeyPlain;
     } catch (error) {
       if (error instanceof MerchantMidAllocationFailedError) {
-        throw new ConflictException(
-          'No se pudo completar el registro en este momento. Vuelve a intentarlo.',
+        const diagnostics = midAllocationConflictDiagnostics(error);
+        this.logger.error(
+          `Merchant MID allocation failed reason=${error.reason} context=${JSON.stringify(diagnostics)}`,
         );
+        if (error.reason === 'retries_exhausted') {
+          throw new ConflictException(MERCHANT_MID_ALLOCATION_CONFLICT_MESSAGE);
+        }
+        throw new ServiceUnavailableException(MERCHANT_MID_ALLOCATION_UNAVAILABLE_MESSAGE);
       }
       throw error;
     }
