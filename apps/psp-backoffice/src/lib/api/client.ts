@@ -10,6 +10,7 @@ import type {
   MerchantFinanceTransactionsFilters,
   MerchantFinanceTransactionsResponse,
   MerchantPaymentMethodRow,
+  MerchantProviderRateRow,
   MerchantsOpsDetailResponse,
   MerchantsOpsDirectoryResponse,
   MerchantsOpsMerchantSummary,
@@ -24,6 +25,8 @@ import type {
   OpsTransactionsResponse,
   OpsVolumeHourlyMetric,
   OpsVolumeHourlyResponse,
+  PaymentMethodRouteRow,
+  PaymentProviderConfigRow,
   ProviderHealthResponse,
   SettlementAvailableBalanceResponse,
   SettlementInboxFilters,
@@ -723,4 +726,125 @@ export async function resendMerchantOnboardingLink(applicationId: string): Promi
     headers: backofficeMutationHeaders,
   });
   return parseResponse<unknown>(response);
+}
+
+export type PaymentMethodRoutesFilters = {
+  countryCode?: string;
+  providerId?: string;
+  channel?: PaymentMethodRouteRow["channel"];
+  isActive?: boolean;
+};
+
+function paymentMethodRoutesSearchParams(filters: PaymentMethodRoutesFilters): URLSearchParams {
+  const params = new URLSearchParams();
+  if (filters.countryCode) params.set("countryCode", filters.countryCode.trim().toUpperCase());
+  if (filters.providerId) params.set("providerId", filters.providerId.trim());
+  if (filters.channel) params.set("channel", filters.channel);
+  if (filters.isActive === true) params.set("isActive", "true");
+  if (filters.isActive === false) params.set("isActive", "false");
+  return params;
+}
+
+export async function fetchPaymentProviders(): Promise<PaymentProviderConfigRow[]> {
+  const response = await internalBffFetch("/api/internal/payment-providers", {
+    ...internalBffInit,
+    method: "GET",
+  });
+  return parseResponse<PaymentProviderConfigRow[]>(response);
+}
+
+export async function createPaymentProvider(body: unknown): Promise<PaymentProviderConfigRow> {
+  const response = await internalBffFetch("/api/internal/payment-providers", {
+    ...internalBffInit,
+    method: "POST",
+    headers: backofficeMutationHeaders,
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+  return parseResponse<PaymentProviderConfigRow>(response);
+}
+
+export async function patchPaymentProvider(
+  providerId: string,
+  body: unknown,
+): Promise<PaymentProviderConfigRow> {
+  const encoded = encodeURIComponent(providerId);
+  const response = await internalBffFetch(`/api/internal/payment-providers/${encoded}`, {
+    ...internalBffInit,
+    method: "PATCH",
+    headers: backofficeMutationHeaders,
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+  return parseResponse<PaymentProviderConfigRow>(response);
+}
+
+export async function fetchPaymentMethodRoutes(
+  filters: PaymentMethodRoutesFilters = {},
+): Promise<PaymentMethodRouteRow[]> {
+  const qs = paymentMethodRoutesSearchParams(filters).toString();
+  const response = await internalBffFetch(`/api/internal/payment-method-routes${qs ? `?${qs}` : ""}`, {
+    ...internalBffInit,
+    method: "GET",
+  });
+  return parseResponse<PaymentMethodRouteRow[]>(response);
+}
+
+export async function createPaymentMethodRoute(body: unknown): Promise<PaymentMethodRouteRow> {
+  const response = await internalBffFetch("/api/internal/payment-method-routes", {
+    ...internalBffInit,
+    method: "POST",
+    headers: backofficeMutationHeaders,
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+  return parseResponse<PaymentMethodRouteRow>(response);
+}
+
+export async function patchPaymentMethodRoute(
+  routeId: string,
+  body: unknown,
+): Promise<PaymentMethodRouteRow> {
+  const encoded = encodeURIComponent(routeId);
+  const response = await internalBffFetch(`/api/internal/payment-method-routes/${encoded}`, {
+    ...internalBffInit,
+    method: "PATCH",
+    headers: backofficeMutationHeaders,
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+  return parseResponse<PaymentMethodRouteRow>(response);
+}
+
+export async function patchPaymentMethodRouteWeight(
+  routeId: string,
+  weight: number,
+): Promise<PaymentMethodRouteRow> {
+  const encoded = encodeURIComponent(routeId);
+  const response = await internalBffFetch(`/api/internal/payment-method-routes/${encoded}/weight`, {
+    ...internalBffInit,
+    method: "PATCH",
+    headers: backofficeMutationHeaders,
+    body: JSON.stringify({ weight }),
+  });
+  return parseResponse<PaymentMethodRouteRow>(response);
+}
+
+export async function fetchMerchantProviderRates(merchantId: string): Promise<MerchantProviderRateRow[]> {
+  const encoded = encodeURIComponent(merchantId);
+  const response = await internalBffFetch(`/api/internal/merchants/ops/${encoded}/provider-rates`, {
+    ...internalBffInit,
+    method: "GET",
+  });
+  return parseResponse<MerchantProviderRateRow[]>(response);
+}
+
+export async function upsertMerchantProviderRate(
+  merchantId: string,
+  body: unknown,
+): Promise<MerchantProviderRateRow> {
+  const encoded = encodeURIComponent(merchantId);
+  const response = await internalBffFetch(`/api/internal/merchants/ops/${encoded}/provider-rates`, {
+    ...internalBffInit,
+    method: "POST",
+    headers: backofficeMutationHeaders,
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+  return parseResponse<MerchantProviderRateRow>(response);
 }

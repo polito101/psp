@@ -12,7 +12,9 @@ import {
   LayoutDashboard,
   LogIn,
   LogOut,
+  Server,
   UserPlus,
+  Waypoints,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { LayoutSession } from "@/lib/session-types";
@@ -71,6 +73,24 @@ function buildNavItems(session: LayoutSession | null): NavItem[] {
       activeMatch: (pathname: string) =>
         pathname === "/merchants" || /^\/merchants\/[^/]+\/(overview|payments|settlements|payment-methods|admin)/.test(pathname),
     },
+    ...(session?.role === "admin"
+      ? [
+          {
+            href: "/payment-providers",
+            id: "payment-providers",
+            label: "Providers",
+            icon: Server,
+            activeMatch: (pathname: string) => pathname.startsWith("/payment-providers"),
+          } satisfies NavItem,
+          {
+            href: "/payment-methods",
+            id: "payment-methods",
+            label: "Payment Methods",
+            icon: Waypoints,
+            activeMatch: (pathname: string) => pathname.startsWith("/payment-methods"),
+          } satisfies NavItem,
+        ]
+      : []),
     {
       href: "/operations",
       id: "operations",

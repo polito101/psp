@@ -569,3 +569,64 @@ export type MerchantOnboardingTokenResponse = {
     status: MerchantOnboardingStatus;
   };
 };
+
+export type PaymentProviderConfigRow = {
+  id: string;
+  name: string;
+  description: string | null;
+  integrationBaseUrl: string;
+  initPaymentResource: string;
+  isConfigured: boolean;
+  isActive: boolean;
+  isPublished: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PaymentMethodRouteRow = {
+  id: string;
+  providerId: string;
+  methodCode: string;
+  methodName: string;
+  countryCode: string;
+  countryName?: string | null;
+  countryImageName?: string | null;
+  channel: "CASH" | "ONLINE" | "CREDIT_CARD" | "CRYPTO";
+  integrationMode: "S2S" | "REDIRECTION" | "HOSTED_PAGE";
+  requestTemplate: "REDIRECT_SIMPLE" | "SPEI_BANK_TRANSFER";
+  integrationCode?: string | null;
+  checkoutUrlTemplate?: string | null;
+  expirationTimeOffset?: number;
+  weight: number;
+  isActive: boolean;
+  isPublished: boolean;
+  routeConfigJson?: unknown | null;
+  createdAt?: string;
+  updatedAt?: string;
+  provider?: PaymentProviderConfigRow;
+  currencies: Array<{ currency: string; minAmount: string; maxAmount: string; isDefault: boolean }>;
+};
+
+export type MerchantProviderRateRow = {
+  id: string;
+  merchantId: string;
+  providerId: string;
+  countryCode: string;
+  percentage: string;
+  fixed: string;
+  minRateDiscount: string;
+  applyToCustomer: boolean;
+  fxSpread: string;
+  fxMarkup: string;
+  disableIndustryValidation?: boolean;
+  cashEnabled?: boolean;
+  creditCardEnabled?: boolean;
+  cryptoEnabled?: boolean;
+  onlineEnabled?: boolean;
+  cashMinAmount?: string;
+  creditCardMinAmount?: string;
+  cryptoMinAmount?: string;
+  onlineMinAmount?: string;
+  isActive: boolean;
+  provider?: { id: string; name: string };
+};
