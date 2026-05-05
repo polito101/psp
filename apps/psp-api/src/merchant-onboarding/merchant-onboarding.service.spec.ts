@@ -3,11 +3,16 @@ import {
   ConflictException,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
-import { MerchantMidAllocationFailedError } from '../merchants/allocate-unique-merchant-mid';
+import {
+  MERCHANT_MID_ALLOCATION_CONFLICT_MESSAGE,
+  MERCHANT_MID_ALLOCATION_UNAVAILABLE_MESSAGE,
+  MerchantMidAllocationFailedError,
+} from '../merchants/allocate-unique-merchant-mid';
 import { MerchantOnboardingService } from './merchant-onboarding.service';
 import { OnboardingEmailService } from './onboarding-email.service';
 import { OnboardingTokenService } from './onboarding-token.service';
@@ -441,7 +446,7 @@ describe('MerchantOnboardingService', () => {
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('maps MerchantMidAllocationFailedError at transaction boundary to ConflictException', async () => {
+  it('maps MerchantMidAllocationFailedError (retries_exhausted) at transaction boundary to ConflictException', async () => {
     const { service, prisma } = createService();
     prisma.$transaction.mockRejectedValueOnce(
       new MerchantMidAllocationFailedError('retries_exhausted'),
@@ -455,9 +460,32 @@ describe('MerchantOnboardingService', () => {
       }),
     ).rejects.toMatchObject({
       response: {
-        message: 'No se pudo completar el registro en este momento. Vuelve a intentarlo.',
+        message: MERCHANT_MID_ALLOCATION_CONFLICT_MESSAGE,
       },
     });
+  });
+
+  it('maps MerchantMidAllocationFailedError (sequence_unavailable) at transaction boundary to ServiceUnavailableException', async () => {
+    const { service, prisma } = createService();
+    prisma.$transaction.mockRejectedValueOnce(
+      new MerchantMidAllocationFailedError('sequence_unavailable'),
+    );
+
+    try {
+      await service.createApplication({
+        name: 'Ada Lovelace',
+        email: 'ada@example.com',
+        phone: '+34600000000',
+      });
+      expect('expected rejection').toBe(false);
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(ServiceUnavailableException);
+      expect(e).toMatchObject({
+        response: {
+          message: MERCHANT_MID_ALLOCATION_UNAVAILABLE_MESSAGE,
+        },
+      });
+    }
   });
 
   it('submits business profile with a valid token and moves to IN_REVIEW', async () => {

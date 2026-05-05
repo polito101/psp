@@ -224,6 +224,8 @@ Para **poblar transacciones de demo** visibles en el backoffice (misma API/DB), 
 npm run demo:backoffice-payments
 ```
 
+Volumen aleatorio adicional (40–10 000 flujos create+capture por defecto), mismas variables + `--bulk-random` o `DEMO_BULK_RANDOM=true`; opcional `--bulk-only`. Ver cabecera del script `scripts/demo/create-backoffice-demo-payments.mjs`.
+
 Para **volumen** (por defecto ≥60 `succeeded` y muestras en `canceled` / `refunded` / `requires_action` / `authorized`), con las mismas variables:
 
 ```bash

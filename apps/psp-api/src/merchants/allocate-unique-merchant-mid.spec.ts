@@ -4,6 +4,7 @@ import {
   MerchantMidAllocationFailedError,
   createMerchantWithUniqueMid,
   isMerchantMidUniqueViolation,
+  isMidSequenceRawQueryInfrastructureError,
 } from './allocate-unique-merchant-mid';
 
 describe('allocate-unique-merchant-mid', () => {
@@ -41,6 +42,25 @@ describe('allocate-unique-merchant-mid', () => {
           code: 'P2002',
           meta: { modelName: 'Merchant', target: ['email'] },
         }),
+      ).toBe(false);
+    });
+  });
+
+  describe('isMidSequenceRawQueryInfrastructureError', () => {
+    it('es true para 42P01 (relación ausente)', () => {
+      const err = Object.assign(new Error('relation does not exist'), { code: '42P01' });
+      expect(isMidSequenceRawQueryInfrastructureError(err)).toBe(true);
+    });
+
+    it('es true para P1001 de Prisma', () => {
+      expect(isMidSequenceRawQueryInfrastructureError({ code: 'P1001', message: 'Unreachable' })).toBe(
+        true,
+      );
+    });
+
+    it('es false para un código no clasificado como infra', () => {
+      expect(
+        isMidSequenceRawQueryInfrastructureError(Object.assign(new Error('x'), { code: 'XXYYY' })),
       ).toBe(false);
     });
   });
@@ -119,6 +139,50 @@ describe('allocate-unique-merchant-mid', () => {
       ).rejects.toBe(other);
 
       expect($queryRaw).toHaveBeenCalledTimes(1);
+    });
+
+    it('si $queryRaw falla con error de infra (p. ej. 42P01), propaga el error original', async () => {
+      const dbError = Object.assign(new Error('relation "merchant_mid_seq" does not exist'), {
+        code: '42P01',
+      });
+      const $queryRaw = jest.fn().mockRejectedValue(dbError);
+      const create = jest.fn();
+      const tx = { merchant: { create }, $queryRaw } as unknown as Prisma.TransactionClient;
+
+      await expect(
+        createMerchantWithUniqueMid(tx, (mid) => ({
+          name: 'x',
+          mid,
+          apiKeyHash: 'h',
+          webhookSecretCiphertext: 'ct',
+        })),
+      ).rejects.toBe(dbError);
+
+      expect($queryRaw).toHaveBeenCalledTimes(1);
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('si $queryRaw falla con error no clasificado como infra, envuelve sequence_unavailable', async () => {
+      const dbError = Object.assign(new Error('driver quirk'), { code: 'XX000' });
+      const $queryRaw = jest.fn().mockRejectedValue(dbError);
+      const create = jest.fn();
+      const tx = { merchant: { create }, $queryRaw } as unknown as Prisma.TransactionClient;
+
+      await expect(
+        createMerchantWithUniqueMid(tx, (mid) => ({
+          name: 'x',
+          mid,
+          apiKeyHash: 'h',
+          webhookSecretCiphertext: 'ct',
+        })),
+      ).rejects.toMatchObject({
+        name: 'MerchantMidAllocationFailedError',
+        reason: 'sequence_unavailable',
+        cause: dbError,
+      });
+
+      expect($queryRaw).toHaveBeenCalledTimes(1);
+      expect(create).not.toHaveBeenCalled();
     });
   });
 });

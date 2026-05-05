@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -11,10 +12,13 @@ import { createHash, randomBytes } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import { encryptUtf8 } from '../crypto/secret-box';
 import {
+  MERCHANT_MID_ALLOCATION_CONFLICT_MESSAGE,
+  MERCHANT_MID_ALLOCATION_UNAVAILABLE_MESSAGE,
   MerchantMidAllocationFailedError,
   createMerchantWithUniqueMid,
   isMerchantMidUniqueViolation,
 } from '../merchants/allocate-unique-merchant-mid';
+import { midAllocationConflictDiagnostics } from '../merchants/mid-allocation-conflict-log';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   MerchantOnboardingActorType,
@@ -306,14 +310,21 @@ export class MerchantOnboardingService {
         error instanceof MerchantMidAllocationFailedError ||
         isMerchantMidUniqueViolation(error)
       ) {
-        const detail =
+        const summary =
           error instanceof MerchantMidAllocationFailedError
             ? `MID allocation failed (${error.reason})`
             : 'merchant mid unique violation surfaced outside MID retry loop';
-        this.logger.warn(`Public merchant onboarding: ${detail}`);
-        throw new ConflictException(
-          'No se pudo completar el registro en este momento. Vuelve a intentarlo.',
+        const diagnostics = midAllocationConflictDiagnostics(error);
+        this.logger.error(
+          `Public merchant onboarding: mid conflict summary=${JSON.stringify(summary)} context=${JSON.stringify(diagnostics)}`,
         );
+        if (error instanceof MerchantMidAllocationFailedError) {
+          if (error.reason === 'retries_exhausted') {
+            throw new ConflictException(MERCHANT_MID_ALLOCATION_CONFLICT_MESSAGE);
+          }
+          throw new ServiceUnavailableException(MERCHANT_MID_ALLOCATION_UNAVAILABLE_MESSAGE);
+        }
+        throw new ConflictException(MERCHANT_MID_ALLOCATION_CONFLICT_MESSAGE);
       }
       throw error;
     }
