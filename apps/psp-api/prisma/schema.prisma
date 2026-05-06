@@ -77,6 +77,17 @@ enum MerchantIndustry {
   OTHER
 }
 
+enum ProviderLogOperation {
+  CREATE
+}
+
+enum DynamicPaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  EXPIRED
+}
+
 model Merchant {
   id                         String                     @id @default(cuid())
   name                       String
@@ -157,6 +168,10 @@ model Payment {
   canceledAt     DateTime? @map("canceled_at")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
+  /// URL de notificación al comercio (pagos dinámicos / webhooks salientes por pago).
+  notificationUrl String?  @map("notification_url") @db.VarChar(2048)
+  /// Snapshot JSON de la acción mostrable al pagador (p. ej. redirect o datos SPEI); sin usar como única fuente de secretos.
+  actionSnapshot  Json?    @map("action_snapshot")
 
   merchant      Merchant       @relation(fields: [merchantId], references: [id], onDelete: Cascade)
   paymentLink   PaymentLink?   @relation(fields: [paymentLinkId], references: [id], onDelete: SetNull)
@@ -165,6 +180,8 @@ model Payment {
   settlement    PaymentSettlement?
   attempts      PaymentAttempt[]
   operations    PaymentOperation[]
+  providerLogs              ProviderLog[]
+  notificationDeliveries    PaymentNotificationDelivery[]
 
   @@unique([merchantId, idempotencyKey])
   @@index([merchantId, status])
@@ -305,6 +322,50 @@ model PaymentAttempt {
   @@index([merchantId, createdAt])
   @@index([provider, providerPaymentId])
   @@unique([paymentId, operation, attemptNo])
+}
+
+model ProviderLog {
+  id                    String               @id @default(cuid())
+  paymentId             String               @map("payment_id")
+  providerId            String               @map("provider_id")
+  routeId               String               @map("route_id")
+  operation             ProviderLogOperation
+  createdAt             DateTime             @default(now()) @map("created_at")
+  httpStatus            Int?                 @map("http_status")
+  latencyMs             Int?                 @map("latency_ms")
+  providerTransactionId String?              @map("provider_transaction_id") @db.VarChar(160)
+  requestMasked         Json?                @map("request_masked")
+  requestCiphertext     String?              @map("request_ciphertext")
+  responseMasked        Json?                @map("response_masked")
+  responseCiphertext    String?              @map("response_ciphertext")
+  errorCode             String?              @map("error_code") @db.VarChar(120)
+  errorMessage          String?              @map("error_message") @db.VarChar(512)
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId, createdAt])
+  @@map("ProviderLog")
+}
+
+model PaymentNotificationDelivery {
+  id                     String               @id @default(cuid())
+  paymentId              String               @map("payment_id")
+  statusSnapshot         DynamicPaymentStatus @map("status_snapshot")
+  createdAt              DateTime             @default(now()) @map("created_at")
+  httpStatus             Int?                 @map("http_status")
+  requestBodyMasked      Json?                @map("request_body_masked")
+  requestBodyCiphertext  String?              @map("request_body_ciphertext")
+  responseBodyMasked     Json?                @map("response_body_masked")
+  responseBodyCiphertext String?              @map("response_body_ciphertext")
+  attemptNo              Int                  @map("attempt_no")
+  isResend               Boolean              @default(false) @map("is_resend")
+  originalDeliveryId     String?              @map("original_delivery_id")
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@unique([paymentId, attemptNo])
+  @@index([paymentId, createdAt])
+  @@map("PaymentNotificationDelivery")
 }
 
 model MerchantRateTable {

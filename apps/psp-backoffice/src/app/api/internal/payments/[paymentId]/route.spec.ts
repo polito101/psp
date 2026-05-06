@@ -47,9 +47,33 @@ describe("GET /api/internal/payments/[paymentId]", () => {
 
   it("returns 404 for merchant when upstream 200 has a different merchantId (defense-in-depth)", async () => {
     proxyInternalGetMock.mockResolvedValue({
-      id: "pay_123",
-      merchantId: "mrc_other",
-      status: "succeeded",
+      payment: {
+        id: "pay_123",
+        merchantId: "mrc_other",
+        merchantName: "Other",
+        status: "succeeded",
+        statusReason: null,
+        amountMinor: 100,
+        currency: "EUR",
+        selectedProvider: "mock",
+        providerRef: null,
+        idempotencyKey: null,
+        paymentLinkId: null,
+        rail: "fiat",
+        notificationUrl: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastAttemptAt: null,
+        succeededAt: null,
+        failedAt: null,
+        canceledAt: null,
+        attemptsTotal: 0,
+        attemptsTruncated: false,
+        attempts: [],
+      },
+      providerLogs: [],
+      notificationDeliveries: [],
+      action: null,
     });
 
     const jwt = await mintTestMerchantSessionJwt("mrc_1");
@@ -64,9 +88,33 @@ describe("GET /api/internal/payments/[paymentId]", () => {
 
   it("returns 200 with payload for merchant when merchantId matches", async () => {
     proxyInternalGetMock.mockResolvedValue({
-      id: "pay_123",
-      merchantId: "mrc_1",
-      status: "succeeded",
+      payment: {
+        id: "pay_123",
+        merchantId: "mrc_1",
+        merchantName: "A",
+        status: "succeeded",
+        statusReason: null,
+        amountMinor: 100,
+        currency: "EUR",
+        selectedProvider: "mock",
+        providerRef: null,
+        idempotencyKey: null,
+        paymentLinkId: null,
+        rail: "fiat",
+        notificationUrl: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastAttemptAt: null,
+        succeededAt: null,
+        failedAt: null,
+        canceledAt: null,
+        attemptsTotal: 0,
+        attemptsTruncated: false,
+        attempts: [],
+      },
+      providerLogs: [],
+      notificationDeliveries: [],
+      action: null,
     });
 
     const jwt = await mintTestMerchantSessionJwt("mrc_1");
@@ -75,8 +123,8 @@ describe("GET /api/internal/payments/[paymentId]", () => {
     });
     const res = await GET(req, { params: Promise.resolve({ paymentId: "pay_123" }) });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { id: string; merchantId: string };
-    expect(body.merchantId).toBe("mrc_1");
+    const body = (await res.json()) as { payment: { merchantId: string } };
+    expect(body.payment.merchantId).toBe("mrc_1");
   });
 
   it("returns upstream 403 for admin when API responds 403", async () => {

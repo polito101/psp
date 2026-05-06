@@ -8,6 +8,35 @@ const paramSchema = z.object({
   paymentId: z.string().trim().min(1).max(64),
 });
 
+function stripSensitiveJsonKeys(value: unknown): unknown {
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(stripSensitiveJsonKeys);
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (/ciphertext/i.test(k)) {
+      continue;
+    }
+    out[k] = stripSensitiveJsonKeys(v);
+  }
+  return out;
+}
+
+/** Defensa en profundidad: no exponer ciphertext aunque el upstream lo envíe por error. */
+function sanitizeOpsPaymentDetailResponse(data: OpsPaymentDetailResponse): OpsPaymentDetailResponse {
+  return {
+    payment: stripSensitiveJsonKeys(data.payment) as OpsPaymentDetailResponse["payment"],
+    providerLogs: stripSensitiveJsonKeys(data.providerLogs) as OpsPaymentDetailResponse["providerLogs"],
+    notificationDeliveries: stripSensitiveJsonKeys(
+      data.notificationDeliveries,
+    ) as OpsPaymentDetailResponse["notificationDeliveries"],
+    action: data.action,
+  };
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ paymentId: string }> },
@@ -34,10 +63,11 @@ export async function GET(
       searchParams: searchParams.size > 0 ? searchParams : undefined,
       backofficeScope: auth.claims,
     });
-    if (auth.claims.role === "merchant" && data.merchantId !== auth.claims.merchantId) {
+    const safe = sanitizeOpsPaymentDetailResponse(data);
+    if (auth.claims.role === "merchant" && safe.payment.merchantId !== auth.claims.merchantId) {
       return NextResponse.json({ message: "Payment not found" }, { status: 404 });
     }
-    return NextResponse.json(data);
+    return NextResponse.json(safe);
   } catch (error) {
     if (error instanceof ProxyUpstreamError && error.upstreamStatus === 404) {
       return NextResponse.json({ message: "Payment not found" }, { status: 404 });

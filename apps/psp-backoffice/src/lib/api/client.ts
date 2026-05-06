@@ -17,6 +17,7 @@ import type {
   OpsDashboardVolumeUsdFilters,
   OpsDashboardVolumeUsdResponse,
   OpsPaymentDetailResponse,
+  OpsPaymentActionResponse,
   OpsPaymentsSummaryDailyResponse,
   OpsPaymentsSummaryHourlyResponse,
   OpsPaymentsSummaryResponse,
@@ -28,6 +29,7 @@ import type {
   PaymentMethodRouteRow,
   PaymentProviderConfigRow,
   ProviderHealthResponse,
+  ResendPaymentNotificationResponse,
   SettlementAvailableBalanceResponse,
   SettlementInboxFilters,
   SettlementRequestRow,
@@ -400,6 +402,30 @@ export async function fetchOpsPaymentDetail(paymentId: string): Promise<OpsPayme
     method: "GET",
   });
   return parseResponse<OpsPaymentDetailResponse>(response);
+}
+
+export async function fetchPaymentAction(paymentId: string): Promise<OpsPaymentActionResponse> {
+  const encoded = encodeURIComponent(paymentId);
+  const response = await internalBffFetch(`/api/internal/payments/${encoded}/action`, {
+    ...internalBffInit,
+    method: "GET",
+  });
+  return parseResponse<OpsPaymentActionResponse>(response);
+}
+
+export async function resendPaymentNotification(
+  paymentId: string,
+  deliveryId: string,
+): Promise<ResendPaymentNotificationResponse> {
+  const pe = encodeURIComponent(paymentId);
+  const de = encodeURIComponent(deliveryId);
+  const response = await internalBffFetch(`/api/internal/payments/${pe}/notifications/${de}/resend`, {
+    ...internalBffInit,
+    method: "POST",
+    headers: backofficeMutationHeaders,
+    body: JSON.stringify({}),
+  });
+  return parseResponse<ResendPaymentNotificationResponse>(response);
 }
 
 export async function fetchProviderHealth(): Promise<ProviderHealthResponse> {

@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Param,
+  Post,
   Query,
   Req,
   UseGuards,
@@ -179,6 +180,55 @@ export class PaymentsV2InternalController {
     @Query() query: OpsMerchantFinancePayoutsQueryDto,
   ) {
     return this.payments.listOpsMerchantFinancePayouts(merchantId, query);
+  }
+
+  @Get('ops/payments/:paymentId/action')
+  @ApiOperation({
+    summary: 'Acción persistida del pago (solo lectura desde `actionSnapshot`); no llama al proveedor',
+  })
+  @ApiParam({
+    name: 'paymentId',
+    description: 'ID interno del pago (`Payment.id`)',
+    schema: { type: 'string', maxLength: 64 },
+  })
+  async getOpsPaymentAction(@Param('paymentId') paymentId: string, @Req() req: Request) {
+    const id = paymentId?.trim();
+    if (!id || id.length > 64) {
+      throw new BadRequestException('Invalid paymentId');
+    }
+    const backofficeMerchantScopeId = readBackofficeMerchantScopeId(req);
+    return this.payments.getOpsPaymentAction(id, { backofficeMerchantScopeId });
+  }
+
+  @Post('ops/payments/:paymentId/notifications/:deliveryId/resend')
+  @ApiOperation({
+    summary: 'Reenvía la notificación al comercio a partir de una entrega previa (cuerpo enmascarado)',
+  })
+  @ApiParam({
+    name: 'paymentId',
+    description: 'ID interno del pago (`Payment.id`)',
+    schema: { type: 'string', maxLength: 64 },
+  })
+  @ApiParam({
+    name: 'deliveryId',
+    description: 'ID de `PaymentNotificationDelivery`',
+    schema: { type: 'string', maxLength: 64 },
+  })
+  async resendPaymentNotification(
+    @Param('paymentId') paymentId: string,
+    @Param('deliveryId') deliveryId: string,
+    @Req() req: Request,
+  ) {
+    const pid = paymentId?.trim();
+    const did = deliveryId?.trim();
+    if (!pid || pid.length > 64) {
+      throw new BadRequestException('Invalid paymentId');
+    }
+    if (!did || did.length > 64) {
+      throw new BadRequestException('Invalid deliveryId');
+    }
+    const backofficeMerchantScopeId = readBackofficeMerchantScopeId(req);
+    return this.payments.resendPaymentNotificationDelivery(pid, did, { backofficeMerchantScopeId });
   }
 
   @Get('ops/payments/:paymentId')

@@ -5,6 +5,7 @@ import {
   HttpException,
   HttpStatus,
   Logger,
+  NotFoundException,
 } from '@nestjs/common';
 import { hashCreatePaymentIntentPayload } from './create-payment-intent-payload-hash';
 import { PaymentsV2Service } from './payments-v2.service';
@@ -42,6 +43,16 @@ describe('PaymentsV2Service', () => {
       aggregate: jest.fn(),
       create: jest.fn(),
       findMany: jest.fn(),
+      count: jest.fn(),
+    },
+    providerLog: {
+      findMany: jest.fn(),
+    },
+    paymentNotificationDelivery: {
+      findMany: jest.fn(),
+      findFirst: jest.fn(),
+      aggregate: jest.fn(),
+      create: jest.fn(),
     },
     merchant: {
       findUnique: jest.fn().mockResolvedValue({ isActive: true }),
@@ -192,6 +203,10 @@ describe('PaymentsV2Service', () => {
     redis.releasePaymentsV2HalfOpenProbe.mockResolvedValue(undefined);
     prisma.paymentAttempt.aggregate.mockResolvedValue({ _max: { attemptNo: 0 } });
     prisma.paymentAttempt.create.mockResolvedValue(undefined);
+    prisma.paymentAttempt.findMany.mockResolvedValue([]);
+    prisma.paymentAttempt.count.mockResolvedValue(0);
+    prisma.providerLog.findMany.mockResolvedValue([]);
+    prisma.paymentNotificationDelivery.findMany.mockResolvedValue([]);
     prisma.payment.updateMany.mockResolvedValue({ count: 1 });
     prisma.payment.findUniqueOrThrow.mockResolvedValue({
       id: 'pay_default',
@@ -2076,6 +2091,114 @@ describe('PaymentsV2Service', () => {
     expect(snap.stripe.halfOpen).toBe(true);
     expect(snap.stripe.circuitState).toBe('half_open');
     expect(snap.mock.circuitState).toBe('closed');
+  });
+
+  describe('getOpsPaymentDetail', () => {
+    const paymentRowBase = {
+      id: 'pay_ops',
+      merchantId: 'm_1',
+      merchant: { name: 'Test Merchant' },
+      status: 'succeeded',
+      statusReason: null,
+      amountMinor: 1000,
+      currency: 'EUR',
+      selectedProvider: 'mock',
+      providerRef: 'ref_1',
+      idempotencyKey: 'idem_1',
+      paymentLinkId: null,
+      rail: 'fiat',
+      createdAt: new Date('2020-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2020-01-02T00:00:00.000Z'),
+      lastAttemptAt: null,
+      succeededAt: null,
+      failedAt: null,
+      canceledAt: null,
+      notificationUrl: 'https://merchant.example/hook',
+      actionSnapshot: { action: { type: 'redirect', url: 'https://example.com/pay' } },
+    };
+
+    beforeEach(() => {
+      prisma.payment.findUnique.mockResolvedValue(paymentRowBase);
+      prisma.paymentAttempt.count.mockResolvedValue(0);
+      prisma.paymentAttempt.findMany.mockResolvedValue([]);
+      prisma.providerLog.findMany.mockResolvedValue([]);
+      prisma.paymentNotificationDelivery.findMany.mockResolvedValue([]);
+    });
+
+    it('devuelve payment anidado, listas y acción parseada', async () => {
+      const out = await service.getOpsPaymentDetail('pay_ops', {});
+      expect(out.payment.id).toBe('pay_ops');
+      expect(out.payment.merchantName).toBe('Test Merchant');
+      expect(out.payment.notificationUrl).toBe('https://merchant.example/hook');
+      expect(out.providerLogs).toEqual([]);
+      expect(out.notificationDeliveries).toEqual([]);
+      expect(out.action).toEqual({ type: 'redirect', url: 'https://example.com/pay' });
+    });
+
+    it('alcance merchant devuelve 404 si el pago es de otro merchant', async () => {
+      await expect(
+        service.getOpsPaymentDetail('pay_ops', { backofficeMerchantScopeId: 'other' }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('getOpsPaymentAction', () => {
+    beforeEach(() => {
+      prisma.payment.findUnique.mockResolvedValue({
+        id: 'pay_ops',
+        merchantId: 'm_1',
+        actionSnapshot: { type: 'bank_transfer', clabe: '123' },
+      });
+    });
+
+    it('devuelve acción desde snapshot', async () => {
+      await expect(service.getOpsPaymentAction('pay_ops', {})).resolves.toEqual({
+        action: { type: 'bank_transfer', clabe: '123' },
+      });
+    });
+  });
+
+  describe('resendPaymentNotificationDelivery', () => {
+    const originalFetch = global.fetch;
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    it('crea entrega de reenvío y hace POST al notificationUrl', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 202,
+        text: async () => '{"ok":true}',
+      });
+      prisma.payment.findUnique.mockResolvedValue({
+        id: 'pay_1',
+        merchantId: 'm_1',
+        notificationUrl: 'https://hook.example/notify',
+      });
+      prisma.paymentNotificationDelivery.findFirst.mockResolvedValue({
+        id: 'del_1',
+        paymentId: 'pay_1',
+        statusSnapshot: 'PAID',
+        requestBodyMasked: { amount: 1 },
+        attemptNo: 1,
+      } as never);
+      prisma.paymentNotificationDelivery.aggregate.mockResolvedValue({ _max: { attemptNo: 1 } });
+      prisma.paymentNotificationDelivery.create.mockResolvedValue({
+        id: 'del_2',
+        attemptNo: 2,
+        httpStatus: 202,
+        createdAt: new Date(),
+        isResend: true,
+        originalDeliveryId: 'del_1',
+      });
+
+      const out = await service.resendPaymentNotificationDelivery('pay_1', 'del_1', {});
+      expect(out.id).toBe('del_2');
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://hook.example/notify',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
   });
 
   describe('selectedProvider persistido no reconocido (legacy)', () => {
