@@ -1,5 +1,9 @@
 'use client'
 
+const SHOW_ERROR_DETAILS =
+  process.env.NODE_ENV === 'development' ||
+  process.env.NEXT_PUBLIC_SHOW_ERROR_DETAILS === 'true'
+
 export default function GlobalError({
   error,
 }: {
@@ -125,9 +129,22 @@ export default function GlobalError({
             </div>
           </div>
           <div className="error-summary">
-            {error.message || 'Unknown error'}
+            {SHOW_ERROR_DETAILS ? (
+              error.message || 'Unknown error'
+            ) : (
+              <>
+                Something went wrong. Please try again later.
+                {error.digest ? (
+                  <>
+                    {' '}
+                    Reference:{' '}
+                    <code>{error.digest}</code>
+                  </>
+                ) : null}
+              </>
+            )}
           </div>
-          {error.stack && (
+          {SHOW_ERROR_DETAILS && error.stack ? (
             <div className="error-details-wrapper">
               <details className="error-details">
                 <summary>
@@ -139,7 +156,7 @@ export default function GlobalError({
                 <pre className="error-stack">{error.stack}</pre>
               </div>
             </div>
-          )}
+          ) : null}
         </div>
       </body>
     </html>
