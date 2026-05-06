@@ -1,6 +1,6 @@
 # Estado de tests
 
-Ultima actualizacion: 2026-05-05
+Ultima actualizacion: 2026-05-06
 
 ## Objetivo
 
@@ -20,7 +20,7 @@ La CI del monorepo incluye `api-ci` (lint/test/build API), `backoffice-ci` (lint
 
 | Dominio | Unit | Integration local | Smoke | Estado | Notas |
 | --- | --- | --- | --- | --- | --- |
-| `payments-v2` | Si | Si | Si | Cubierto | Unit `payments-v2.service.spec`: mocks `merchant.findUnique` + `merchantPaymentMethod` tras `clearAllMocks`; idempotencia 3DS espera `nextAction` mínimo `{ type: '3ds' }`; asserts `ConflictException.getResponse()` toleran cuerpo objeto Nest; `onApplicationBootstrap` legacy stripe usa doble `$queryRaw`. **Detalle ops** (`getOpsPaymentDetail`, `getOpsPaymentAction`, `resendPaymentNotificationDelivery`): respuesta anidada `payment` + `providerLogs` + `notificationDeliveries` + `action`; tablas `ProviderLog` / `PaymentNotificationDelivery` y columnas `Payment.notification_url` / `action_snapshot` (migración `20260505143000_payment_ops_logs_notifications`). Create v2 sin `provider` en body: ruteo vía `PAYMENTS_PROVIDER_ORDER` + registry inyectable (`PAYMENT_PROVIDERS`); integration setup con `mock`. Flujos create/get/capture/cancel/refund + idempotencia + `paymentLink` + ops. Unit: `ProviderRegistryService`, adapter Acme stub, CB v2 (Redis/fallback, half-open NX con validación env solo si `PAYMENTS_PROVIDER_CB_HALF_OPEN` + `REDIS_URL`, snapshot `circuitState`/`halfOpen`, backoff), reintento transitorio unit valida ms vía spy de `sleep` (no wall-clock `Date.now`); cuota merchant (`payments-v2-merchant-rate-limit*.spec.ts`, `PaymentsV2MerchantRateLimitService`; incluye deduplicación heap/indice por bucket), correlación HTTP (`src/common/correlation/correlation-id.spec.ts`, cabeceras `X-Request-Id`/`X-Correlation-Id`). Integration `jest.integration.setup` fuerza `PAYMENTS_PROVIDER_RETRY_BASE_MS=0`. Integration `volume-hourly`: totales/serie como string. Integration dedicada `payments-v2-merchant-rate-limit.integration.spec.ts` (429 + idempotencia sin consumo extra; incluida en `test:integration:critical`). Integration `payments-v2.integration.spec.ts`: aserciones de cabecera `X-Request-Id` en create. |
+| `payments-v2` | Si | Si | Si | Cubierto | Unit `payments-v2.service.spec`: … Create v2: contrato **v2** (`amount` decimal + `customer` + URLs + `channel`) con hash de idempotencia `v:2`; **legacy** `amountMinor` sigue soportado (`v:1`). … Tablas de configuración de enrutado `payment_provider_configs` / `payment_method_routes` / `payment_method_route_currencies` / `merchant_provider_rates` (migración `20260506120000_dynamic_payment_routing_config`). … |
 | `merchants` | Si (MID) | Si | Parcial | Parcial | Unit `allocate-unique-merchant-mid.spec.ts`: MID vía secuencia Postgres `merchant_mid_seq` (`nextval`) + reintento solo ante P2002 con jitter; agotamiento o fila vacía → `MerchantMidAllocationFailedError`; fallos `$queryRaw` clasificados como **infra** (p. ej. Postgres `42P01`) → se propaga el error original; fallos **no** infra sin clasificar → `MerchantMidAllocationFailedError('sequence_unavailable', { cause })`. `mid-allocation-conflict-log.spec.ts`: cadena `Error`/`.cause` serializada para logs (mensajes sanitizados, `prismaCode`, `postgresSqlState`). `MerchantsService.create`: log `error` con contexto antes de `retries_exhausted` → `409`, `sequence_unavailable` → `503` (mensajes `MERCHANT_MID_ALLOCATION_*` en español). Migración `20260504220000_merchant_mid_sequence`. Integration cubre create+guard, ciclo revoke/rotate via servicio, y ops `GET .../ops/:id/detail` + `PATCH .../ops/:id/account` (normalización email, 409 duplicado); `mid` en API es cadena numérica 6–15 caracteres (`VARCHAR(16)` en DB). Falta spec unitario amplio del controller/service. |
 | `merchant-onboarding` | Si | No | No | Parcial | Unit `merchant-onboarding.service.spec.ts`: creación pública con respuesta neutral `2xx` si email de expediente o `Merchant.email` ya existe (detectado tras advisory lock en TX, no antes — mitiga fuga por timing frente a trabajo `bcrypt`/token); incl. P2002 carrera; P2002 de `mid` en borde de transacción → `ConflictException`; `MerchantMidAllocationFailedError`: `retries_exhausted` → `409`, `sequence_unavailable` → `503` (mensajes genéricos en español); errores MID infra propagados desde allocate (p. ej. Postgres `42P01`) no son esa clase y se re-lanzan; log `error` con resumen + `midAllocationConflictDiagnostics` (causa/prisma/postgres) antes de esos mapeos; perfil negocio `companyName`/`industry`/`websiteUrl` + sync `Merchant`; checklist, token, eventos; approve/reject (email decisión); approve preflight (`findUnique` id/status) antes de `bcrypt.hash` para evitar CPU en `404`/`409`; `listApplications` con `q`; barrera advisory + lock; portal login; `merchant-onboarding.controller.spec.ts`. Unit email/token. Integración HTTP pendiente. |
 | `payment-links` | No | Si | No | Parcial | Sin endpoint HTTP activo; cobertura via `PaymentLinksService.findForMerchant`. |
@@ -91,8 +91,8 @@ La CI del monorepo incluye `api-ci` (lint/test/build API), `backoffice-ci` (lint
 
 ### Smoke (`test/smoke`)
 
-- `test/smoke/sandbox.smoke.spec.ts`
-- `test/smoke/backoffice-volume-demo.smoke.spec.ts` (solo `npm run test:smoke:backoffice-demo` o `SMOKE_BACKOFFICE_VOLUME_DEMO=1`)
+- `test/smoke/sandbox.smoke.spec.ts` — `POST /api/v2/payments` con cuerpo v2 (`amount` EUR + `customer` ES + URLs); env opcional `SMOKE_PAYMENT_AMOUNT` / `SMOKE_REQUIRES_ACTION_AMOUNT` (decimales).
+- `test/smoke/backoffice-volume-demo.smoke.spec.ts` (solo `npm run test:smoke:backoffice-demo` o `SMOKE_BACKOFFICE_VOLUME_DEMO=1`) — mismo contrato v2; variables de importe `SMOKE_PAYMENT_AMOUNT` / `SMOKE_REQUIRES_ACTION_AMOUNT`.
 - `test/smoke/orchestrator.integration.spec.ts`
 - `test/smoke/check-ops-metrics-ci.spec.ts`
 
@@ -106,7 +106,7 @@ Desde `apps/psp-api`:
 
 - `npm run lint`
 - `npm run test`
-- `npm run test:integration`
+- `npm run test:integration` — requiere `DATABASE_URL` en `apps/psp-api/.env` (o shell); en este entorno de agente **no** se ejecutó por ausencia de variable.
 - `npm run test:integration:critical`
 - `npm run test:ci:ops-metrics`
 - `npm run test:smoke:sandbox`

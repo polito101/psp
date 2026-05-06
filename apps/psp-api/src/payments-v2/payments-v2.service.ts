@@ -20,6 +20,7 @@ import { SettlementService } from '../settlements/settlement.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { FxRatesService } from '../fx/fx-rates.service';
 import { hashCreatePaymentIntentPayload } from './create-payment-intent-payload-hash';
+import { decimalAmountToMinorUnits } from './decimal-amount-to-minor';
 import { CreatePaymentIntentDto } from './dto/create-payment-intent.dto';
 import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
 import { OpsMerchantFinancePayoutsQueryDto } from './dto/ops-merchant-finance-payouts-query.dto';
@@ -345,11 +346,12 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   ): Promise<OperationResult> {
     idempotencyKey = this.parseOptionalIdempotencyKey(idempotencyKey);
     this.assertPaymentsV2ConfigAllowlist(merchantId);
+    const fin = this.normalizeCreateIntentFinancials(dto);
     const merchantCheckedInPaymentLinkRead = await this.assertPaymentLinkConsistency(
       merchantId,
       dto.paymentLinkId,
-      dto.amountMinor,
-      dto.currency,
+      fin.amountMinor,
+      fin.currencyUpper,
     );
     if (!merchantCheckedInPaymentLinkRead) {
       await this.assertMerchantIsActiveFresh(merchantId);
@@ -366,7 +368,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     await this.merchantRateLimit.consumeIfNeeded(merchantId, 'create');
 
     const providerOrder = this.registry.orderedProviders();
-    const currencyUpper = dto.currency.toUpperCase();
+    const currencyUpper = fin.currencyUpper;
     const canSettleFees = await this.fee.hasActiveRateTableForAnyProvider(
       merchantId,
       currencyUpper,
@@ -379,7 +381,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     }
 
     const paymentMethodMeta = await this.resolvePaymentMethodForCreate(merchantId, dto);
-    const payerCountry = dto.payerCountry ? dto.payerCountry.toUpperCase() : null;
+    const payerCountry = fin.payerCountryUpper;
     const nowUtc = new Date();
     const createdWeekdayUtc = nowUtc.getUTCDay();
 
@@ -392,12 +394,13 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
           paymentLinkId: dto.paymentLinkId ?? null,
           idempotencyKey: idempotencyKey ?? null,
           createPayloadHash: hashCreatePaymentIntentPayload(dto),
-          amountMinor: dto.amountMinor,
+          amountMinor: fin.amountMinor,
           currency: currencyUpper,
           status: PAYMENT_V2_STATUS.PROCESSING,
           rail: 'fiat',
           selectedProvider,
           payerCountry,
+          notificationUrl: fin.notificationUrl,
           paymentMethodCode: paymentMethodMeta.code,
           paymentMethodFamily: paymentMethodMeta.family,
           createdWeekdayUtc,
@@ -438,7 +441,38 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       await this.safeSetIdempotency(merchantId, idempotencyKey, payment.id);
     }
 
-    return this.executeProviderOperation(payment, 'create', dto.amountMinor, providerOrder);
+    return this.executeProviderOperation(payment, 'create', fin.amountMinor, providerOrder);
+  }
+
+  private normalizeCreateIntentFinancials(dto: CreatePaymentIntentDto): {
+    amountMinor: number;
+    currencyUpper: string;
+    payerCountryUpper: string | null;
+    notificationUrl: string | null;
+  } {
+    const hasMinor = dto.amountMinor != null;
+    const hasMajor = dto.amount != null;
+    if (hasMinor === hasMajor) {
+      throw new BadRequestException('Provide exactly one of amountMinor or amount');
+    }
+    const currencyUpper = dto.currency.toUpperCase();
+    if (hasMinor) {
+      return {
+        amountMinor: dto.amountMinor!,
+        currencyUpper,
+        payerCountryUpper: dto.payerCountry ? dto.payerCountry.toUpperCase() : null,
+        notificationUrl: null,
+      };
+    }
+    if (!dto.customer) {
+      throw new BadRequestException('customer is required when amount is provided');
+    }
+    return {
+      amountMinor: decimalAmountToMinorUnits(dto.amount!, dto.currency),
+      currencyUpper,
+      payerCountryUpper: dto.customer.country.toUpperCase(),
+      notificationUrl: dto.notificationUrl?.trim() ? dto.notificationUrl.trim() : null,
+    };
   }
 
   async getPayment(merchantId: string, paymentId: string) {

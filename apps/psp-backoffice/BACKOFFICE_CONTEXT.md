@@ -1,6 +1,6 @@
 # BACKOFFICE_CONTEXT — PSP Backoffice
 
-Ultima actualizacion: 2026-05-04
+Ultima actualizacion: 2026-05-06
 
 Documento **local** del app `apps/psp-backoffice` (nombre distinto de `PROJECT_CONTEXT.md` en la raíz para evitar confusion). El monorepo y la API se documentan en **`PROJECT_CONTEXT.md`** (raíz) y **`apps/psp-api/README.md`**; la web marketing tiene **`apps/web-finara/WEB_FINARA_CONTEXT.md`**. Aquí se detalla solo el panel administrativo.
 
@@ -36,8 +36,10 @@ src/
 │   ├── crm/onboarding/[applicationId]/page.tsx
 │   ├── merchants/page.tsx            # directorio merchants (admin)
 │   ├── merchants/[merchantId]/overview|payments|settlements|payment-methods|admin|finance/page.tsx
+│   ├── payment-providers/page.tsx    # CRUD proveedores PSP (config HTTP base + recursos)
+│   ├── payment-methods/page.tsx      # rutas por método/país/canal, pesos y divisas soportadas
 │   ├── monitor/page.tsx              # `/monitor`
-│   ├── payments/[paymentId]/page.tsx # detalle pago
+│   ├── payments/[paymentId]/page.tsx # detalle pago (pestañas: detalle, logs de proveedor, notificaciones, reenvío)
 │   └── api/
 │       ├── public/onboarding/[token]/    # proxy público merchant-onboarding (sin cookie)
 │       └── internal/                       # BFF (solo servidor)
@@ -50,7 +52,12 @@ src/
 │           ├── settlements/...
 │           ├── merchants/ops/...
 │           ├── merchants/[merchantId]/finance/...
+│           ├── merchants/ops/[merchantId]/provider-rates/route.ts
+│           ├── payment-providers/...
+│           ├── payment-method-routes/...
 │           ├── payments/[paymentId]/route.ts
+│           ├── payments/[paymentId]/action/route.ts
+│           ├── payments/[paymentId]/notifications/[deliveryId]/resend/route.ts
 │           └── provider-health/route.ts
 ├── components/                       # UI por feature (home/, merchant-portal/, settlements/, merchants/, crm/)
 └── lib/                              # clientes API, utilidades
@@ -69,12 +76,19 @@ El listado `/transactions` lee la misma base que **`psp-api`**. Para generar fil
 1. Desde `apps/psp-api`, con la URL y el secreto interno **del mismo deploy** que consume el backoffice (`PSP_API_BASE_URL` / `PSP_INTERNAL_API_SECRET`):
    - `npm run demo:backoffice-payments`
 2. Volumen para el panel (≥60 `succeeded` + muestras `canceled` / `refunded` / `requires_action` / `authorized`): `npm run test:smoke:backoffice-demo` con `SMOKE_BASE_URL` o `DEMO_API_BASE_URL` + `INTERNAL_API_SECRET` (o `SMOKE_*`). En **Windows PowerShell** define variables con `$env:SMOKE_BASE_URL='https://…'` (el comando `set` de CMD no aplica). No forma parte de `test:smoke:sandbox` (solo corre con ese script o `SMOKE_BACKOFFICE_VOLUME_DEMO=1`). Pausas por defecto respetan el throttle de creación v2 (30/min); ver cabecera JSDoc en `test/smoke/backoffice-volume-demo.smoke.spec.ts`.
-3. Variables reconocidas por el script demo: `DEMO_API_BASE_URL` o `SMOKE_BASE_URL`, y `INTERNAL_API_SECRET` o `SMOKE_INTERNAL_API_SECRET`. Opcional: `DEMO_FETCH_TIMEOUT_MS` (default 90000) si el cold start es lento.
-4. Alternativa ligera: `npm run test:smoke:sandbox` con las mismas variables (Jest) también persiste pagos v2 (pocos).
+3. Variables reconocidas por el script demo: `DEMO_API_BASE_URL` o `SMOKE_BASE_URL`, y `INTERNAL_API_SECRET` o `SMOKE_INTERNAL_API_SECRET`. Opcional: `DATABASE_URL` / `DEMO_DATABASE_URL` para sembrar `payment_provider_configs`, rutas (`REDIRECT_SIMPLE` + `SPEI_BANK_TRANSFER`), divisas y `merchant_provider_rates` (omitir con `DEMO_SKIP_ROUTING_SEED=true`). Opcional: `DEMO_FETCH_TIMEOUT_MS` (default 90000) si el cold start es lento.
+4. Alternativa ligera: `npm run test:smoke:sandbox` con las mismas variables (Jest) también persiste pagos v2 (pocos) usando el cuerpo decimal + `customer`.
+
+### Configuración de enrutado y tarifas (admin)
+
+- **`/payment-providers`**: integraciones PSP (URL base, recurso de inicio, flags activo/publicado/configurado).
+- **`/payment-methods`**: rutas por método, país, canal, plantilla `REDIRECT_SIMPLE` / `SPEI_BANK_TRANSFER`, peso, divisas y rangos importe.
+- **`/merchants/:merchantId/admin`**: pestaña de **tarifas por proveedor** (`MerchantProviderRate` por país).
+- **`/payments/:paymentId`**: detalle con pestañas de **notificaciones** (reenvío) y **logs de proveedor**.
 
 Entrar al backoffice como **admin** y abrir `/` o `/transactions` (sin filtro de fecha por defecto se listan todas las recientes).
 
-### Si el panel se queda en “Cargando…”
+### Si el panel se queda en "Cargando…"
 
 - El navegador llama a rutas **`/api/internal/*`** del propio Next; el servidor reenvía a **`PSP_API_BASE_URL`**. Si esa URL no es la del servicio `psp-api` real, o la API está fría y los timeouts son cortos, la petición puede tardar mucho o no completar.
 - En Render: `PSP_API_BASE_URL` = URL **https** pública del servicio API (no la del backoffice). `PSP_INTERNAL_API_SECRET` debe coincidir con `INTERNAL_API_SECRET` de la API. Sube **`PSP_API_PROXY_TIMEOUT_MS`** en el backoffice (p. ej. `60000`) para cold start.
@@ -119,7 +133,9 @@ Definidas en [`.env.example`](.env.example) de este directorio; copia a `.env.lo
 - **`/merchants/[merchantId]/admin`** — Solo admin: pantalla tabulada **Account** / **Application Form** / **Payment Methods**. **Account** edita datos administrativos del merchant; **Application Form** muestra eventos cronológicos del onboarding más reciente; **Payment Methods** muestra tabla inicial con UID/name/status y columnas objetivo para país, límites y rates (fases posteriores).
 - **`/operations`** — Solo admin: inbox de `SettlementRequest` PENDING (aprobar/rechazar).
 - **`/monitor`** — Vista compacta + health de proveedores.
-- **`/payments/[paymentId]`** — Detalle de pago (intentos acotados a los 200 más recientes si el historial crece; aviso en UI si `attemptsTruncated`), metadatos, enlaces operativos.
+- **`/payments/[paymentId]`** — Detalle de pago: pestañas de detalle, notificaciones al comercio y logs de proveedor (cuerpos enmascarados).
+- **`/payment-providers`** — Solo admin: catálogo de `PaymentProviderConfig` (integración HTTP).
+- **`/payment-methods`** — Solo admin: rutas `PaymentMethodRoute` (pesos, divisas, plantillas).
 - **`/merchants/[merchantId]/finance`** — Resumen gross/fee/net (EUR), tabla de fee quotes y payouts; enlaces desde transacciones y detalle de pago.
 
 ## 7) BFF y seguridad

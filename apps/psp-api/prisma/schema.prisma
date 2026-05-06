@@ -88,6 +88,24 @@ enum DynamicPaymentStatus {
   EXPIRED
 }
 
+enum PaymentChannel {
+  CASH
+  ONLINE
+  CREDIT_CARD
+  CRYPTO
+}
+
+enum PaymentIntegrationMode {
+  S2S
+  REDIRECTION
+  HOSTED_PAGE
+}
+
+enum PaymentProviderRequestTemplate {
+  REDIRECT_SIMPLE
+  SPEI_BANK_TRANSFER
+}
+
 model Merchant {
   id                         String                     @id @default(cuid())
   name                       String
@@ -121,6 +139,7 @@ model Merchant {
   merchantPaymentMethods  MerchantPaymentMethod[]
   settlementRequests      SettlementRequest[]
   onboardingApplications  MerchantOnboardingApplication[]
+  merchantProviderRates   MerchantProviderRate[]
 }
 
 model PaymentLink {
@@ -236,6 +255,110 @@ model MerchantPaymentMethod {
 
   @@unique([merchantId, definitionId])
   @@index([merchantId, merchantEnabled, adminEnabled])
+}
+
+model PaymentProviderConfig {
+  id                    String   @id @default(cuid())
+  name                  String   @db.VarChar(160)
+  description           String?  @db.VarChar(512)
+  integrationBaseUrl    String   @map("integration_base_url") @db.VarChar(2048)
+  initPaymentResource   String   @map("init_payment_resource") @db.VarChar(2048)
+  isConfigured          Boolean  @default(false) @map("is_configured")
+  isActive              Boolean  @default(true) @map("is_active")
+  isPublished           Boolean  @default(false) @map("is_published")
+  configCiphertext      String?  @map("config_ciphertext")
+  credentialsCiphertext String?  @map("credentials_ciphertext")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  routes         PaymentMethodRoute[]
+  merchantRates  MerchantProviderRate[]
+
+  @@index([isActive, isPublished])
+  @@map("payment_provider_configs")
+}
+
+model PaymentMethodRoute {
+  id                    String                         @id @default(cuid())
+  providerId            String                         @map("provider_id")
+  methodCode            String                         @map("method_code") @db.VarChar(64)
+  methodName            String                         @map("method_name") @db.VarChar(160)
+  countryCode           String                         @map("country_code") @db.VarChar(2)
+  countryName           String?                        @map("country_name") @db.VarChar(120)
+  countryImageName      String?                        @map("country_image_name") @db.VarChar(120)
+  channel               PaymentChannel
+  integrationMode       PaymentIntegrationMode         @map("integration_mode")
+  requestTemplate       PaymentProviderRequestTemplate @map("request_template")
+  integrationCode       String?                        @map("integration_code") @db.VarChar(120)
+  checkoutUrlTemplate   String?                        @map("checkout_url_template") @db.VarChar(2048)
+  expirationTimeOffset  Int                            @default(0) @map("expiration_time_offset")
+  weight                Int                            @default(0)
+  isActive              Boolean                        @default(true) @map("is_active")
+  isPublished           Boolean                        @default(false) @map("is_published")
+  isFlagged             Boolean                        @default(false) @map("is_flagged")
+  forcePendingInput     Boolean                        @default(false) @map("force_pending_input")
+  isVirtual             Boolean                        @default(false) @map("is_virtual")
+  riskEvaluation        Boolean                        @default(false) @map("risk_evaluation")
+  routeConfigJson       Json?                          @map("route_config_json")
+  routeConfigCiphertext String?                        @map("route_config_ciphertext")
+  createdAt             DateTime                       @default(now()) @map("created_at")
+  updatedAt             DateTime                       @updatedAt @map("updated_at")
+
+  provider   PaymentProviderConfig        @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  currencies PaymentMethodRouteCurrency[]
+
+  @@index([countryCode, channel, isActive, isPublished])
+  @@index([providerId, countryCode])
+  @@index([methodCode, countryCode, channel])
+  @@map("payment_method_routes")
+}
+
+model PaymentMethodRouteCurrency {
+  id        String   @id @default(cuid())
+  routeId   String   @map("route_id")
+  currency  String   @db.VarChar(8)
+  minAmount Decimal  @map("min_amount") @db.Decimal(18, 6)
+  maxAmount Decimal  @map("max_amount") @db.Decimal(18, 6)
+  isDefault Boolean  @default(false) @map("is_default")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  route PaymentMethodRoute @relation(fields: [routeId], references: [id], onDelete: Cascade)
+
+  @@unique([routeId, currency])
+  @@index([currency])
+  @@map("payment_method_route_currencies")
+}
+
+model MerchantProviderRate {
+  id                        String   @id @default(cuid())
+  merchantId                String   @map("merchant_id")
+  providerId                String   @map("provider_id")
+  countryCode               String   @map("country_code") @db.VarChar(2)
+  percentage                Decimal  @db.Decimal(10, 4)
+  fixed                     Decimal  @db.Decimal(18, 6)
+  minRateDiscount           Decimal  @default(0) @map("min_rate_discount") @db.Decimal(18, 6)
+  applyToCustomer           Boolean  @default(false) @map("apply_to_customer")
+  fxSpread                  Decimal  @default(0) @map("fx_spread") @db.Decimal(10, 4)
+  fxMarkup                  Decimal  @default(0) @map("fx_markup") @db.Decimal(10, 4)
+  disableIndustryValidation Boolean  @default(false) @map("disable_industry_validation")
+  cashEnabled               Boolean  @default(true) @map("cash_enabled")
+  creditCardEnabled         Boolean  @default(true) @map("credit_card_enabled")
+  cryptoEnabled             Boolean  @default(true) @map("crypto_enabled")
+  onlineEnabled             Boolean  @default(true) @map("online_enabled")
+  cashMinAmount             Decimal  @default(0) @map("cash_min_amount") @db.Decimal(18, 6)
+  creditCardMinAmount       Decimal  @default(0) @map("credit_card_min_amount") @db.Decimal(18, 6)
+  cryptoMinAmount           Decimal  @default(0) @map("crypto_min_amount") @db.Decimal(18, 6)
+  onlineMinAmount           Decimal  @default(0) @map("online_min_amount") @db.Decimal(18, 6)
+  isActive                  Boolean  @default(true) @map("is_active")
+  createdAt                 DateTime @default(now()) @map("created_at")
+  updatedAt                 DateTime @updatedAt @map("updated_at")
+
+  merchant Merchant              @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  provider PaymentProviderConfig @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, providerId, countryCode])
+  @@index([merchantId, countryCode, isActive])
+  @@map("merchant_provider_rates")
 }
 
 /// Solicitud manual de liquidación/payout (workflow backoffice).

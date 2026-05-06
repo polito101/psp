@@ -9,7 +9,7 @@ import {
   fetchPaymentProviders,
   patchPaymentMethodRoute,
 } from "@/lib/api/client";
-import type { PaymentMethodRouteRow, PaymentProviderConfigRow } from "@/lib/api/contracts";
+import type { PaymentProviderConfigRow } from "@/lib/api/contracts";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -68,6 +68,8 @@ export function PaymentMethodRouteEditor({ routeId }: { routeId: string | null }
 
   useEffect(() => {
     if (!existing) return;
+    // Sincronizar formulario al cargar la fila desde React Query (fuente externa → estado local).
+    /* eslint-disable react-hooks/set-state-in-effect -- batch reset when `existing` arrives after fetch */
     setProviderId(existing.providerId);
     setMethodCode(existing.methodCode);
     setMethodName(existing.methodName);
@@ -96,6 +98,7 @@ export function PaymentMethodRouteEditor({ routeId }: { routeId: string | null }
           }))
         : [emptyCurrencyRow()],
     );
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [existing]);
 
   const createMut = useMutation({

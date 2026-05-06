@@ -2,21 +2,45 @@ import { randomUUID } from 'crypto';
 import {
   createSmokeMerchant,
   normalizeBaseUrl,
-  parsePositiveInt,
   requestJson,
 } from './smoke.helpers';
 
+function parseAmountEur(raw: string | undefined, fallback: number, name: string): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number.parseFloat(raw.trim());
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`${name} must be a positive finite number`);
+  }
+  return n;
+}
+
+function buildSmokeV2Body(amount: number, orderId: string): Record<string, unknown> {
+  return {
+    amount,
+    currency: 'EUR',
+    channel: 'ONLINE',
+    language: 'EN',
+    orderId,
+    description: 'Smoke payment',
+    notificationUrl: 'https://example.com/webhook',
+    returnUrl: 'https://example.com/success',
+    cancelUrl: 'https://example.com/failure',
+    customer: {
+      firstName: 'Smoke',
+      lastName: 'Tester',
+      email: 'smoke@example.com',
+      country: 'ES',
+    },
+  };
+}
+
 const baseUrl = normalizeBaseUrl(process.env.SMOKE_BASE_URL ?? 'http://localhost:3000');
 const smokeApiKey = process.env.SMOKE_API_KEY?.trim();
-const smokeAmountMinor = parsePositiveInt(
-  process.env.SMOKE_PAYMENT_AMOUNT_MINOR,
-  1999,
-  'SMOKE_PAYMENT_AMOUNT_MINOR',
-);
-const requiresActionAmountMinor = parsePositiveInt(
-  process.env.SMOKE_REQUIRES_ACTION_AMOUNT_MINOR,
-  2002,
-  'SMOKE_REQUIRES_ACTION_AMOUNT_MINOR',
+const smokePaymentAmount = parseAmountEur(process.env.SMOKE_PAYMENT_AMOUNT, 19.99, 'SMOKE_PAYMENT_AMOUNT');
+const requiresActionAmount = parseAmountEur(
+  process.env.SMOKE_REQUIRES_ACTION_AMOUNT,
+  20.02,
+  'SMOKE_REQUIRES_ACTION_AMOUNT',
 );
 
 describe('sandbox smoke flow', () => {
@@ -43,10 +67,8 @@ describe('sandbox smoke flow', () => {
       });
 
       const idempotencyKey = randomUUID();
-      const paymentPayload = {
-        amountMinor: smokeAmountMinor,
-        currency: 'EUR',
-      };
+      const orderId = `sandbox-${randomUUID().slice(0, 8)}`;
+      const paymentPayload = buildSmokeV2Body(smokePaymentAmount, orderId);
 
       const paymentIntent = await requestJson<{ payment: { id: string; status: string } }>(
         baseUrl,
@@ -143,10 +165,7 @@ describe('sandbox smoke flow', () => {
           'X-API-Key': apiKey,
           'Idempotency-Key': idempotencyKey,
         },
-        body: {
-          amountMinor: smokeAmountMinor,
-          currency: 'EUR',
-        },
+        body: buildSmokeV2Body(smokePaymentAmount, `idem-a-${randomUUID().slice(0, 8)}`),
       });
       expect(typeof first.payment.id).toBe('string');
 
@@ -159,10 +178,7 @@ describe('sandbox smoke flow', () => {
             'X-API-Key': apiKey,
             'Idempotency-Key': idempotencyKey,
           },
-          body: {
-            amountMinor: smokeAmountMinor + 1,
-            currency: 'EUR',
-          },
+          body: buildSmokeV2Body(smokePaymentAmount + 0.01, `idem-b-${randomUUID().slice(0, 8)}`),
           expectedStatus: 409,
         },
       );
@@ -182,10 +198,7 @@ describe('sandbox smoke flow', () => {
         '/api/v2/payments',
         {
           headers: { 'X-API-Key': apiKey },
-          body: {
-            amountMinor: smokeAmountMinor,
-            currency: 'EUR',
-          },
+          body: buildSmokeV2Body(smokePaymentAmount, `cancel-${randomUUID().slice(0, 8)}`),
         },
       );
       expect(created.payment.status).toBe('authorized');
@@ -224,10 +237,7 @@ describe('sandbox smoke flow', () => {
         nextAction: { type: string } | null;
       }>(baseUrl, 'POST', '/api/v2/payments', {
         headers: { 'X-API-Key': apiKey },
-        body: {
-          amountMinor: requiresActionAmountMinor,
-          currency: 'EUR',
-        },
+        body: buildSmokeV2Body(requiresActionAmount, `3ds-${randomUUID().slice(0, 8)}`),
       });
 
       expect(result.payment.status).toBe('requires_action');

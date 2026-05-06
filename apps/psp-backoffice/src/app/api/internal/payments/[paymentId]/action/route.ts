@@ -9,7 +9,7 @@ const paramSchema = z.object({
 });
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ paymentId: string }> },
 ) {
   const auth = await enforceInternalRouteAuth(request);
