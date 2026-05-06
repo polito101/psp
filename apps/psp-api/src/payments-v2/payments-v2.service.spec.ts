@@ -292,9 +292,31 @@ describe('PaymentsV2Service', () => {
   });
 
   it('rechaza amount decimal que al convertir a minor supera el límite INTEGER (EUR)', async () => {
-    await expect(service.createIntent('m_1', eurIntent(21_474_836.48))).rejects.toBeInstanceOf(
-      BadRequestException,
+    let thrown: unknown;
+    try {
+      await service.createIntent('m_1', eurIntent(21_474_836.48));
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BadRequestException);
+    const res = (thrown as BadRequestException).getResponse();
+    const msg = typeof res === 'string' ? res : (res as { message?: string }).message;
+    expect(msg).toBe(
+      'amount exceeds maximum allowed for payment storage after conversion to minor units (INT32)',
     );
+  });
+
+  it('rechaza importe demasiado pequeño que redondea a 0 minor units (EUR)', async () => {
+    let thrown: unknown;
+    try {
+      await service.createIntent('m_1', eurIntent(0.001));
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(BadRequestException);
+    const res = (thrown as BadRequestException).getResponse();
+    const msg = typeof res === 'string' ? res : (res as { message?: string }).message;
+    expect(msg).toBe('amount too small after conversion to minor units');
   });
 
   it('acepta la primera entrada si la cabecera Idempotency-Key viene duplicada (array)', async () => {

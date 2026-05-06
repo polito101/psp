@@ -97,7 +97,9 @@ Invoke-RestMethod -Method Post "http://localhost:3000/api/v2/payments" `
 
 El proveedor lo elige el PSP vía `PAYMENTS_PROVIDER_ORDER` en runtime (p. ej. `mock` en local/sandbox). Las tablas `payment_provider_configs` / `payment_method_routes` / `merchant_provider_rates` preparan **enrutado por peso** y tarifas por proveedor–país; el script `npm run demo:backoffice-payments` puede sembrarlas con `DATABASE_URL` (migración `20260506120000_dynamic_payment_routing_config`).
 
-Sigue soportado el cuerpo **legacy** `amountMinor` + `currency` (3 letras) para integraciones existentes.
+`POST /api/v2/payments` solo acepta el contrato vigente (`CreatePaymentIntentDto`): importe **`amount` en decimal** (unidad principal) + **`currency`** ISO 4217 entre los demás campos requeridos. No existe variante de cuerpo con `amountMinor` en ese endpoint; cualquier propiedad no declarada en el DTO (p. ej. `amountMinor`) la rechaza la validación global (`whitelist` + `forbidNonWhitelisted` en `main.ts`), típicamente con **400**.
+
+La conversión `amount` → unidades menores sigue **`src/payments-v2/decimal-amount-to-minor.ts`**: para la mayoría de divisas se usan dos decimales (p. ej. EUR/USD); hay divisas sin fracción (p. ej. JPY) y otras con tres decimales (p. ej. KWD). El minor resultante debe ser **≥ 1** y no superar el tope **INTEGER/INT32** del modelo (`2_147_483_647`); fuera de eso la API responde **400**.
 
 En `mock`, el intent tipicamente queda `authorized` para importes comunes (p. ej. `19.99` EUR → 1999 minor; `20.02` EUR dispara `requires_action`).
 

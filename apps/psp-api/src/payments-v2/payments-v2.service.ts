@@ -20,7 +20,7 @@ import { SettlementService } from '../settlements/settlement.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { FxRatesService } from '../fx/fx-rates.service';
 import { hashCreatePaymentIntentPayload } from './create-payment-intent-payload-hash';
-import { decimalAmountToMinorUnits, isPersistablePrismaIntAmountMinor } from './decimal-amount-to-minor';
+import { decimalAmountToMinorUnits, nonPersistableAmountMinorMessage } from './decimal-amount-to-minor';
 import { CreatePaymentIntentDto } from './dto/create-payment-intent.dto';
 import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
 import { OpsMerchantFinancePayoutsQueryDto } from './dto/ops-merchant-finance-payouts-query.dto';
@@ -502,10 +502,9 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   }
 
   private assertPersistableAmountMinor(amountMinor: number): void {
-    if (!isPersistablePrismaIntAmountMinor(amountMinor)) {
-      throw new BadRequestException(
-        'amount exceeds maximum allowed for payment storage after conversion to minor units (INT32)',
-      );
+    const message = nonPersistableAmountMinorMessage(amountMinor);
+    if (message) {
+      throw new BadRequestException(message);
     }
   }
 

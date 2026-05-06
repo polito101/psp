@@ -2,6 +2,7 @@ import {
   PAYMENT_AMOUNT_MINOR_MAX,
   decimalAmountToMinorUnits,
   isPersistablePrismaIntAmountMinor,
+  nonPersistableAmountMinorMessage,
 } from './decimal-amount-to-minor';
 
 describe('decimalAmountToMinorUnits / isPersistablePrismaIntAmountMinor', () => {
@@ -37,5 +38,17 @@ describe('decimalAmountToMinorUnits / isPersistablePrismaIntAmountMinor', () => 
     expect(isPersistablePrismaIntAmountMinor(NaN)).toBe(false);
     expect(isPersistablePrismaIntAmountMinor(Infinity)).toBe(false);
     expect(isPersistablePrismaIntAmountMinor(0)).toBe(false);
+  });
+
+  it('nonPersistableAmountMinorMessage distingue demasiado pequeño, overflow e inválido', () => {
+    expect(nonPersistableAmountMinorMessage(decimalAmountToMinorUnits(0.001, 'EUR'))).toBe(
+      'amount too small after conversion to minor units',
+    );
+    expect(nonPersistableAmountMinorMessage(PAYMENT_AMOUNT_MINOR_MAX + 1)).toBe(
+      'amount exceeds maximum allowed for payment storage after conversion to minor units (INT32)',
+    );
+    expect(nonPersistableAmountMinorMessage(NaN)).toBe('invalid amount after conversion');
+    expect(nonPersistableAmountMinorMessage(1.5)).toBe('invalid amount after conversion');
+    expect(nonPersistableAmountMinorMessage(100)).toBe(null);
   });
 });
