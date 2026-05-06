@@ -3,21 +3,76 @@ import { Type } from 'class-transformer';
 import {
   IsEmail,
   IsIn,
-  IsInt,
   IsNotEmptyObject,
   IsNumber,
   IsObject,
   IsOptional,
-  IsPositive,
   IsString,
-  IsUrl,
   Length,
   Matches,
   MaxLength,
   Min,
-  ValidateIf,
+  ValidateBy,
   ValidateNested,
+  ValidationOptions,
+  type ValidationArguments,
 } from 'class-validator';
+import {
+  PAYMENT_AMOUNT_MINOR_MAX,
+  decimalAmountToMinorUnits,
+  isPersistablePrismaIntAmountMinor,
+} from '../decimal-amount-to-minor';
+import { assertStructuralMerchantCallbackUrl } from '../domain/merchant-notification-url.policy';
+
+export function IsMerchantPaymentCallbackUrl(validationOptions?: ValidationOptions) {
+  return ValidateBy(
+    {
+      name: 'IsMerchantPaymentCallbackUrl',
+      validator: {
+        validate(value: unknown): boolean {
+          if (value === undefined || value === null) return true;
+          if (typeof value !== 'string') return false;
+          try {
+            assertStructuralMerchantCallbackUrl(value);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        defaultMessage: () =>
+          'La URL no cumple las políticas de seguridad del PSP (p. ej. HTTPS obligatorio en producción; sin credenciales en la URL; hosts privados o ambiguos rechazados)',
+      },
+    },
+    validationOptions,
+  );
+}
+
+function IsDecimalAmountWithinPersistableMinor(validationOptions?: ValidationOptions) {
+  return ValidateBy(
+    {
+      name: 'isDecimalAmountWithinPersistableMinor',
+      validator: {
+        validate(value: unknown, args: ValidationArguments) {
+          if (value == null || typeof value !== 'number') return true;
+          const obj = args.object as CreatePaymentIntentDto;
+          if (typeof obj.currency !== 'string' || obj.currency.length === 0) return true;
+          if (!Number.isFinite(value)) return false;
+          const minor = decimalAmountToMinorUnits(value, obj.currency);
+          return isPersistablePrismaIntAmountMinor(minor);
+        },
+        defaultMessage(args: ValidationArguments) {
+          const obj = args.object as CreatePaymentIntentDto;
+          const cur = typeof obj.currency === 'string' ? obj.currency.toUpperCase() : '';
+          return (
+            'amount exceeds maximum for minor-unit storage after conversion ' +
+            `(max ${PAYMENT_AMOUNT_MINOR_MAX} minor; currency ${cur || 'n/a'})`
+          );
+        },
+      },
+    },
+    validationOptions,
+  );
+}
 
 export const PAYMENT_CHANNELS = ['CASH', 'ONLINE', 'CREDIT_CARD', 'CRYPTO'] as const;
 export type PublicPaymentChannel = (typeof PAYMENT_CHANNELS)[number];
@@ -114,81 +169,63 @@ export class CreatePaymentCustomerDto {
 }
 
 export class CreatePaymentIntentDto {
-  @ApiPropertyOptional({
+  @ApiProperty({
     description:
-      'Legacy: importe en unidades menores (céntimos). Mutuamente excluyente con `amount` decimal (contrato v2).',
-    example: 1999,
-  })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount == null)
-  @IsInt()
-  @IsPositive()
-  amountMinor?: number;
-
-  @ApiPropertyOptional({
-    description: 'Contrato v2: importe decimal en unidad principal de la divisa. Mutuamente excluyente con `amountMinor`.',
+      'Importe decimal en unidad principal de la divisa. Tras conversión a minor no puede superar el límite INTEGER.',
     example: 19.99,
   })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amountMinor == null)
   @IsNumber({ maxDecimalPlaces: 6 })
   @Min(0.000001)
-  amount?: number;
+  @IsDecimalAmountWithinPersistableMinor()
+  amount!: number;
 
   @ApiProperty({
     default: 'EUR',
-    description:
-      'ISO 4217. Con `amountMinor`, unidades menores estándar; con `amount` (v2), el importe decimal usa la misma divisa.',
+    description: 'ISO 4217. El importe decimal usa la unidad principal de esta divisa.',
   })
   @IsString()
   @Length(3, 3)
   currency!: string;
 
-  @ApiPropertyOptional({
-    description:
-      'Contrato v2: canal de pago. Obligatorio si se envía `amount` decimal; ignorado con `amountMinor`.',
+  @ApiProperty({
+    description: 'Canal de pago.',
     enum: PAYMENT_CHANNELS,
   })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount != null)
   @IsIn(PAYMENT_CHANNELS)
-  channel?: PublicPaymentChannel;
+  channel!: PublicPaymentChannel;
 
-  @ApiPropertyOptional({
-    description: 'Contrato v2: idioma (p. ej. EN). Obligatorio con `amount`.',
+  @ApiProperty({
+    description: 'Idioma (p. ej. EN).',
     example: 'EN',
   })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount != null)
   @IsString()
   @Length(2, 8)
-  language?: string;
+  language!: string;
 
-  @ApiPropertyOptional({ description: 'Contrato v2: pedido del comercio. Obligatorio con `amount`.' })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount != null)
+  @ApiProperty({ description: 'Pedido del comercio.' })
   @IsString()
   @MaxLength(128)
-  orderId?: string;
+  orderId!: string;
 
-  @ApiPropertyOptional({ description: 'Contrato v2: descripción. Obligatorio con `amount`.' })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount != null)
+  @ApiProperty({ description: 'Descripción.' })
   @IsString()
   @MaxLength(512)
-  description?: string;
+  description!: string;
 
-  @ApiPropertyOptional({ description: 'Contrato v2: webhook del comercio. Obligatorio con `amount`.' })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount != null)
-  @IsUrl({ require_tld: false, protocols: ['https', 'http'] })
+  @ApiProperty({ description: 'Webhook del comercio.' })
+  @IsMerchantPaymentCallbackUrl()
   @MaxLength(2048)
-  notificationUrl?: string;
+  notificationUrl!: string;
 
-  @ApiPropertyOptional({ description: 'Contrato v2: URL de éxito. Obligatorio con `amount`.' })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount != null)
-  @IsUrl({ require_tld: false, protocols: ['https', 'http'] })
+  @ApiProperty({ description: 'URL de éxito.' })
+  @IsMerchantPaymentCallbackUrl()
   @MaxLength(2048)
-  returnUrl?: string;
+  returnUrl!: string;
 
-  @ApiPropertyOptional({ description: 'Contrato v2: URL de cancelación. Obligatorio con `amount`.' })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount != null)
-  @IsUrl({ require_tld: false, protocols: ['https', 'http'] })
+  @ApiProperty({ description: 'URL de cancelación.' })
+  @IsMerchantPaymentCallbackUrl()
   @MaxLength(2048)
-  cancelUrl?: string;
+  cancelUrl!: string;
 
   @ApiPropertyOptional({
     description:
@@ -197,16 +234,6 @@ export class CreatePaymentIntentDto {
   @IsOptional()
   @IsString()
   paymentLinkId?: string;
-
-  @ApiPropertyOptional({
-    description: 'ISO 3166-1 alpha-2 del país del pagador (opcional, reporting). Ignorado en v2 si va `customer.country`.',
-    example: 'ES',
-  })
-  @IsOptional()
-  @IsString()
-  @Length(2, 2)
-  @Matches(/^[A-Za-z]{2}$/)
-  payerCountry?: string;
 
   @ApiPropertyOptional({
     description:
@@ -218,14 +245,13 @@ export class CreatePaymentIntentDto {
   @MaxLength(64)
   paymentMethodCode?: string;
 
-  @ApiPropertyOptional({
+  @ApiProperty({
     type: CreatePaymentCustomerDto,
-    description: 'Contrato v2: pagador. Obligatorio si se envía `amount` decimal.',
+    description: 'Datos del pagador.',
   })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount != null)
   @IsNotEmptyObject()
   @ValidateNested()
   @Type(() => CreatePaymentCustomerDto)
   @IsObject()
-  customer?: CreatePaymentCustomerDto;
+  customer!: CreatePaymentCustomerDto;
 }

@@ -6,6 +6,13 @@ import {
   requestJson,
   waitFor,
 } from './smoke.helpers';
+import { v2PaymentIntentBody } from '../integration/helpers/v2-payment-intent-body';
+
+function smokePaymentCreateBody(
+  overrides: Parameters<typeof v2PaymentIntentBody>[0],
+): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(v2PaymentIntentBody(overrides))) as Record<string, unknown>;
+}
 
 const baseUrl = normalizeBaseUrl(process.env.SMOKE_BASE_URL ?? 'http://localhost:3000');
 const internalSecret = process.env.SMOKE_INTERNAL_API_SECRET ?? mustEnv('INTERNAL_API_SECRET');
@@ -61,7 +68,7 @@ describe('payments v2 integration: concurrencia + webhooks + métricas + fallbac
     async () => {
       const { apiKey } = await createSmokeMerchant(baseUrl);
       const idem = randomUUID();
-      const payload = { amountMinor: 1999, currency: 'EUR' };
+      const payload = smokePaymentCreateBody({ amount: 19.99, currency: 'EUR' });
 
       const responses = await Promise.all(
         Array.from({ length: 6 }, () =>
@@ -108,7 +115,7 @@ describe('payments v2 integration: concurrencia + webhooks + métricas + fallbac
         '/api/v2/payments',
         {
           headers: { 'X-API-Key': apiKey },
-          body: { amountMinor: 1999, currency: 'EUR' },
+          body: smokePaymentCreateBody({ amount: 19.99, currency: 'EUR' }),
         },
       );
       expect(created.payment.status).toBe('authorized');
@@ -159,7 +166,7 @@ describe('payments v2 integration: concurrencia + webhooks + métricas + fallbac
         '/api/v2/payments',
         {
           headers: { 'X-API-Key': apiKey, 'Idempotency-Key': randomUUID() },
-          body: { amountMinor: 1999, currency: 'EUR' },
+          body: smokePaymentCreateBody({ amount: 19.99, currency: 'EUR' }),
         },
       );
 
@@ -201,7 +208,7 @@ describe('payments v2 integration: concurrencia + webhooks + métricas + fallbac
         '/api/v2/payments',
         {
           headers: { 'X-API-Key': merchant.apiKey },
-          body: { amountMinor: 1999, currency: 'EUR' },
+          body: smokePaymentCreateBody({ amount: 19.99, currency: 'EUR' }),
         },
       );
       expect(created.payment.status).toBe('authorized');

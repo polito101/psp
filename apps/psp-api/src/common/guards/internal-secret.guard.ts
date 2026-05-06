@@ -59,10 +59,17 @@ export class InternalSecretGuard implements CanActivate {
     return path.includes('/payments/ops/');
   }
 
+  /** Reenvío server-side a `notificationUrl`: solo administración (mitiga SSRF / abuso desde portal merchant). */
+  private isPaymentsV2OpsPaymentNotificationResendPath(path: string): boolean {
+    return /\/payments\/ops\/payments\/[^/]+\/notifications\/[^/]+\/resend\/?$/.test(path);
+  }
+
   private assertBackofficeScopeForRequest(req: Request): void {
     const path = req.path ?? '';
     if (this.isMerchantOnboardingOpsPath(path)) {
       this.assertAdminOnlyOpsRequest(req, 'merchant onboarding ops endpoints');
+    } else if (this.isPaymentsV2OpsConfigurationPath(path)) {
+      this.assertAdminOnlyOpsRequest(req, 'payments ops configuration endpoints');
     } else if (
       this.isPaymentsV2OpsPath(path) ||
       this.isSettlementsOpsPath(path) ||
@@ -72,6 +79,10 @@ export class InternalSecretGuard implements CanActivate {
     } else {
       this.assertLegacyOptionalMerchantScope(req);
     }
+  }
+
+  private isPaymentsV2OpsConfigurationPath(path: string): boolean {
+    return path.includes('/payments/ops/configuration');
   }
 
   private isSettlementsOpsPath(path: string): boolean {
@@ -99,11 +110,17 @@ export class InternalSecretGuard implements CanActivate {
    * Fail-closed: toda petición a payments v2 ops con secreto válido debe declarar rol admin|merchant.
    */
   private assertPaymentsOpsFailClosed(req: Request): void {
+    const path = req.path ?? '';
     const roleRaw = this.getHeader(req, 'x-backoffice-role');
     const role = roleRaw?.toLowerCase().trim();
     if (!role || (role !== 'admin' && role !== 'merchant')) {
       throw new ForbiddenException(
         'Missing or invalid X-Backoffice-Role for payments ops endpoints',
+      );
+    }
+    if (role === 'merchant' && this.isPaymentsV2OpsPaymentNotificationResendPath(path)) {
+      throw new ForbiddenException(
+        'Merchant scope cannot resend payment notifications; admin role is required',
       );
     }
     if (role === 'admin') {

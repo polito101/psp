@@ -57,7 +57,7 @@ src/
 │           ├── payment-method-routes/...
 │           ├── payments/[paymentId]/route.ts
 │           ├── payments/[paymentId]/action/route.ts
-│           ├── payments/[paymentId]/notifications/[deliveryId]/resend/route.ts
+│           ├── payments/[paymentId]/notifications/[deliveryId]/resend/route.ts  # solo sesión admin (404 merchant)
 │           └── provider-health/route.ts
 ├── components/                       # UI por feature (home/, merchant-portal/, settlements/, merchants/, crm/)
 └── lib/                              # clientes API, utilidades
@@ -75,7 +75,7 @@ El listado `/transactions` lee la misma base que **`psp-api`**. Para generar fil
 
 1. Desde `apps/psp-api`, con la URL y el secreto interno **del mismo deploy** que consume el backoffice (`PSP_API_BASE_URL` / `PSP_INTERNAL_API_SECRET`):
    - `npm run demo:backoffice-payments`
-2. Volumen para el panel (≥60 `succeeded` + muestras `canceled` / `refunded` / `requires_action` / `authorized`): `npm run test:smoke:backoffice-demo` con `SMOKE_BASE_URL` o `DEMO_API_BASE_URL` + `INTERNAL_API_SECRET` (o `SMOKE_*`). En **Windows PowerShell** define variables con `$env:SMOKE_BASE_URL='https://…'` (el comando `set` de CMD no aplica). No forma parte de `test:smoke:sandbox` (solo corre con ese script o `SMOKE_BACKOFFICE_VOLUME_DEMO=1`). Pausas por defecto respetan el throttle de creación v2 (30/min); ver cabecera JSDoc en `test/smoke/backoffice-volume-demo.smoke.spec.ts`.
+2. Volumen para el panel (≥60 `succeeded` + muestras `canceled` / `refunded` / `requires_action` / `authorized`): `npm run test:smoke:backoffice-demo` con `SMOKE_BASE_URL` o `DEMO_API_BASE_URL` + `INTERNAL_API_SECRET` (o `SMOKE_*`). En **Windows PowerShell** define variables con `$env:SMOKE_BASE_URL='https://…'` (el comando `set` de CMD no aplica). No forma parte de `test:smoke:sandbox` (solo corre con ese script o `SMOKE_BACKOFFICE_VOLUME_DEMO=1`). Por defecto no inserta pausa entre create y capture; si ves `429` por throttle de creación v2, define `SMOKE_BACKOFFICE_DEMO_CREATE_GAP_MS` (p. ej. `2100`); detalle en JSDoc de `test/smoke/backoffice-volume-demo.smoke.spec.ts`.
 3. Variables reconocidas por el script demo: `DEMO_API_BASE_URL` o `SMOKE_BASE_URL`, y `INTERNAL_API_SECRET` o `SMOKE_INTERNAL_API_SECRET`. Opcional: `DATABASE_URL` / `DEMO_DATABASE_URL` para sembrar `payment_provider_configs`, rutas (`REDIRECT_SIMPLE` + `SPEI_BANK_TRANSFER`), divisas y `merchant_provider_rates` (omitir con `DEMO_SKIP_ROUTING_SEED=true`). Opcional: `DEMO_FETCH_TIMEOUT_MS` (default 90000) si el cold start es lento.
 4. Alternativa ligera: `npm run test:smoke:sandbox` con las mismas variables (Jest) también persiste pagos v2 (pocos) usando el cuerpo decimal + `customer`.
 

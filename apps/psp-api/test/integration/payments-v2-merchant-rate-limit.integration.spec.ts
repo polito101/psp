@@ -6,6 +6,7 @@ import { PrismaService } from '../../src/prisma/prisma.service';
 import { RedisService } from '../../src/redis/redis.service';
 import { PaymentsV2MerchantRateLimitService } from '../../src/payments-v2/payments-v2-merchant-rate-limit.service';
 import { createIntegrationApp, createMerchantViaHttp, resetIntegrationDb } from './helpers/integration-app';
+import { v2PaymentIntentBody } from './helpers/v2-payment-intent-body';
 
 describe('payments-v2 merchant rate limit (integration)', () => {
   let app: INestApplication;
@@ -75,24 +76,23 @@ describe('payments-v2 merchant rate limit (integration)', () => {
 
   it('429 tras superar el tope de create por merchant; cuerpo con retryAfter', async () => {
     const merchant = await createMerchantViaHttp(app);
-    const base = { currency: 'EUR' as const };
 
     await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ ...base, amountMinor: 101 })
+      .send(v2PaymentIntentBody({ amount: 1.01, currency: 'EUR' }))
       .expect(201);
 
     await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ ...base, amountMinor: 102 })
+      .send(v2PaymentIntentBody({ amount: 1.02, currency: 'EUR' }))
       .expect(201);
 
     const limited = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ ...base, amountMinor: 103 })
+      .send(v2PaymentIntentBody({ amount: 1.03, currency: 'EUR' }))
       .expect(429);
 
     expect(limited.body.message).toBe('Merchant rate limit exceeded');
@@ -107,32 +107,31 @@ describe('payments-v2 merchant rate limit (integration)', () => {
   it('replays idempotentes de create no consumen cupo extra', async () => {
     const merchant = await createMerchantViaHttp(app);
     const idem = randomUUID();
-    const base = { amountMinor: 200, currency: 'EUR' as const };
 
     await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
       .set('Idempotency-Key', idem)
-      .send(base)
+      .send(v2PaymentIntentBody({ amount: 2, currency: 'EUR' }))
       .expect(201);
 
     await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
       .set('Idempotency-Key', idem)
-      .send(base)
+      .send(v2PaymentIntentBody({ amount: 2, currency: 'EUR' }))
       .expect(201);
 
     await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ ...base, amountMinor: 201 })
+      .send(v2PaymentIntentBody({ amount: 2.01, currency: 'EUR' }))
       .expect(201);
 
     await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ ...base, amountMinor: 202 })
+      .send(v2PaymentIntentBody({ amount: 2.02, currency: 'EUR' }))
       .expect(429);
   });
 });

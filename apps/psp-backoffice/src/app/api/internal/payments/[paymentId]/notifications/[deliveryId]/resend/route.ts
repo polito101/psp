@@ -24,6 +24,10 @@ export async function POST(
     return auth.response;
   }
 
+  if (auth.claims.role === "merchant") {
+    return NextResponse.json({ message: "Not found" }, { status: 404 });
+  }
+
   const resolved = await params;
   const parsed = paramsSchema.safeParse(resolved);
   if (!parsed.success) {
@@ -41,13 +45,6 @@ export async function POST(
     return NextResponse.json(data);
   } catch (error) {
     if (error instanceof ProxyUpstreamError && error.upstreamStatus === 404) {
-      return NextResponse.json({ message: "Not found" }, { status: 404 });
-    }
-    if (
-      auth.claims.role === "merchant" &&
-      error instanceof ProxyUpstreamError &&
-      error.upstreamStatus === 403
-    ) {
       return NextResponse.json({ message: "Not found" }, { status: 404 });
     }
     return mapProxyError(error);

@@ -20,7 +20,7 @@ import { SettlementService } from '../settlements/settlement.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { FxRatesService } from '../fx/fx-rates.service';
 import { hashCreatePaymentIntentPayload } from './create-payment-intent-payload-hash';
-import { decimalAmountToMinorUnits } from './decimal-amount-to-minor';
+import { decimalAmountToMinorUnits, nonPersistableAmountMinorMessage } from './decimal-amount-to-minor';
 import { CreatePaymentIntentDto } from './dto/create-payment-intent.dto';
 import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
 import { OpsMerchantFinancePayoutsQueryDto } from './dto/ops-merchant-finance-payouts-query.dto';
@@ -30,6 +30,7 @@ import { OpsTransactionCountsQueryDto } from './dto/ops-transaction-counts-query
 import { OpsVolumeHourlyQueryDto } from './dto/ops-volume-hourly-query.dto';
 import { OpsDashboardVolumeUsdQueryDto } from './dto/ops-dashboard-volume-usd-query.dto';
 import { OpsPaymentsSummaryQueryDto } from './dto/ops-payments-summary-query.dto';
+import { assertSafeMerchantNotificationOutboundUrl } from './domain/merchant-notification-url.policy';
 import {
   LEGACY_STRIPE_DB_PROVIDER,
   PAYMENT_V2_STATUS,
@@ -48,6 +49,62 @@ import { ProviderContext, ProviderResult } from './providers/payment-provider.in
 const OPS_PAYMENT_DETAIL_ATTEMPTS_MAX = 200;
 const OPS_PAYMENT_DETAIL_PROVIDER_LOGS_MAX = 100;
 const OPS_PAYMENT_DETAIL_NOTIFICATION_DELIVERIES_MAX = 100;
+
+/** Límite de lectura del cuerpo HTTP antes de persistir metadatos de respuesta en reenvíos a webhook del comercio. */
+const MERCHANT_NOTIFICATION_RESEND_RESPONSE_BODY_MAX_BYTES = 65536;
+
+async function readFetchTextWithByteCap(
+  response: Response,
+  maxBytes: number,
+): Promise<{ text: string; truncated: boolean }> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    return { text: '', truncated: false };
+  }
+  const decoder = new TextDecoder();
+  let total = 0;
+  let out = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.length) continue;
+      const nextTotal = total + value.byteLength;
+      if (nextTotal > maxBytes) {
+        const allowed = maxBytes - total;
+        if (allowed > 0) {
+          out += decoder.decode(value.subarray(0, allowed), { stream: false });
+        }
+        await reader.cancel().catch(() => {});
+        return { text: out, truncated: true };
+      }
+      total = nextTotal;
+      out += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    out += decoder.decode();
+  }
+  return { text: out, truncated: false };
+}
+
+function parseMaskedNotificationResponsePayload(
+  trimmed: string,
+  truncated: boolean,
+): Prisma.InputJsonValue | typeof Prisma.JsonNull {
+  if (!trimmed) return Prisma.JsonNull;
+  if (truncated) {
+    try {
+      return JSON.parse(trimmed) as Prisma.InputJsonValue;
+    } catch {
+      return { responseTruncated: true } as Prisma.InputJsonValue;
+    }
+  }
+  try {
+    return JSON.parse(trimmed) as Prisma.InputJsonValue;
+  } catch {
+    return trimmed;
+  }
+}
 
 function parsePersistedPaymentAction(actionSnapshot: unknown): unknown | null {
   if (actionSnapshot == null || typeof actionSnapshot !== 'object') return null;
@@ -444,31 +501,24 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     return this.executeProviderOperation(payment, 'create', fin.amountMinor, providerOrder);
   }
 
+  private assertPersistableAmountMinor(amountMinor: number): void {
+    const message = nonPersistableAmountMinorMessage(amountMinor);
+    if (message) {
+      throw new BadRequestException(message);
+    }
+  }
+
   private normalizeCreateIntentFinancials(dto: CreatePaymentIntentDto): {
     amountMinor: number;
     currencyUpper: string;
     payerCountryUpper: string | null;
     notificationUrl: string | null;
   } {
-    const hasMinor = dto.amountMinor != null;
-    const hasMajor = dto.amount != null;
-    if (hasMinor === hasMajor) {
-      throw new BadRequestException('Provide exactly one of amountMinor or amount');
-    }
     const currencyUpper = dto.currency.toUpperCase();
-    if (hasMinor) {
-      return {
-        amountMinor: dto.amountMinor!,
-        currencyUpper,
-        payerCountryUpper: dto.payerCountry ? dto.payerCountry.toUpperCase() : null,
-        notificationUrl: null,
-      };
-    }
-    if (!dto.customer) {
-      throw new BadRequestException('customer is required when amount is provided');
-    }
+    const amountMinor = decimalAmountToMinorUnits(dto.amount, dto.currency);
+    this.assertPersistableAmountMinor(amountMinor);
     return {
-      amountMinor: decimalAmountToMinorUnits(dto.amount!, dto.currency),
+      amountMinor,
       currencyUpper,
       payerCountryUpper: dto.customer.country.toUpperCase(),
       notificationUrl: dto.notificationUrl?.trim() ? dto.notificationUrl.trim() : null,
@@ -2551,25 +2601,25 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
 
     let httpStatus: number | null = null;
     let responseBodyMasked: Prisma.InputJsonValue | typeof Prisma.JsonNull | undefined = Prisma.JsonNull;
+    const merchantScopedResend = Boolean(options?.backofficeMerchantScopeId);
+    const safeHref = (await assertSafeMerchantNotificationOutboundUrl(url)).href;
+
     try {
-      const response = await fetch(url, {
+      const response = await fetch(safeHref, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(bodyObject),
         signal: AbortSignal.timeout(30_000),
+        redirect: 'manual',
       });
       httpStatus = response.status;
-      const text = await response.text();
-      const trimmed = text.trim();
-      if (trimmed) {
-        try {
-          responseBodyMasked = JSON.parse(trimmed) as Prisma.InputJsonValue;
-        } catch {
-          responseBodyMasked = trimmed;
-        }
-      } else {
-        responseBodyMasked = Prisma.JsonNull;
-      }
+      const { text, truncated } = await readFetchTextWithByteCap(
+        response,
+        MERCHANT_NOTIFICATION_RESEND_RESPONSE_BODY_MAX_BYTES,
+      );
+      responseBodyMasked = merchantScopedResend
+        ? Prisma.JsonNull
+        : parseMaskedNotificationResponsePayload(text.trim(), truncated);
     } catch {
       httpStatus = null;
       responseBodyMasked = Prisma.JsonNull;
@@ -3592,6 +3642,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     },
     incoming: CreatePaymentIntentDto,
   ) {
+    // Misma función que al crear pago: serialización estable + campos normalizados (URLs trim, customer canónico, etc.).
     const incomingHash = hashCreatePaymentIntentPayload(incoming);
     if (existing.createPayloadHash != null) {
       if (existing.createPayloadHash !== incomingHash) {
@@ -3601,7 +3652,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     }
     // Filas anteriores a `create_payload_hash`: solo se validaron amount/divisa/link en su momento.
     const same =
-      existing.amountMinor === incoming.amountMinor &&
+      existing.amountMinor === decimalAmountToMinorUnits(incoming.amount, incoming.currency) &&
       existing.currency === incoming.currency.toUpperCase() &&
       existing.paymentLinkId === (incoming.paymentLinkId ?? null);
     if (!same) {

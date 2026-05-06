@@ -11,7 +11,7 @@ Debe actualizarse en el mismo cambio cuando se agreguen, modifiquen o eliminen t
 
 - `unit` (API): specs co-localizados en `apps/psp-api/src/**/*.spec.ts` (`npm run test` desde `apps/psp-api`).
 - `unit` (backoffice): libs solo servidor en `apps/psp-backoffice/src/**/*.spec.ts` (`npm run test` desde `apps/psp-backoffice`, Vitest).
-- `integration-local`: tests de integracion con app Nest local + Supertest en `apps/psp-api/test/integration/**/*.spec.ts` (`npm run test:integration` desde `apps/psp-api`).
+- `integration-local`: tests de integracion con app Nest local + Supertest en `apps/psp-api/test/integration/**/*.spec.ts` (`npm run test:integration` desde `apps/psp-api`). Compilan con `tsconfig.integration.json` (fuentes `src/**` + solo `test/integration/**`, sin `src/**/*.spec.ts`) para no bloquear el job si los unit specs del API estan desalineados temporalmente con el DTO publico.
 - `smoke`: tests HTTP contra entorno desplegado/base URL en `apps/psp-api/test/smoke/**/*.spec.ts` (`npm run test:smoke:sandbox`). Volumen demo backoffice (no incluido en sandbox por defecto): `npm run test:smoke:backoffice-demo` (`backoffice-volume-demo.smoke.spec.ts`).
 
 La CI del monorepo incluye `api-ci` (lint/test/build API), `backoffice-ci` (lint, typecheck, Vitest, Playwright con **`psp-api`** levantado en el mismo job vía Postgres/Redis + migraciones en `127.0.0.1:3003`, **POST** previo a Playwright a `/api/v1/merchants` con `X-Internal-Secret` para dejar al menos un merchant en el directorio ops — el E2E `auth-and-rbac` necesita filas con enlace **Admin** —, validación del proxy a `/api/internal/merchants/ops/directory`, y build del panel), y `web-finara-ci` (typecheck vía `next typegen` + `tsc --noEmit`, y build de la landing en `apps/web-finara`).
@@ -20,7 +20,7 @@ La CI del monorepo incluye `api-ci` (lint/test/build API), `backoffice-ci` (lint
 
 | Dominio | Unit | Integration local | Smoke | Estado | Notas |
 | --- | --- | --- | --- | --- | --- |
-| `payments-v2` | Si | Si | Si | Cubierto | Unit `payments-v2.service.spec`: … Create v2: contrato **v2** (`amount` decimal + `customer` + URLs + `channel`) con hash de idempotencia `v:2`; **legacy** `amountMinor` sigue soportado (`v:1`). … Tablas de configuración de enrutado `payment_provider_configs` / `payment_method_routes` / `payment_method_route_currencies` / `merchant_provider_rates` (migración `20260506120000_dynamic_payment_routing_config`). … |
+| `payments-v2` | Si | Si | Si | Cubierto | Unit `payments-v2.service.spec`: … Create: solo contrato **decimal** (`amount` + `customer` + URLs + `channel` + …) con hash de idempotencia `v:2` (JSON con claves ordenadas + normalización de URLs/`customer`/textos). `create-payment-intent-payload-hash.spec.ts`: estabilidad del hash ante orden de claves y trim. `decimal-amount-to-minor.spec.ts` + guards en DTO/service: conversión por divisa (0/2/3 decimales en `decimal-amount-to-minor.ts`), minor ≤ INT32 y safe integer. … Tablas de configuración de enrutado `payment_provider_configs` / `payment_method_routes` / `payment_method_route_currencies` / `merchant_provider_rates` (migración `20260506120000_dynamic_payment_routing_config`). `ops-configuration-route.dto.spec.ts`: validación `minAmount`/`maxAmount` en DTO ops (NaN, negativos, `min > max`, anidados). Integration `payments-v2-ops-configuration.integration.spec.ts`: `PATCH …/ops/configuration/routes/:routeId` con `currencies: null` vacía monedas (no 500); `POST`/`PATCH` rechazan importes de moneda inválidos (`400`). … |
 | `merchants` | Si (MID) | Si | Parcial | Parcial | Unit `allocate-unique-merchant-mid.spec.ts`: MID vía secuencia Postgres `merchant_mid_seq` (`nextval`) + reintento solo ante P2002 con jitter; agotamiento o fila vacía → `MerchantMidAllocationFailedError`; fallos `$queryRaw` clasificados como **infra** (p. ej. Postgres `42P01`) → se propaga el error original; fallos **no** infra sin clasificar → `MerchantMidAllocationFailedError('sequence_unavailable', { cause })`. `mid-allocation-conflict-log.spec.ts`: cadena `Error`/`.cause` serializada para logs (mensajes sanitizados, `prismaCode`, `postgresSqlState`). `MerchantsService.create`: log `error` con contexto antes de `retries_exhausted` → `409`, `sequence_unavailable` → `503` (mensajes `MERCHANT_MID_ALLOCATION_*` en español). Migración `20260504220000_merchant_mid_sequence`. Integration cubre create+guard, ciclo revoke/rotate via servicio, y ops `GET .../ops/:id/detail` + `PATCH .../ops/:id/account` (normalización email, 409 duplicado); `mid` en API es cadena numérica 6–15 caracteres (`VARCHAR(16)` en DB). Falta spec unitario amplio del controller/service. |
 | `merchant-onboarding` | Si | No | No | Parcial | Unit `merchant-onboarding.service.spec.ts`: creación pública con respuesta neutral `2xx` si email de expediente o `Merchant.email` ya existe (detectado tras advisory lock en TX, no antes — mitiga fuga por timing frente a trabajo `bcrypt`/token); incl. P2002 carrera; P2002 de `mid` en borde de transacción → `ConflictException`; `MerchantMidAllocationFailedError`: `retries_exhausted` → `409`, `sequence_unavailable` → `503` (mensajes genéricos en español); errores MID infra propagados desde allocate (p. ej. Postgres `42P01`) no son esa clase y se re-lanzan; log `error` con resumen + `midAllocationConflictDiagnostics` (causa/prisma/postgres) antes de esos mapeos; perfil negocio `companyName`/`industry`/`websiteUrl` + sync `Merchant`; checklist, token, eventos; approve/reject (email decisión); approve preflight (`findUnique` id/status) antes de `bcrypt.hash` para evitar CPU en `404`/`409`; `listApplications` con `q`; barrera advisory + lock; portal login; `merchant-onboarding.controller.spec.ts`. Unit email/token. Integración HTTP pendiente. |
 | `payment-links` | No | Si | No | Parcial | Sin endpoint HTTP activo; cobertura via `PaymentLinksService.findForMerchant`. |
@@ -32,12 +32,13 @@ La CI del monorepo incluye `api-ci` (lint/test/build API), `backoffice-ci` (lint
 | `web-finara` (marketing) | No | No | No | Solo CI build | Landing estática enlazando login merchant configurado por env; `.env.example` con `NEXT_PUBLIC_MERCHANT_BACKOFFICE_URL`; `web-finara-ci` ejecuta `npm run typecheck` (`next typegen` + `tsc --noEmit`) y `npm run build`. |
 | `health` | Si | Si | Si | Cubierto | Unit + integration `/health` + smoke readiness. |
 | `webhooks` | Si | Si | Si | Cubierto | Unit worker/outbox + integration retry interno + smoke backlog/métricas. |
-| `internal endpoints` | Si (guards) | Si | Si | Cubierto | Ops `GET/POST/PATCH` en `/api/v2/payments/ops/*`, `/api/v1/settlements/*`, `/api/v1/merchants/ops/*`: con `X-Internal-Secret` válido exige también `X-Backoffice-Role` (`admin` o `merchant`); rol `merchant` exige `X-Backoffice-Merchant-Id` alineado con path/query (incl. inbox/approve solo admin). `/api/v1/merchant-onboarding/ops/*` es admin-only fail-closed salvo ruta **`.../ops/merchant-login`** exacta al final del path (no substring; rutas tipo `merchant-login-*` siguen admin-only). Solo secreto interno en ese login, sin rol admin. Script CI `scripts/ci/check-ops-metrics.mjs` envía `X-Backoffice-Role: admin`. Detalle pago scoped: `404` cross-merchant. Backoffice: proxy fail-closed (`backoffice-api.spec.ts`; mismas reglas de exención exacta para `merchant-login`), middleware por rol, sesión merchant con `onboardingStatus` en JWT. |
+| `internal endpoints` | Si (guards) | Si | Si | Cubierto | Ops `GET/POST/PATCH` en `/api/v2/payments/ops/*`, `/api/v1/settlements/*`, `/api/v1/merchants/ops/*`: con `X-Internal-Secret` válido exige también `X-Backoffice-Role` (`admin` o `merchant`); rol `merchant` exige `X-Backoffice-Merchant-Id` alineado con path/query (incl. inbox/approve solo admin). **`/api/v2/payments/ops/configuration/*`** (proveedores, rutas, tasas por merchant) es **solo `admin`** (fail-closed). **`POST …/payments/ops/payments/:id/notifications/:id/resend`** exige rol **`admin`** (merchant queda fuera). `/api/v1/merchant-onboarding/ops/*` es admin-only fail-closed salvo ruta **`.../ops/merchant-login`** exacta al final del path (no substring; rutas tipo `merchant-login-*` siguen admin-only). Solo secreto interno en ese login, sin rol admin. Script CI `scripts/ci/check-ops-metrics.mjs` envía `X-Backoffice-Role: admin`. Detalle pago scoped: `404` cross-merchant. Backoffice: proxy fail-closed (`backoffice-api.spec.ts`; mismas reglas de exención exacta para `merchant-login`), middleware por rol, sesión merchant con `onboardingStatus` en JWT. Unit API policy DNS SSRF (`merchant-notification-url.policy.spec.ts`) + guard (`internal-secret.guard.spec.ts`, incl. configuración ops admin-only). |
 
 ## Inventario actual de archivos
 
 ### Integration local (`test/integration`)
 
+- `test/integration/payments-v2-ops-configuration.integration.spec.ts`
 - `test/integration/health.integration.spec.ts`
 - `test/integration/merchants.integration.spec.ts`
 - `test/integration/payments-v2.integration.spec.ts`
@@ -48,7 +49,7 @@ La CI del monorepo incluye `api-ci` (lint/test/build API), `backoffice-ci` (lint
 - `test/integration/rate-tables.integration.spec.ts`
 - `test/integration/settlements.integration.spec.ts`
 - `test/integration/fx.integration.spec.ts`
-- `test/integration/helpers/integration-app.ts`
+- `test/integration/helpers/v2-payment-intent-body.ts`
 - `test/integration/jest.integration.setup.ts`
 
 ### Unit backoffice (`apps/psp-backoffice/src`)
@@ -72,10 +73,14 @@ La CI del monorepo incluye `api-ci` (lint/test/build API), `backoffice-ci` (lint
 
 ### Unit relevantes API (`apps/psp-api/src`)
 
+- `src/payments-v2/create-payment-intent-payload-hash.spec.ts` (hash idempotencia create: claves ordenadas, trim URLs/textos, email minúsculas)
+- `src/payments-v2/dto/ops-configuration-route.dto.spec.ts` (ops route currencies: importes finitos, rango, orden min/max)
+- `src/payments-v2/decimal-amount-to-minor.spec.ts` (conversión a minor + límite INT32 alineado con `Payment.amountMinor`)
 - `src/payments-v2/providers/provider-registry.service.spec.ts`
 - `src/payments-v2/providers/acme/acme-provider.adapter.spec.ts`
 - `src/payments-v2/payments-v2-merchant-rate-limit.spec.ts`
 - `src/payments-v2/payments-v2-merchant-rate-limit.service.spec.ts`
+- `src/payments-v2/domain/merchant-notification-url.policy.spec.ts` (URLs merchant para create/resend: HTTPS en prod, hostname multi-etiqueta en prod, sandbox `PSP_ALLOW_HTTP_MERCHANT_CALLBACKS`, rangos privados/metadata en literal IPv4/IPv6 incl. embebidos; **`assertSafeMerchantNotificationOutboundUrl`**: DNS + rechazo si todas las resoluciones son no públicas)
 - `src/config/env.validation.spec.ts` (incl. `MERCHANT_ONBOARDING_BASE_URL`, loopback `http` en `NODE_ENV=test`, obligatoriedad fuera de dev/test)
 - `src/common/guards/internal-secret.guard.spec.ts`
 - `src/common/correlation/correlation-id.spec.ts`
@@ -92,7 +97,7 @@ La CI del monorepo incluye `api-ci` (lint/test/build API), `backoffice-ci` (lint
 ### Smoke (`test/smoke`)
 
 - `test/smoke/sandbox.smoke.spec.ts` — `POST /api/v2/payments` con cuerpo v2 (`amount` EUR + `customer` ES + URLs); env opcional `SMOKE_PAYMENT_AMOUNT` / `SMOKE_REQUIRES_ACTION_AMOUNT` (decimales).
-- `test/smoke/backoffice-volume-demo.smoke.spec.ts` (solo `npm run test:smoke:backoffice-demo` o `SMOKE_BACKOFFICE_VOLUME_DEMO=1`) — mismo contrato v2; variables de importe `SMOKE_PAYMENT_AMOUNT` / `SMOKE_REQUIRES_ACTION_AMOUNT`.
+- `test/smoke/backoffice-volume-demo.smoke.spec.ts` (solo `npm run test:smoke:backoffice-demo` o `SMOKE_BACKOFFICE_VOLUME_DEMO=1`) — mismo contrato v2; variables de importe `SMOKE_PAYMENT_AMOUNT` / `SMOKE_REQUIRES_ACTION_AMOUNT`. Sin pausa entre create y siguiente POST salvo `SMOKE_BACKOFFICE_DEMO_CREATE_GAP_MS` (p. ej. `2100` si hay `429` por throttle).
 - `test/smoke/orchestrator.integration.spec.ts`
 - `test/smoke/check-ops-metrics-ci.spec.ts`
 

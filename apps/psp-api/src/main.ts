@@ -34,6 +34,7 @@ async function bootstrap() {
     new ValidationPipe({
       whitelist: true,
       transform: true,
+      // Rechaza campos no declarados en el DTO (p. ej. shapes alternativos de create v2).
       forbidNonWhitelisted: true,
     }),
   );
