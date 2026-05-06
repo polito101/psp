@@ -48,6 +48,7 @@ apps/psp-api/src/generated/
 
 # Cursor IDE (hooks, estado local)
 .cursor/
+.worktrees/
 
 # SO / certificados locales
 .DS_Store

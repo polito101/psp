@@ -16,16 +16,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import {
-  Table,
-  TableContainer,
-  TBody,
-  TD,
-  TH,
-  THead,
-} from "@/components/ui/table";
+import { MerchantProviderRatesPanel } from "@/components/merchants/merchant-provider-rates-panel";
 
-type MerchantAdminTab = "account" | "application-form" | "payment-methods";
+type MerchantAdminTab = "account" | "application-form" | "provider-rates";
 
 type AccountFormState = {
   name: string;
@@ -135,7 +128,7 @@ export function MerchantAdminPanel({ merchantId }: { merchantId: string }) {
   const tabs: Array<{ id: MerchantAdminTab; label: string }> = [
     { id: "account", label: "Account" },
     { id: "application-form", label: "Application Form" },
-    { id: "payment-methods", label: "Payment Methods" },
+    { id: "provider-rates", label: "Provider rates" },
   ];
 
   return (
@@ -184,7 +177,7 @@ export function MerchantAdminPanel({ merchantId }: { merchantId: string }) {
         />
       ) : null}
       {data && activeTab === "application-form" ? <ApplicationFormTab data={data} /> : null}
-      {data && activeTab === "payment-methods" ? <PaymentMethodsTab data={data} /> : null}
+      {data && activeTab === "provider-rates" ? <MerchantProviderRatesPanel merchantId={merchantId} /> : null}
     </div>
   );
 }
@@ -353,48 +346,3 @@ function ApplicationFormTab({ data }: { data: MerchantsOpsDetailResponse }) {
   );
 }
 
-function PaymentMethodsTab({ data }: { data: MerchantsOpsDetailResponse }) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Payment Methods</CardTitle>
-        <CardDescription>Vista inicial; país, límites por moneda y rates se diseñarán en la siguiente fase.</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <TableContainer>
-          <Table>
-            <THead>
-              <tr>
-                <TH>UID</TH>
-                <TH>Name</TH>
-                <TH>Country</TH>
-                <TH>Currencies / Limits</TH>
-                <TH>Status</TH>
-                <TH>Rates</TH>
-              </tr>
-            </THead>
-            <TBody>
-              {data.paymentMethods.map((row) => {
-                const status = row.adminEnabled && row.merchantEnabled ? "Enabled" : "Disabled";
-                const limits =
-                  row.minAmountMinor != null || row.maxAmountMinor != null
-                    ? `${row.minAmountMinor ?? 0} - ${row.maxAmountMinor ?? "∞"}`
-                    : "Not configured";
-                return (
-                  <tr key={row.id}>
-                    <TD className="font-mono text-xs">{row.id}</TD>
-                    <TD>{row.definition?.label ?? row.definition?.code ?? row.definitionId}</TD>
-                    <TD>Out of scope</TD>
-                    <TD>{limits}</TD>
-                    <TD>{status}</TD>
-                    <TD>Out of scope</TD>
-                  </tr>
-                );
-              })}
-            </TBody>
-          </Table>
-        </TableContainer>
-      </CardContent>
-    </Card>
-  );
-}

@@ -354,7 +354,7 @@ export type OpsPaymentAttemptDetail = {
   responsePayload?: unknown | null;
 };
 
-export type OpsPaymentDetailResponse = {
+export type OpsPaymentDetailCore = {
   id: string;
   merchantId: string;
   merchantName: string;
@@ -367,6 +367,7 @@ export type OpsPaymentDetailResponse = {
   idempotencyKey: string | null;
   paymentLinkId: string | null;
   rail: string;
+  notificationUrl: string | null;
   createdAt: string;
   updatedAt: string;
   lastAttemptAt: string | null;
@@ -378,6 +379,56 @@ export type OpsPaymentDetailResponse = {
   /** True si la lista `attempts` está acotada (solo los más recientes). */
   attemptsTruncated: boolean;
   attempts: OpsPaymentAttemptDetail[];
+};
+
+export type OpsProviderLogRow = {
+  id: string;
+  paymentId: string;
+  providerId: string;
+  routeId: string;
+  operation: string;
+  createdAt: string;
+  httpStatus: number | null;
+  latencyMs: number | null;
+  providerTransactionId: string | null;
+  requestMasked: unknown | null;
+  responseMasked: unknown | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+};
+
+export type OpsNotificationDeliveryRow = {
+  id: string;
+  paymentId: string;
+  statusSnapshot: string;
+  createdAt: string;
+  httpStatus: number | null;
+  requestBodyMasked: unknown | null;
+  responseBodyMasked: unknown | null;
+  attemptNo: number;
+  isResend: boolean;
+  originalDeliveryId: string | null;
+};
+
+/** Respuesta de `GET .../ops/payments/:id` con detalle anidado y telemetría enmascarada. */
+export type OpsPaymentDetailResponse = {
+  payment: OpsPaymentDetailCore;
+  providerLogs: OpsProviderLogRow[];
+  notificationDeliveries: OpsNotificationDeliveryRow[];
+  action: unknown | null;
+};
+
+export type OpsPaymentActionResponse = {
+  action: unknown | null;
+};
+
+export type ResendPaymentNotificationResponse = {
+  id: string;
+  attemptNo: number;
+  httpStatus: number | null;
+  createdAt: string;
+  isResend: boolean;
+  originalDeliveryId: string | null;
 };
 
 /** Respuesta de `GET .../ops/merchants/:merchantId/finance/summary` (montos en minor como string). */
@@ -568,4 +619,65 @@ export type MerchantOnboardingTokenResponse = {
     id: string;
     status: MerchantOnboardingStatus;
   };
+};
+
+export type PaymentProviderConfigRow = {
+  id: string;
+  name: string;
+  description: string | null;
+  integrationBaseUrl: string;
+  initPaymentResource: string;
+  isConfigured: boolean;
+  isActive: boolean;
+  isPublished: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PaymentMethodRouteRow = {
+  id: string;
+  providerId: string;
+  methodCode: string;
+  methodName: string;
+  countryCode: string;
+  countryName?: string | null;
+  countryImageName?: string | null;
+  channel: "CASH" | "ONLINE" | "CREDIT_CARD" | "CRYPTO";
+  integrationMode: "S2S" | "REDIRECTION" | "HOSTED_PAGE";
+  requestTemplate: "REDIRECT_SIMPLE" | "SPEI_BANK_TRANSFER";
+  integrationCode?: string | null;
+  checkoutUrlTemplate?: string | null;
+  expirationTimeOffset?: number;
+  weight: number;
+  isActive: boolean;
+  isPublished: boolean;
+  routeConfigJson?: unknown | null;
+  createdAt?: string;
+  updatedAt?: string;
+  provider?: PaymentProviderConfigRow;
+  currencies: Array<{ currency: string; minAmount: string; maxAmount: string; isDefault: boolean }>;
+};
+
+export type MerchantProviderRateRow = {
+  id: string;
+  merchantId: string;
+  providerId: string;
+  countryCode: string;
+  percentage: string;
+  fixed: string;
+  minRateDiscount: string;
+  applyToCustomer: boolean;
+  fxSpread: string;
+  fxMarkup: string;
+  disableIndustryValidation?: boolean;
+  cashEnabled?: boolean;
+  creditCardEnabled?: boolean;
+  cryptoEnabled?: boolean;
+  onlineEnabled?: boolean;
+  cashMinAmount?: string;
+  creditCardMinAmount?: string;
+  cryptoMinAmount?: string;
+  onlineMinAmount?: string;
+  isActive: boolean;
+  provider?: { id: string; name: string };
 };

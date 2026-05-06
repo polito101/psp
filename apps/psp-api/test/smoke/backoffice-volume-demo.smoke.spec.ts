@@ -7,39 +7,52 @@ import {
 } from './smoke.helpers';
 
 /**
- * Rellena la base del deploy con pagos v2 (mock) para verlos en el backoffice (`/transactions`).
+ * Rellena la base del deploy con pagos v2 (contrato `amount` decimal + `customer`) para verlos en el backoffice (`/transactions`).
  * No corre en `npm run test:smoke:sandbox`: solo cuando el lifecycle es `test:smoke:backoffice-demo`
  * o `SMOKE_BACKOFFICE_VOLUME_DEMO=1`.
  *
- * Requisitos en el servidor: mock primero en `PAYMENTS_PROVIDER_ORDER`, merchant permitido en
- * `PAYMENTS_V2_ENABLED_MERCHANTS`, tarifas activas para EUR (igual que smoke sandbox).
- *
- * Variables:
- * - `SMOKE_BASE_URL` o `DEMO_API_BASE_URL`: API (default local `http://localhost:3000`). En **PowerShell** usa `$env:SMOKE_BASE_URL='https://…'` (no uses `set` como en CMD).
- * - `INTERNAL_API_SECRET` o `SMOKE_INTERNAL_API_SECRET`
- * - `SMOKE_API_KEY` opcional: reutiliza merchant (hace un pago “sonda” para obtener `merchantId`)
- * - `SMOKE_BACKOFFICE_DEMO_SUCCEEDED` (default 60, mínimo 60)
- * - `SMOKE_BACKOFFICE_DEMO_CANCELED` (default 4)
- * - `SMOKE_BACKOFFICE_DEMO_REFUNDED` (default 4)
- * - `SMOKE_BACKOFFICE_DEMO_REQUIRES_ACTION` (default 4) — `amountMinor` 2002 (mock 3DS)
- * - `SMOKE_BACKOFFICE_DEMO_AUTHORIZED` (default 4) — sin capturar
- * - `SMOKE_BACKOFFICE_DEMO_GAP_MS` (default 0) — pausa extra entre todas las peticiones
- * - `SMOKE_BACKOFFICE_DEMO_CREATE_GAP_MS` (default 2100) — tras cada `POST /api/v2/payments` (throttle 30/min en ese endpoint)
+ * Requisitos en el servidor: `PAYMENTS_PROVIDER_ORDER` con `mock` primero, `PAYMENTS_V2_ENABLED_MERCHANTS`,
+ * tarifas activas para **EUR** (seed por defecto al crear merchant vía `POST /api/v1/merchants` — usar `currency: EUR` en el body v2).
  */
+
+function parseAmountEur(raw: string | undefined, fallback: number, name: string): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number.parseFloat(raw.trim());
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`${name} must be a positive finite number`);
+  }
+  return n;
+}
+
+function buildSmokeV2Body(amount: number, orderId: string): Record<string, unknown> {
+  return {
+    amount,
+    currency: 'EUR',
+    channel: 'ONLINE',
+    language: 'EN',
+    orderId,
+    description: 'Smoke payment',
+    notificationUrl: 'https://example.com/webhook',
+    returnUrl: 'https://example.com/success',
+    cancelUrl: 'https://example.com/failure',
+    customer: {
+      firstName: 'Smoke',
+      lastName: 'Tester',
+      email: 'smoke@example.com',
+      country: 'ES',
+    },
+  };
+}
 
 const baseUrl = normalizeBaseUrl(
   (process.env.DEMO_API_BASE_URL ?? process.env.SMOKE_BASE_URL ?? 'http://localhost:3000').trim(),
 );
 const smokeApiKey = process.env.SMOKE_API_KEY?.trim();
-const amountMinor = parsePositiveInt(
-  process.env.SMOKE_PAYMENT_AMOUNT_MINOR,
-  1999,
-  'SMOKE_PAYMENT_AMOUNT_MINOR',
-);
-const requiresActionAmountMinor = parsePositiveInt(
-  process.env.SMOKE_REQUIRES_ACTION_AMOUNT_MINOR,
-  2002,
-  'SMOKE_REQUIRES_ACTION_AMOUNT_MINOR',
+const smokePaymentAmount = parseAmountEur(process.env.SMOKE_PAYMENT_AMOUNT, 19.99, 'SMOKE_PAYMENT_AMOUNT');
+const requiresActionAmount = parseAmountEur(
+  process.env.SMOKE_REQUIRES_ACTION_AMOUNT,
+  20.02,
+  'SMOKE_REQUIRES_ACTION_AMOUNT',
 );
 
 const lifecycle = process.env.npm_lifecycle_event ?? '';
@@ -137,7 +150,7 @@ async function fetchOpsCounts(merchantId: string): Promise<{ total: number; bySt
         apiKey = smokeApiKey;
         const probe = await requestJson<{ payment: { id: string } }>(baseUrl, 'POST', '/api/v2/payments', {
           headers: { 'X-API-Key': apiKey, 'Idempotency-Key': randomUUID() },
-          body: { amountMinor, currency: 'EUR' },
+          body: buildSmokeV2Body(smokePaymentAmount, `probe-${randomUUID().slice(0, 8)}`),
         });
         await sleep(createGapMs);
         await sleep(gapMs);
@@ -171,39 +184,42 @@ async function fetchOpsCounts(merchantId: string): Promise<{ total: number; bySt
       for (let i = 0; i < wantSucceeded; i += 1) {
         const created = (await post(
           '/api/v2/payments',
-          { amountMinor, currency: 'EUR' },
+          buildSmokeV2Body(smokePaymentAmount, `ok-${randomUUID().slice(0, 8)}`),
           { 'Idempotency-Key': randomUUID() },
         )) as { payment: { id: string } };
         await post(`/api/v2/payments/${created.payment.id}/capture`);
       }
 
       for (let i = 0; i < wantCanceled; i += 1) {
-        const created = (await post('/api/v2/payments', { amountMinor, currency: 'EUR' })) as {
-          payment: { id: string };
-        };
+        const created = (await post(
+          '/api/v2/payments',
+          buildSmokeV2Body(smokePaymentAmount, `can-${randomUUID().slice(0, 8)}`),
+        )) as { payment: { id: string } };
         await post(`/api/v2/payments/${created.payment.id}/cancel`);
       }
 
       for (let i = 0; i < wantRefunded; i += 1) {
-        const created = (await post('/api/v2/payments', { amountMinor, currency: 'EUR' })) as {
-          payment: { id: string };
-        };
+        const created = (await post(
+          '/api/v2/payments',
+          buildSmokeV2Body(smokePaymentAmount, `ref-${randomUUID().slice(0, 8)}`),
+        )) as { payment: { id: string } };
         await post(`/api/v2/payments/${created.payment.id}/capture`);
         await post(`/api/v2/payments/${created.payment.id}/refund`, {});
       }
 
       for (let i = 0; i < wantRequiresAction; i += 1) {
-        const created = (await post('/api/v2/payments', {
-          amountMinor: requiresActionAmountMinor,
-          currency: 'EUR',
-        })) as { payment: { status: string } };
+        const created = (await post(
+          '/api/v2/payments',
+          buildSmokeV2Body(requiresActionAmount, `3ds-${randomUUID().slice(0, 8)}`),
+        )) as { payment: { status: string } };
         expect(created.payment.status).toBe('requires_action');
       }
 
       for (let i = 0; i < wantAuthorized; i += 1) {
-        const created = (await post('/api/v2/payments', { amountMinor, currency: 'EUR' })) as {
-          payment: { status: string };
-        };
+        const created = (await post(
+          '/api/v2/payments',
+          buildSmokeV2Body(smokePaymentAmount, `auth-${randomUUID().slice(0, 8)}`),
+        )) as { payment: { status: string } };
         expect(created.payment.status).toBe('authorized');
       }
 

@@ -64,6 +64,8 @@ Guarda `apiKey` y `webhookSecret`.
 
 ### 2) Crear payment intent v2
 
+Contrato recomendado (importe **decimal** + `customer` + URLs de ciclo de vida). En alta por API interna, el merchant recibe tarifas por defecto solo en **EUR**; usa `currency: EUR` en create hasta tener `MerchantRateTable` para otras divisas.
+
 PowerShell:
 
 ```powershell
@@ -75,14 +77,31 @@ Invoke-RestMethod -Method Post "http://localhost:3000/api/v2/payments" `
     "Idempotency-Key"=$idem
   } `
   -Body (@{
-    amountMinor = 1999
+    amount = 19.99
     currency = "EUR"
-  } | ConvertTo-Json -Compress)
+    channel = "ONLINE"
+    language = "EN"
+    orderId = "smoke-order-1"
+    description = "Demo payment"
+    notificationUrl = "https://example.com/webhook"
+    returnUrl = "https://example.com/success"
+    cancelUrl = "https://example.com/failure"
+    customer = @{
+      firstName = "Ada"
+      lastName = "Lovelace"
+      email = "ada@example.com"
+      country = "ES"
+    }
+  } | ConvertTo-Json -Depth 6 -Compress)
 ```
 
-El proveedor lo elige el PSP vía `PAYMENTS_PROVIDER_ORDER` en runtime (p. ej. `mock` en local/sandbox).
+El proveedor lo elige el PSP vía `PAYMENTS_PROVIDER_ORDER` en runtime (p. ej. `mock` en local/sandbox). Las tablas `payment_provider_configs` / `payment_method_routes` / `merchant_provider_rates` preparan **enrutado por peso** y tarifas por proveedor–país; el script `npm run demo:backoffice-payments` puede sembrarlas con `DATABASE_URL` (migración `20260506120000_dynamic_payment_routing_config`).
 
-En `mock`, el intent tipicamente queda `authorized` para importes comunes.
+Sigue soportado el cuerpo **legacy** `amountMinor` + `currency` (3 letras) para integraciones existentes.
+
+En `mock`, el intent tipicamente queda `authorized` para importes comunes (p. ej. `19.99` EUR → 1999 minor; `20.02` EUR dispara `requires_action`).
+
+**Notificaciones al comercio:** `notificationUrl` se persiste en `Payment.notification_url` para el flujo de avisos por cambio de estado (entregas auditadas en `PaymentNotificationDelivery` en ops). El detalle ops y el backoffice pueden mostrar envíos enmascarados y acciones de reintento según la versión desplegada.
 
 ### 3) Capturar
 

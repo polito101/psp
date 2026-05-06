@@ -39,7 +39,7 @@ test("admin puede iniciar sesión y abrir merchants", async ({ page, context }) 
   await expect(page.getByRole("heading", { name: "Edit Merchant" })).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole("button", { name: "Account" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Application Form" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Payment Methods" })).toBeVisible();
-  await page.getByRole("button", { name: "Payment Methods" }).click();
-  await expect(page.getByText("Currencies / Limits")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Provider rates" })).toBeVisible();
+  await page.getByRole("button", { name: "Provider rates" }).click();
+  await expect(page.getByText("Tarifas por proveedor y país")).toBeVisible();
 });

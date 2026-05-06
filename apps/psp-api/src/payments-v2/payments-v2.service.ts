@@ -20,6 +20,7 @@ import { SettlementService } from '../settlements/settlement.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { FxRatesService } from '../fx/fx-rates.service';
 import { hashCreatePaymentIntentPayload } from './create-payment-intent-payload-hash';
+import { decimalAmountToMinorUnits } from './decimal-amount-to-minor';
 import { CreatePaymentIntentDto } from './dto/create-payment-intent.dto';
 import { ListOpsTransactionsDto } from './dto/list-ops-transactions.dto';
 import { OpsMerchantFinancePayoutsQueryDto } from './dto/ops-merchant-finance-payouts-query.dto';
@@ -45,6 +46,16 @@ import { ProviderContext, ProviderResult } from './providers/payment-provider.in
 
 /** Máximo de `PaymentAttempt` en detalle ops: los más recientes, en orden ascendente en la respuesta. */
 const OPS_PAYMENT_DETAIL_ATTEMPTS_MAX = 200;
+const OPS_PAYMENT_DETAIL_PROVIDER_LOGS_MAX = 100;
+const OPS_PAYMENT_DETAIL_NOTIFICATION_DELIVERIES_MAX = 100;
+
+function parsePersistedPaymentAction(actionSnapshot: unknown): unknown | null {
+  if (actionSnapshot == null || typeof actionSnapshot !== 'object') return null;
+  const record = actionSnapshot as Record<string, unknown>;
+  if (record.action != null) return record.action;
+  if (typeof record.type === 'string') return actionSnapshot;
+  return null;
+}
 
 const opsPaymentDetailAttemptSelectBase = {
   id: true,
@@ -335,11 +346,12 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   ): Promise<OperationResult> {
     idempotencyKey = this.parseOptionalIdempotencyKey(idempotencyKey);
     this.assertPaymentsV2ConfigAllowlist(merchantId);
+    const fin = this.normalizeCreateIntentFinancials(dto);
     const merchantCheckedInPaymentLinkRead = await this.assertPaymentLinkConsistency(
       merchantId,
       dto.paymentLinkId,
-      dto.amountMinor,
-      dto.currency,
+      fin.amountMinor,
+      fin.currencyUpper,
     );
     if (!merchantCheckedInPaymentLinkRead) {
       await this.assertMerchantIsActiveFresh(merchantId);
@@ -356,7 +368,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     await this.merchantRateLimit.consumeIfNeeded(merchantId, 'create');
 
     const providerOrder = this.registry.orderedProviders();
-    const currencyUpper = dto.currency.toUpperCase();
+    const currencyUpper = fin.currencyUpper;
     const canSettleFees = await this.fee.hasActiveRateTableForAnyProvider(
       merchantId,
       currencyUpper,
@@ -369,7 +381,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     }
 
     const paymentMethodMeta = await this.resolvePaymentMethodForCreate(merchantId, dto);
-    const payerCountry = dto.payerCountry ? dto.payerCountry.toUpperCase() : null;
+    const payerCountry = fin.payerCountryUpper;
     const nowUtc = new Date();
     const createdWeekdayUtc = nowUtc.getUTCDay();
 
@@ -382,12 +394,13 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
           paymentLinkId: dto.paymentLinkId ?? null,
           idempotencyKey: idempotencyKey ?? null,
           createPayloadHash: hashCreatePaymentIntentPayload(dto),
-          amountMinor: dto.amountMinor,
+          amountMinor: fin.amountMinor,
           currency: currencyUpper,
           status: PAYMENT_V2_STATUS.PROCESSING,
           rail: 'fiat',
           selectedProvider,
           payerCountry,
+          notificationUrl: fin.notificationUrl,
           paymentMethodCode: paymentMethodMeta.code,
           paymentMethodFamily: paymentMethodMeta.family,
           createdWeekdayUtc,
@@ -428,7 +441,38 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       await this.safeSetIdempotency(merchantId, idempotencyKey, payment.id);
     }
 
-    return this.executeProviderOperation(payment, 'create', dto.amountMinor, providerOrder);
+    return this.executeProviderOperation(payment, 'create', fin.amountMinor, providerOrder);
+  }
+
+  private normalizeCreateIntentFinancials(dto: CreatePaymentIntentDto): {
+    amountMinor: number;
+    currencyUpper: string;
+    payerCountryUpper: string | null;
+    notificationUrl: string | null;
+  } {
+    const hasMinor = dto.amountMinor != null;
+    const hasMajor = dto.amount != null;
+    if (hasMinor === hasMajor) {
+      throw new BadRequestException('Provide exactly one of amountMinor or amount');
+    }
+    const currencyUpper = dto.currency.toUpperCase();
+    if (hasMinor) {
+      return {
+        amountMinor: dto.amountMinor!,
+        currencyUpper,
+        payerCountryUpper: dto.payerCountry ? dto.payerCountry.toUpperCase() : null,
+        notificationUrl: null,
+      };
+    }
+    if (!dto.customer) {
+      throw new BadRequestException('customer is required when amount is provided');
+    }
+    return {
+      amountMinor: decimalAmountToMinorUnits(dto.amount!, dto.currency),
+      currencyUpper,
+      payerCountryUpper: dto.customer.country.toUpperCase(),
+      notificationUrl: dto.notificationUrl?.trim() ? dto.notificationUrl.trim() : null,
+    };
   }
 
   async getPayment(merchantId: string, paymentId: string) {
@@ -2314,6 +2358,8 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
         succeededAt: true,
         failedAt: true,
         canceledAt: true,
+        notificationUrl: true,
+        actionSnapshot: true,
         merchant: { select: { name: true } },
       },
     });
@@ -2327,7 +2373,12 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       throw new NotFoundException({ message: 'Payment not found', paymentId });
     }
 
-    const [attemptsTotal, attemptsDesc] = await Promise.all([
+    const [
+      attemptsTotal,
+      attemptsDesc,
+      providerLogsDesc,
+      notificationDeliveriesDesc,
+    ] = await Promise.all([
       this.prisma.paymentAttempt.count({ where: { paymentId } }),
       this.prisma.paymentAttempt.findMany({
         where: { paymentId },
@@ -2335,11 +2386,48 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
         take: OPS_PAYMENT_DETAIL_ATTEMPTS_MAX,
         select: opsPaymentDetailAttemptSelect(includePayload),
       }),
+      this.prisma.providerLog.findMany({
+        where: { paymentId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: OPS_PAYMENT_DETAIL_PROVIDER_LOGS_MAX,
+        select: {
+          id: true,
+          paymentId: true,
+          providerId: true,
+          routeId: true,
+          operation: true,
+          createdAt: true,
+          httpStatus: true,
+          latencyMs: true,
+          providerTransactionId: true,
+          requestMasked: true,
+          responseMasked: true,
+          errorCode: true,
+          errorMessage: true,
+        },
+      }),
+      this.prisma.paymentNotificationDelivery.findMany({
+        where: { paymentId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: OPS_PAYMENT_DETAIL_NOTIFICATION_DELIVERIES_MAX,
+        select: {
+          id: true,
+          paymentId: true,
+          statusSnapshot: true,
+          createdAt: true,
+          httpStatus: true,
+          requestBodyMasked: true,
+          responseBodyMasked: true,
+          attemptNo: true,
+          isResend: true,
+          originalDeliveryId: true,
+        },
+      }),
     ]);
 
     const attemptsChronological = attemptsDesc.slice().reverse();
 
-    return {
+    const payment = {
       id: row.id,
       merchantId: row.merchantId,
       merchantName: row.merchant.name,
@@ -2352,6 +2440,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
       idempotencyKey: row.idempotencyKey,
       paymentLinkId: row.paymentLinkId,
       rail: row.rail,
+      notificationUrl: row.notificationUrl,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       lastAttemptAt: row.lastAttemptAt,
@@ -2380,6 +2469,137 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
         return { ...base, responsePayload: withPayload.responsePayload ?? null };
       }),
     };
+
+    const providerLogs = providerLogsDesc.slice().reverse();
+    const notificationDeliveries = notificationDeliveriesDesc.slice().reverse();
+
+    return {
+      payment,
+      providerLogs,
+      notificationDeliveries,
+      action: parsePersistedPaymentAction(row.actionSnapshot),
+    };
+  }
+
+  /**
+   * Solo lectura: devuelve la acción persistida parseada desde `actionSnapshot` (sin llamar al proveedor).
+   */
+  async getOpsPaymentAction(
+    paymentId: string,
+    options?: { backofficeMerchantScopeId?: string },
+  ) {
+    const row = await this.prisma.payment.findUnique({
+      where: { id: paymentId },
+      select: { id: true, merchantId: true, actionSnapshot: true },
+    });
+    if (!row) {
+      throw new NotFoundException({ message: 'Payment not found', paymentId });
+    }
+    const scopeId = options?.backofficeMerchantScopeId;
+    if (scopeId && row.merchantId !== scopeId) {
+      throw new NotFoundException({ message: 'Payment not found', paymentId });
+    }
+    return { action: parsePersistedPaymentAction(row.actionSnapshot) };
+  }
+
+  /**
+   * Reintenta la entrega hacia `notificationUrl` del pago usando el cuerpo enmascarado
+   * de la entrega original (fase 1: sin descifrar ciphertext).
+   */
+  async resendPaymentNotificationDelivery(
+    paymentId: string,
+    deliveryId: string,
+    options?: { backofficeMerchantScopeId?: string },
+  ) {
+    const payment = await this.prisma.payment.findUnique({
+      where: { id: paymentId },
+      select: { id: true, merchantId: true, notificationUrl: true },
+    });
+    if (!payment) {
+      throw new NotFoundException({ message: 'Payment not found', paymentId });
+    }
+    const scopeId = options?.backofficeMerchantScopeId;
+    if (scopeId && payment.merchantId !== scopeId) {
+      throw new NotFoundException({ message: 'Payment not found', paymentId });
+    }
+
+    const source = await this.prisma.paymentNotificationDelivery.findFirst({
+      where: { id: deliveryId, paymentId },
+    });
+    if (!source) {
+      throw new NotFoundException({ message: 'Notification delivery not found', paymentId, deliveryId });
+    }
+
+    const url = payment.notificationUrl?.trim();
+    if (!url) {
+      throw new BadRequestException({
+        message: 'Payment has no notification URL; cannot resend merchant notification',
+        paymentId,
+      });
+    }
+
+    const nextAttemptAgg = await this.prisma.paymentNotificationDelivery.aggregate({
+      where: { paymentId },
+      _max: { attemptNo: true },
+    });
+    const nextAttemptNo = (nextAttemptAgg._max.attemptNo ?? 0) + 1;
+
+    const bodyObject =
+      source.requestBodyMasked !== null && typeof source.requestBodyMasked === 'object'
+        ? source.requestBodyMasked
+        : {};
+
+    let httpStatus: number | null = null;
+    let responseBodyMasked: Prisma.InputJsonValue | typeof Prisma.JsonNull | undefined = Prisma.JsonNull;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bodyObject),
+        signal: AbortSignal.timeout(30_000),
+      });
+      httpStatus = response.status;
+      const text = await response.text();
+      const trimmed = text.trim();
+      if (trimmed) {
+        try {
+          responseBodyMasked = JSON.parse(trimmed) as Prisma.InputJsonValue;
+        } catch {
+          responseBodyMasked = trimmed;
+        }
+      } else {
+        responseBodyMasked = Prisma.JsonNull;
+      }
+    } catch {
+      httpStatus = null;
+      responseBodyMasked = Prisma.JsonNull;
+    }
+
+    const created = await this.prisma.paymentNotificationDelivery.create({
+      data: {
+        paymentId,
+        statusSnapshot: source.statusSnapshot,
+        httpStatus,
+        requestBodyMasked:
+          source.requestBodyMasked === null
+            ? Prisma.JsonNull
+            : (source.requestBodyMasked as Prisma.InputJsonValue),
+        responseBodyMasked,
+        attemptNo: nextAttemptNo,
+        isResend: true,
+        originalDeliveryId: deliveryId,
+      },
+      select: {
+        id: true,
+        attemptNo: true,
+        httpStatus: true,
+        createdAt: true,
+        isResend: true,
+        originalDeliveryId: true,
+      },
+    });
+
+    return created;
   }
 
   private async executeProviderOperation(
