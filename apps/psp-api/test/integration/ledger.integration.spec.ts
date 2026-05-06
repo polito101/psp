@@ -2,6 +2,7 @@ import request from 'supertest';
 import { INestApplication } from '@nestjs/common/interfaces';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { createIntegrationApp, createMerchantViaHttp, resetIntegrationDb } from './helpers/integration-app';
+import { v2PaymentIntentBody } from './helpers/v2-payment-intent-body';
 
 describe('ledger integration', () => {
   let app: INestApplication;
@@ -27,7 +28,7 @@ describe('ledger integration', () => {
     const created = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1999, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 19.99, currency: 'EUR' }))
       .expect(201);
 
     await request(app.getHttpServer())

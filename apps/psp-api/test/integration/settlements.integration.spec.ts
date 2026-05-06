@@ -6,6 +6,7 @@ import { SettlementRequestStatus } from '../../src/generated/prisma/enums';
 import { SettlementRequestsService } from '../../src/settlements/settlement-requests.service';
 import { SettlementService } from '../../src/settlements/settlement.service';
 import { createIntegrationApp, createMerchantViaHttp, resetIntegrationDb } from './helpers/integration-app';
+import { v2PaymentIntentBody } from './helpers/v2-payment-intent-body';
 
 /** `createPayout({ now })` exige `now >= available_at` del settlement (T+N conserva hora del capture). */
 async function payoutEligibleNow(
@@ -50,7 +51,7 @@ describe('settlements integration', () => {
     const created = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1_999, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 19.99, currency: 'EUR' }))
       .expect(201);
 
     await request(app.getHttpServer())
@@ -80,7 +81,7 @@ describe('settlements integration', () => {
     const created = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1_999, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 19.99, currency: 'EUR' }))
       .expect(201);
 
     await request(app.getHttpServer())

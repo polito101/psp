@@ -4,6 +4,7 @@ import { INestApplication } from '@nestjs/common/interfaces';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { SettlementService } from '../../src/settlements/settlement.service';
 import { createIntegrationApp, createMerchantViaHttp, resetIntegrationDb } from './helpers/integration-app';
+import { v2PaymentIntentBody } from './helpers/v2-payment-intent-body';
 
 /** `createPayout({ now })` exige `now >= available_at` del settlement (T+N conserva hora del capture). */
 async function payoutEligibleNow(
@@ -49,7 +50,7 @@ describe('payments-v2 integration', () => {
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
       .set('X-Request-Id', customId)
-      .send({ amountMinor: 1999, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 19.99, currency: 'EUR' }))
       .expect(201);
     expect(res.headers['x-request-id']).toBe(customId);
   });
@@ -61,7 +62,7 @@ describe('payments-v2 integration', () => {
       .set('X-API-Key', merchant.apiKey)
       .set('X-Request-Id', 'primary-req')
       .set('X-Correlation-Id', 'secondary-corr')
-      .send({ amountMinor: 1999, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 19.99, currency: 'EUR' }))
       .expect(201);
     expect(res.headers['x-request-id']).toBe('primary-req');
   });
@@ -71,7 +72,7 @@ describe('payments-v2 integration', () => {
     const res = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1999, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 19.99, currency: 'EUR' }))
       .expect(201);
     const id = res.headers['x-request-id'] as string;
     expect(id).toBeTruthy();
@@ -81,7 +82,7 @@ describe('payments-v2 integration', () => {
   it('creates payment and replays idempotent request with same payment id', async () => {
     const merchant = await createMerchantViaHttp(app);
     const idempotencyKey = randomUUID();
-    const payload = { amountMinor: 1999, currency: 'EUR' };
+    const payload = v2PaymentIntentBody({ amount: 19.99, currency: 'EUR' });
 
     const first = await request(app.getHttpServer())
       .post('/api/v2/payments')
@@ -109,14 +110,14 @@ describe('payments-v2 integration', () => {
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
       .set('Idempotency-Key', idempotencyKey)
-      .send({ amountMinor: 1999, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 19.99, currency: 'EUR' }))
       .expect(201);
 
     const conflict = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
       .set('Idempotency-Key', idempotencyKey)
-      .send({ amountMinor: 2000, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 20, currency: 'EUR' }))
       .expect(409);
 
     expect(conflict.body.message).toContain('Idempotency key');
@@ -137,7 +138,7 @@ describe('payments-v2 integration', () => {
     const response = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1999, currency: 'EUR', paymentLinkId: link.id })
+      .send(v2PaymentIntentBody({ amount: 19.99, currency: 'EUR', paymentLinkId: link.id }))
       .expect(400);
 
     expect(response.body.message).toContain('Payment link is not active');
@@ -159,7 +160,7 @@ describe('payments-v2 integration', () => {
     const response = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1999, currency: 'EUR', paymentLinkId: link.id })
+      .send(v2PaymentIntentBody({ amount: 19.99, currency: 'EUR', paymentLinkId: link.id }))
       .expect(400);
 
     expect(response.body.message).toContain('Payment link has expired');
@@ -170,7 +171,7 @@ describe('payments-v2 integration', () => {
     const created = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1999, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 19.99, currency: 'EUR' }))
       .expect(201);
 
     expect(created.body.payment.status).toBe('authorized');
@@ -204,7 +205,7 @@ describe('payments-v2 integration', () => {
     const created = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1500, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 15, currency: 'EUR' }))
       .expect(201);
 
     await request(app.getHttpServer())
@@ -248,7 +249,7 @@ describe('payments-v2 integration', () => {
     await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 2400, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 24, currency: 'EUR' }))
       .expect(201);
 
     const now = new Date();
@@ -296,7 +297,7 @@ describe('payments-v2 integration', () => {
     const created = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1999, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 19.99, currency: 'EUR' }))
       .expect(201);
 
     const canceled = await request(app.getHttpServer())
@@ -359,7 +360,7 @@ describe('payments-v2 integration', () => {
     const created = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 2_500, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 25, currency: 'EUR' }))
       .expect(201);
 
     await request(app.getHttpServer())
@@ -429,7 +430,7 @@ describe('payments-v2 integration', () => {
     const created = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1_999, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 19.99, currency: 'EUR' }))
       .expect(201);
 
     await request(app.getHttpServer())
@@ -472,7 +473,7 @@ describe('payments-v2 integration', () => {
     const created = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchantA.apiKey)
-      .send({ amountMinor: 1_234, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 12.34, currency: 'EUR' }))
       .expect(201);
 
     const paymentId = created.body.payment.id as string;

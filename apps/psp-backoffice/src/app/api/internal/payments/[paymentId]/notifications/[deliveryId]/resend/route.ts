@@ -47,13 +47,6 @@ export async function POST(
     if (error instanceof ProxyUpstreamError && error.upstreamStatus === 404) {
       return NextResponse.json({ message: "Not found" }, { status: 404 });
     }
-    if (
-      auth.claims.role === "merchant" &&
-      error instanceof ProxyUpstreamError &&
-      error.upstreamStatus === 403
-    ) {
-      return NextResponse.json({ message: "Not found" }, { status: 404 });
-    }
     return mapProxyError(error);
   }
 }

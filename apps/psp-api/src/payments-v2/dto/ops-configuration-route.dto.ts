@@ -1,24 +1,54 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
   IsArray,
+  IsBoolean,
   IsIn,
   IsInt,
+  IsNumber,
   IsObject,
   IsOptional,
   IsString,
   Length,
+  Max,
   MaxLength,
+  Min,
   MinLength,
+  Validate,
   ValidateNested,
+  ValidatorConstraint,
+  ValidatorConstraintInterface,
+  ValidationArguments,
 } from 'class-validator';
 
 const CHANNELS = ['CASH', 'ONLINE', 'CREDIT_CARD', 'CRYPTO'] as const;
 const MODES = ['S2S', 'REDIRECTION', 'HOSTED_PAGE'] as const;
 const TEMPLATES = ['REDIRECT_SIMPLE', 'SPEI_BANK_TRANSFER'] as const;
 
+/** Alineado con `PaymentMethodRouteCurrency` Prisma `@db.Decimal(18, 6)`. */
+export const OPS_CONFIGURATION_ROUTE_CURRENCY_AMOUNT_MAX = 999_999_999_999.999999;
+
 function toUpperIfString({ value }: { value: unknown }) {
   return typeof value === 'string' ? value.toUpperCase() : value;
+}
+
+@ValidatorConstraint({ name: 'OpsConfigurationRouteCurrencyMinLteMax', async: false })
+class OpsConfigurationRouteCurrencyMinLteMaxConstraint implements ValidatorConstraintInterface {
+  validate(maxAmount: unknown, args: ValidationArguments): boolean {
+    const obj = args.object as OpsConfigurationRouteCurrencyDto;
+    const min = obj.minAmount;
+    if (typeof min !== 'number' || typeof maxAmount !== 'number') {
+      return true;
+    }
+    if (!Number.isFinite(min) || !Number.isFinite(maxAmount)) {
+      return false;
+    }
+    return min <= maxAmount;
+  }
+
+  defaultMessage(): string {
+    return 'minAmount must be less than or equal to maxAmount';
+  }
 }
 
 export class OpsConfigurationRouteCurrencyDto {
@@ -27,14 +57,32 @@ export class OpsConfigurationRouteCurrencyDto {
   @MaxLength(8)
   currency!: string;
 
+  @ApiProperty({
+    description: 'Importe mínimo (Decimal 18,6 en persistencia).',
+    minimum: 0,
+    maximum: OPS_CONFIGURATION_ROUTE_CURRENCY_AMOUNT_MAX,
+  })
   @Type(() => Number)
+  @IsNumber({ allowNaN: false, allowInfinity: false, maxDecimalPlaces: 6 })
+  @Min(0)
+  @Max(OPS_CONFIGURATION_ROUTE_CURRENCY_AMOUNT_MAX)
   minAmount!: number;
 
+  @ApiProperty({
+    description: 'Importe máximo (Decimal 18,6 en persistencia).',
+    minimum: 0,
+    maximum: OPS_CONFIGURATION_ROUTE_CURRENCY_AMOUNT_MAX,
+  })
   @Type(() => Number)
+  @IsNumber({ allowNaN: false, allowInfinity: false, maxDecimalPlaces: 6 })
+  @Min(0)
+  @Max(OPS_CONFIGURATION_ROUTE_CURRENCY_AMOUNT_MAX)
+  @Validate(OpsConfigurationRouteCurrencyMinLteMaxConstraint)
   maxAmount!: number;
 
   @IsOptional()
   @Type(() => Boolean)
+  @IsBoolean()
   isDefault?: boolean;
 }
 
@@ -193,11 +241,16 @@ export class PatchOpsConfigurationRouteDto {
   @IsObject()
   routeConfigJson?: Record<string, unknown> | null;
 
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Monedas de la ruta. Un array vacío (`[]`) o `null` elimina todas las monedas asociadas.',
+  })
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => OpsConfigurationRouteCurrencyDto)
-  currencies?: OpsConfigurationRouteCurrencyDto[];
+  currencies?: OpsConfigurationRouteCurrencyDto[] | null;
 }
 
 export class PatchOpsConfigurationRouteWeightDto {

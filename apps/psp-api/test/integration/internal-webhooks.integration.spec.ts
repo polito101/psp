@@ -2,6 +2,7 @@ import request from 'supertest';
 import { INestApplication } from '@nestjs/common/interfaces';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { createIntegrationApp, createMerchantViaHttp, resetIntegrationDb } from './helpers/integration-app';
+import { v2PaymentIntentBody } from './helpers/v2-payment-intent-body';
 
 describe('internal/webhooks integration', () => {
   let app: INestApplication;
@@ -54,13 +55,13 @@ describe('internal/webhooks integration', () => {
     await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 1999, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 19.99, currency: 'EUR' }))
       .expect(201);
 
     await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 2500, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 25, currency: 'EUR' }))
       .expect(201);
 
     const response = await request(app.getHttpServer())
@@ -86,7 +87,7 @@ describe('internal/webhooks integration', () => {
     await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 100, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 1, currency: 'EUR' }))
       .expect(201);
 
     const response = await request(app.getHttpServer())
@@ -110,7 +111,7 @@ describe('internal/webhooks integration', () => {
     await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 100, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 1, currency: 'EUR' }))
       .expect(201);
 
     const response = await request(app.getHttpServer())
@@ -133,13 +134,13 @@ describe('internal/webhooks integration', () => {
     const first = await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 100, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 1, currency: 'EUR' }))
       .expect(201);
 
     await request(app.getHttpServer())
       .post('/api/v2/payments')
       .set('X-API-Key', merchant.apiKey)
-      .send({ amountMinor: 200, currency: 'EUR' })
+      .send(v2PaymentIntentBody({ amount: 2, currency: 'EUR' }))
       .expect(201);
 
     const paymentId = first.body.payment.id as string;

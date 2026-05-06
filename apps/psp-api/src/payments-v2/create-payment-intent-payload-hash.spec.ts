@@ -76,18 +76,14 @@ describe('hashCreatePaymentIntentPayload', () => {
     expect(hashCreatePaymentIntentPayload(spaced)).toBe(hashCreatePaymentIntentPayload(trimmed));
   });
 
-  it('v1: paymentLinkId y payerCountry se normalizan con trim', () => {
+  it('v2: paymentLinkId se normaliza con trim', () => {
     const a: CreatePaymentIntentDto = {
-      amountMinor: 100,
-      currency: 'EUR',
+      ...baseV2Payload(),
       paymentLinkId: '  plink  ',
-      payerCountry: ' es ',
     };
     const b: CreatePaymentIntentDto = {
-      amountMinor: 100,
-      currency: 'EUR',
+      ...baseV2Payload(),
       paymentLinkId: 'plink',
-      payerCountry: 'ES',
     };
     expect(hashCreatePaymentIntentPayload(a)).toBe(hashCreatePaymentIntentPayload(b));
   });

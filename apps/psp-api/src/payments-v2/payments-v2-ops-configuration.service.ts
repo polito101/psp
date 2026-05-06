@@ -9,6 +9,7 @@ import { ListOpsConfigurationRoutesQueryDto } from './dto/ops-configuration-list
 import { UpsertOpsConfigurationMerchantRateDto } from './dto/ops-configuration-merchant-rate.dto';
 import {
   CreateOpsConfigurationRouteDto,
+  OPS_CONFIGURATION_ROUTE_CURRENCY_AMOUNT_MAX,
   PatchOpsConfigurationRouteDto,
 } from './dto/ops-configuration-route.dto';
 
@@ -93,6 +94,35 @@ const routeInclude = {
 
 type RouteWithRelations = Prisma.PaymentMethodRouteGetPayload<{ include: typeof routeInclude }>;
 
+function assertPersistableRouteCurrencyAmounts(
+  currencies: Array<{ minAmount: number; maxAmount: number }>,
+): void {
+  for (let i = 0; i < currencies.length; i++) {
+    const { minAmount: min, maxAmount: max } = currencies[i];
+    if (typeof min !== 'number' || typeof max !== 'number') {
+      throw new BadRequestException(
+        `currencies[${i}]: minAmount y maxAmount deben ser números`,
+      );
+    }
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+      throw new BadRequestException(
+        `currencies[${i}]: minAmount y maxAmount deben ser finitos (no NaN ni Infinity)`,
+      );
+    }
+    if (min < 0 || max < 0) {
+      throw new BadRequestException(`currencies[${i}]: los importes deben ser >= 0`);
+    }
+    if (min > OPS_CONFIGURATION_ROUTE_CURRENCY_AMOUNT_MAX || max > OPS_CONFIGURATION_ROUTE_CURRENCY_AMOUNT_MAX) {
+      throw new BadRequestException(
+        `currencies[${i}]: los importes no pueden superar ${OPS_CONFIGURATION_ROUTE_CURRENCY_AMOUNT_MAX}`,
+      );
+    }
+    if (min > max) {
+      throw new BadRequestException(`currencies[${i}]: minAmount debe ser menor o igual que maxAmount`);
+    }
+  }
+}
+
 @Injectable()
 export class PaymentsV2OpsConfigurationService {
   constructor(private readonly prisma: PrismaService) {}
@@ -173,6 +203,7 @@ export class PaymentsV2OpsConfigurationService {
     if (!provider) {
       throw new NotFoundException('Provider not found');
     }
+    assertPersistableRouteCurrencyAmounts(dto.currencies);
     const created = await this.prisma.paymentMethodRoute.create({
       data: {
         providerId: dto.providerId.trim(),
@@ -255,10 +286,14 @@ export class PaymentsV2OpsConfigurationService {
 
     await this.prisma.$transaction(async (tx) => {
       if (hasCurrencies) {
+        const currenciesToApply = dto.currencies ?? [];
+        if (currenciesToApply.length > 0) {
+          assertPersistableRouteCurrencyAmounts(currenciesToApply);
+        }
         await tx.paymentMethodRouteCurrency.deleteMany({ where: { routeId: id } });
-        if (dto.currencies!.length > 0) {
+        if (currenciesToApply.length > 0) {
           await tx.paymentMethodRouteCurrency.createMany({
-            data: dto.currencies!.map((c) => ({
+            data: currenciesToApply.map((c) => ({
               routeId: id,
               currency: c.currency.trim().toUpperCase(),
               minAmount: String(c.minAmount),

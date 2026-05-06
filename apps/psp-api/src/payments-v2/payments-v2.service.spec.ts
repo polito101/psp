@@ -13,10 +13,27 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { hashCreatePaymentIntentPayload } from './create-payment-intent-payload-hash';
+import type { CreatePaymentIntentDto } from './dto/create-payment-intent.dto';
 import { PaymentsV2Service } from './payments-v2.service';
 import { PAYMENT_V2_STATUS, unsupportedPersistedProviderLifecycleMessage } from './domain/payment-status';
 import { ProviderResult } from './providers/payment-provider.interface';
 import { Prisma } from '../generated/prisma/client';
+
+function eurIntent(amount: number, extra: Partial<CreatePaymentIntentDto> = {}): CreatePaymentIntentDto {
+  return {
+    amount,
+    currency: 'EUR',
+    channel: 'ONLINE',
+    language: 'EN',
+    orderId: 'ord-test',
+    description: 'test',
+    notificationUrl: 'https://example.com/n',
+    returnUrl: 'https://example.com/r',
+    cancelUrl: 'https://example.com/c',
+    customer: { firstName: 'A', lastName: 'B', email: 'a@b.co', country: 'ES' },
+    ...extra,
+  };
+}
 
 describe('PaymentsV2Service', () => {
   const config = {
@@ -264,35 +281,20 @@ describe('PaymentsV2Service', () => {
   it('rechaza Idempotency-Key demasiado larga', async () => {
     const longKey = 'a'.repeat(257);
     await expect(
-      service.createIntent('m_1', { amountMinor: 1000, currency: 'EUR' }, longKey),
+      service.createIntent('m_1', eurIntent(10), longKey),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('rechaza Idempotency-Key con caracteres fuera del charset permitido', async () => {
     await expect(
-      service.createIntent('m_1', { amountMinor: 1000, currency: 'EUR' }, 'key with space'),
-    ).rejects.toBeInstanceOf(BadRequestException);
-  });
-
-  it('rechaza amountMinor por encima del límite INTEGER persistible', async () => {
-    await expect(
-      service.createIntent('m_1', { amountMinor: 2_147_483_648, currency: 'EUR' }),
+      service.createIntent('m_1', eurIntent(10), 'key with space'),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('rechaza amount decimal que al convertir a minor supera el límite INTEGER (EUR)', async () => {
-    await expect(
-      service.createIntent('m_1', {
-        amount: 21_474_836.48,
-        currency: 'EUR',
-        customer: {
-          firstName: 'A',
-          lastName: 'B',
-          email: 'a@b.co',
-          country: 'ES',
-        },
-      }),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.createIntent('m_1', eurIntent(21_474_836.48))).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
   });
 
   it('acepta la primera entrada si la cabecera Idempotency-Key viene duplicada (array)', async () => {
@@ -327,17 +329,13 @@ describe('PaymentsV2Service', () => {
       paymentLinkId: null,
     });
 
-    await service.createIntent(
-      'm_1',
-      { amountMinor: 500, currency: 'EUR' },
-      ['first-key', 'ignored'],
-    );
+    await service.createIntent('m_1', eurIntent(5), ['first-key', 'ignored']);
 
     expect(prisma.payment.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           idempotencyKey: 'first-key',
-          createPayloadHash: hashCreatePaymentIntentPayload({ amountMinor: 500, currency: 'EUR' }),
+          createPayloadHash: hashCreatePaymentIntentPayload(eurIntent(5)),
         }),
       }),
     );
@@ -348,11 +346,7 @@ describe('PaymentsV2Service', () => {
     service = buildService();
     prisma.merchant.findUnique.mockClear();
     await expect(
-      service.createIntent(
-        'm_other',
-        { amountMinor: 1000, currency: 'EUR' },
-        'idem_1',
-      ),
+      service.createIntent('m_other', eurIntent(10), 'idem_1'),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(prisma.merchant.findUnique).not.toHaveBeenCalled();
   });
@@ -419,10 +413,7 @@ describe('PaymentsV2Service', () => {
       paymentLinkId: null,
     });
 
-    const result = await service.createIntent('m_1', {
-      amountMinor: 1200,
-      currency: 'EUR',
-    });
+    const result = await service.createIntent('m_1', eurIntent(12));
 
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.AUTHORIZED);
     expect(prisma.paymentAttempt.create).toHaveBeenCalled();
@@ -466,10 +457,7 @@ describe('PaymentsV2Service', () => {
       paymentLinkId: null,
     });
 
-    const result = await service.createIntent('m_1', {
-      amountMinor: 1000,
-      currency: 'EUR',
-    });
+    const result = await service.createIntent('m_1', eurIntent(10));
 
     expect(stripeProvider.run).toHaveBeenCalled();
     expect(mockProvider.run).toHaveBeenCalled();
@@ -501,14 +489,7 @@ describe('PaymentsV2Service', () => {
       paymentLinkId: null,
     });
 
-    const result = await service.createIntent(
-      'm_1',
-      {
-        amountMinor: 1200,
-        currency: 'EUR',
-      },
-      'idem-race',
-    );
+    const result = await service.createIntent('m_1', eurIntent(12), 'idem-race');
 
     expect(result.payment.id).toBe('pay_race');
     expect(result.nextAction).toBeNull();
@@ -528,11 +509,7 @@ describe('PaymentsV2Service', () => {
       statusReason: null,
       paymentLinkId: null,
     });
-    const result = await service.createIntent(
-      'm_1',
-      { amountMinor: 1200, currency: 'EUR' },
-      'idem-action',
-    );
+    const result = await service.createIntent('m_1', eurIntent(12), 'idem-action');
 
     expect(result.payment.id).toBe('pay_action');
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.REQUIRES_ACTION);
@@ -555,7 +532,7 @@ describe('PaymentsV2Service', () => {
       expiresAt: null,
       merchant: { isActive: true },
     } as never);
-    const firstPayload = { amountMinor: 1000, currency: 'EUR', paymentLinkId: 'plink_a' };
+    const firstPayload = eurIntent(10, { paymentLinkId: 'plink_a' });
     prisma.payment.findUnique.mockResolvedValue({
       id: 'pay_idem_plink',
       merchantId: 'm_1',
@@ -570,11 +547,7 @@ describe('PaymentsV2Service', () => {
     });
 
     await expect(
-      service.createIntent(
-        'm_1',
-        { amountMinor: 1000, currency: 'EUR', paymentLinkId: 'plink_b' },
-        'idem-plink-mismatch',
-      ),
+      service.createIntent('m_1', eurIntent(10, { paymentLinkId: 'plink_b' }), 'idem-plink-mismatch'),
     ).rejects.toBeInstanceOf(ConflictException);
 
     expect(prisma.payment.create).not.toHaveBeenCalled();
@@ -615,10 +588,7 @@ describe('PaymentsV2Service', () => {
       paymentLinkId: null,
     });
 
-    const result = await service.createIntent('m_1', {
-      amountMinor: 1500,
-      currency: 'EUR',
-    });
+    const result = await service.createIntent('m_1', eurIntent(15));
 
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.AUTHORIZED);
     expect(prisma.paymentAttempt.create).toHaveBeenCalledTimes(2);
@@ -664,10 +634,7 @@ describe('PaymentsV2Service', () => {
       paymentLinkId: null,
     });
 
-    const result = await service.createIntent('m_1', {
-      amountMinor: 1500,
-      currency: 'EUR',
-    });
+    const result = await service.createIntent('m_1', eurIntent(15));
 
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.AUTHORIZED);
     expect(observability.registerAttemptPersistFailure).toHaveBeenCalledWith({
@@ -982,10 +949,7 @@ describe('PaymentsV2Service', () => {
       paymentLinkId: null,
     });
 
-    const result = await service.createIntent('m_1', {
-      amountMinor: 1500,
-      currency: 'EUR',
-    });
+    const result = await service.createIntent('m_1', eurIntent(15));
 
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.FAILED);
     expect(prisma.payment.update).toHaveBeenCalledWith(
@@ -1025,10 +989,7 @@ describe('PaymentsV2Service', () => {
       paymentLinkId: null,
     });
 
-    const result = await service.createIntent('m_1', {
-      amountMinor: 1500,
-      currency: 'EUR',
-    });
+    const result = await service.createIntent('m_1', eurIntent(15));
 
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.FAILED);
     expect(prisma.paymentAttempt.create).toHaveBeenCalled();
@@ -1074,10 +1035,7 @@ describe('PaymentsV2Service', () => {
       paymentLinkId: null,
     });
 
-    await service.createIntent('m_1', {
-      amountMinor: 500,
-      currency: 'EUR',
-    });
+    await service.createIntent('m_1', eurIntent(5));
 
     expect(observability.registerAttempt).toHaveBeenCalledTimes(1);
   });
@@ -1109,10 +1067,7 @@ describe('PaymentsV2Service', () => {
       paymentLinkId: null,
     });
 
-    await service.createIntent('m_1', {
-      amountMinor: 500,
-      currency: 'EUR',
-    });
+    await service.createIntent('m_1', eurIntent(5));
 
     expect(mockProvider.run).toHaveBeenCalledTimes(1);
   });
@@ -1155,7 +1110,7 @@ describe('PaymentsV2Service', () => {
       paymentLinkId: null,
     });
 
-    const result = await service.createIntent('m_1', { amountMinor: 500, currency: 'EUR' });
+    const result = await service.createIntent('m_1', eurIntent(5));
 
     expect(mockProvider.run).toHaveBeenCalledTimes(3);
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.AUTHORIZED);
@@ -1231,7 +1186,7 @@ describe('PaymentsV2Service', () => {
       paymentLinkId: null,
     });
 
-    const p = service.createIntent('m_1', { amountMinor: 100, currency: 'EUR' });
+    const p = service.createIntent('m_1', eurIntent(1));
     const result = await p;
 
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.AUTHORIZED);
@@ -1280,7 +1235,7 @@ describe('PaymentsV2Service', () => {
       paymentLinkId: null,
     });
 
-    const p = service.createIntent('m_1', { amountMinor: 100, currency: 'EUR' });
+    const p = service.createIntent('m_1', eurIntent(1));
     await jest.runAllTimersAsync();
     const result = await p;
 
@@ -1300,7 +1255,7 @@ describe('PaymentsV2Service', () => {
       ),
     );
     try {
-      await service.createIntent('m_1', { amountMinor: 100, currency: 'EUR' });
+      await service.createIntent('m_1', eurIntent(1));
       throw new Error('expected HttpException');
     } catch (e) {
       expect(e).toBeInstanceOf(HttpException);
@@ -1354,10 +1309,7 @@ describe('PaymentsV2Service', () => {
         paymentLinkId: null,
       });
 
-      const result = await service.createIntent('m_1', {
-        amountMinor: 1000,
-        currency: 'EUR',
-      });
+      const result = await service.createIntent('m_1', eurIntent(10));
 
       expect(mockProvider.run).toHaveBeenCalledTimes(2);
       expect(result.payment.status).toBe(PAYMENT_V2_STATUS.AUTHORIZED);
@@ -1571,7 +1523,7 @@ describe('PaymentsV2Service', () => {
     fee.hasActiveRateTableForAnyProvider.mockResolvedValue(false);
 
     await expect(
-      service.createIntent('m_1', { amountMinor: 1000, currency: 'USD' }),
+      service.createIntent('m_1', eurIntent(10, { currency: 'USD' })),
     ).rejects.toBeInstanceOf(ConflictException);
 
     expect(prisma.payment.create).not.toHaveBeenCalled();
@@ -1964,10 +1916,7 @@ describe('PaymentsV2Service', () => {
 
     service = buildService();
 
-    const result = await service.createIntent('m_1', {
-      amountMinor: 700,
-      currency: 'EUR',
-    });
+    const result = await service.createIntent('m_1', eurIntent(7));
 
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.FAILED);
     expect(redis.incrementPaymentsV2ProviderCircuitFailure).toHaveBeenCalled();
@@ -2022,7 +1971,7 @@ describe('PaymentsV2Service', () => {
     });
     service = buildService();
 
-    const result = await service.createIntent('m_1', { amountMinor: 800, currency: 'EUR' });
+    const result = await service.createIntent('m_1', eurIntent(8));
 
     expect(result.payment.status).toBe(PAYMENT_V2_STATUS.FAILED);
     expect(mockProvider.run).not.toHaveBeenCalled();
@@ -2098,7 +2047,7 @@ describe('PaymentsV2Service', () => {
     });
     service = buildService();
 
-    await service.createIntent('m_1', { amountMinor: 900, currency: 'EUR' });
+    await service.createIntent('m_1', eurIntent(9));
 
     expect(mockProvider.run).toHaveBeenCalled();
     expect(redis.releasePaymentsV2HalfOpenProbe).toHaveBeenCalledWith('mock');

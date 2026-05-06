@@ -3,20 +3,16 @@ import { Type } from 'class-transformer';
 import {
   IsEmail,
   IsIn,
-  IsInt,
   IsNotEmptyObject,
   IsNumber,
   IsObject,
   IsOptional,
-  IsPositive,
   IsString,
   Length,
   Matches,
-  Max,
   MaxLength,
   Min,
   ValidateBy,
-  ValidateIf,
   ValidateNested,
   ValidationOptions,
   type ValidationArguments,
@@ -173,85 +169,63 @@ export class CreatePaymentCustomerDto {
 }
 
 export class CreatePaymentIntentDto {
-  @ApiPropertyOptional({
+  @ApiProperty({
     description:
-      'Legacy: importe en unidades menores (céntimos). Mutuamente excluyente con `amount` decimal (contrato v2). Máximo por almacenamiento INTEGER.',
-    example: 1999,
-    maximum: PAYMENT_AMOUNT_MINOR_MAX,
-  })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount == null)
-  @IsInt()
-  @IsPositive()
-  @Max(PAYMENT_AMOUNT_MINOR_MAX)
-  amountMinor?: number;
-
-  @ApiPropertyOptional({
-    description:
-      'Contrato v2: importe decimal en unidad principal de la divisa. Mutuamente excluyente con `amountMinor`. Tras conversión a minor no puede superar el límite INTEGER.',
+      'Importe decimal en unidad principal de la divisa. Tras conversión a minor no puede superar el límite INTEGER.',
     example: 19.99,
   })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amountMinor == null)
   @IsNumber({ maxDecimalPlaces: 6 })
   @Min(0.000001)
   @IsDecimalAmountWithinPersistableMinor()
-  amount?: number;
+  amount!: number;
 
   @ApiProperty({
     default: 'EUR',
-    description:
-      'ISO 4217. Con `amountMinor`, unidades menores estándar; con `amount` (v2), el importe decimal usa la misma divisa.',
+    description: 'ISO 4217. El importe decimal usa la unidad principal de esta divisa.',
   })
   @IsString()
   @Length(3, 3)
   currency!: string;
 
-  @ApiPropertyOptional({
-    description:
-      'Contrato v2: canal de pago. Obligatorio si se envía `amount` decimal; ignorado con `amountMinor`.',
+  @ApiProperty({
+    description: 'Canal de pago.',
     enum: PAYMENT_CHANNELS,
   })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount != null)
   @IsIn(PAYMENT_CHANNELS)
-  channel?: PublicPaymentChannel;
+  channel!: PublicPaymentChannel;
 
-  @ApiPropertyOptional({
-    description: 'Contrato v2: idioma (p. ej. EN). Obligatorio con `amount`.',
+  @ApiProperty({
+    description: 'Idioma (p. ej. EN).',
     example: 'EN',
   })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount != null)
   @IsString()
   @Length(2, 8)
-  language?: string;
+  language!: string;
 
-  @ApiPropertyOptional({ description: 'Contrato v2: pedido del comercio. Obligatorio con `amount`.' })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount != null)
+  @ApiProperty({ description: 'Pedido del comercio.' })
   @IsString()
   @MaxLength(128)
-  orderId?: string;
+  orderId!: string;
 
-  @ApiPropertyOptional({ description: 'Contrato v2: descripción. Obligatorio con `amount`.' })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount != null)
+  @ApiProperty({ description: 'Descripción.' })
   @IsString()
   @MaxLength(512)
-  description?: string;
+  description!: string;
 
-  @ApiPropertyOptional({ description: 'Contrato v2: webhook del comercio. Obligatorio con `amount`.' })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount != null)
+  @ApiProperty({ description: 'Webhook del comercio.' })
   @IsMerchantPaymentCallbackUrl()
   @MaxLength(2048)
-  notificationUrl?: string;
+  notificationUrl!: string;
 
-  @ApiPropertyOptional({ description: 'Contrato v2: URL de éxito. Obligatorio con `amount`.' })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount != null)
+  @ApiProperty({ description: 'URL de éxito.' })
   @IsMerchantPaymentCallbackUrl()
   @MaxLength(2048)
-  returnUrl?: string;
+  returnUrl!: string;
 
-  @ApiPropertyOptional({ description: 'Contrato v2: URL de cancelación. Obligatorio con `amount`.' })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount != null)
+  @ApiProperty({ description: 'URL de cancelación.' })
   @IsMerchantPaymentCallbackUrl()
   @MaxLength(2048)
-  cancelUrl?: string;
+  cancelUrl!: string;
 
   @ApiPropertyOptional({
     description:
@@ -260,16 +234,6 @@ export class CreatePaymentIntentDto {
   @IsOptional()
   @IsString()
   paymentLinkId?: string;
-
-  @ApiPropertyOptional({
-    description: 'ISO 3166-1 alpha-2 del país del pagador (opcional, reporting). Ignorado en v2 si va `customer.country`.',
-    example: 'ES',
-  })
-  @IsOptional()
-  @IsString()
-  @Length(2, 2)
-  @Matches(/^[A-Za-z]{2}$/)
-  payerCountry?: string;
 
   @ApiPropertyOptional({
     description:
@@ -281,14 +245,13 @@ export class CreatePaymentIntentDto {
   @MaxLength(64)
   paymentMethodCode?: string;
 
-  @ApiPropertyOptional({
+  @ApiProperty({
     type: CreatePaymentCustomerDto,
-    description: 'Contrato v2: pagador. Obligatorio si se envía `amount` decimal.',
+    description: 'Datos del pagador.',
   })
-  @ValidateIf((o: CreatePaymentIntentDto) => o.amount != null)
   @IsNotEmptyObject()
   @ValidateNested()
   @Type(() => CreatePaymentCustomerDto)
   @IsObject()
-  customer?: CreatePaymentCustomerDto;
+  customer!: CreatePaymentCustomerDto;
 }

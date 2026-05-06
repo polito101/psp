@@ -504,7 +504,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
   private assertPersistableAmountMinor(amountMinor: number): void {
     if (!isPersistablePrismaIntAmountMinor(amountMinor)) {
       throw new BadRequestException(
-        'amount or amountMinor exceeds maximum allowed for payment storage (INT32 minor units)',
+        'amount exceeds maximum allowed for payment storage after conversion to minor units (INT32)',
       );
     }
   }
@@ -515,26 +515,8 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     payerCountryUpper: string | null;
     notificationUrl: string | null;
   } {
-    const hasMinor = dto.amountMinor != null;
-    const hasMajor = dto.amount != null;
-    if (hasMinor === hasMajor) {
-      throw new BadRequestException('Provide exactly one of amountMinor or amount');
-    }
     const currencyUpper = dto.currency.toUpperCase();
-    if (hasMinor) {
-      const amountMinor = dto.amountMinor!;
-      this.assertPersistableAmountMinor(amountMinor);
-      return {
-        amountMinor,
-        currencyUpper,
-        payerCountryUpper: dto.payerCountry ? dto.payerCountry.toUpperCase() : null,
-        notificationUrl: null,
-      };
-    }
-    if (!dto.customer) {
-      throw new BadRequestException('customer is required when amount is provided');
-    }
-    const amountMinor = decimalAmountToMinorUnits(dto.amount!, dto.currency);
+    const amountMinor = decimalAmountToMinorUnits(dto.amount, dto.currency);
     this.assertPersistableAmountMinor(amountMinor);
     return {
       amountMinor,
@@ -3671,7 +3653,7 @@ export class PaymentsV2Service implements OnApplicationBootstrap {
     }
     // Filas anteriores a `create_payload_hash`: solo se validaron amount/divisa/link en su momento.
     const same =
-      existing.amountMinor === incoming.amountMinor &&
+      existing.amountMinor === decimalAmountToMinorUnits(incoming.amount, incoming.currency) &&
       existing.currency === incoming.currency.toUpperCase() &&
       existing.paymentLinkId === (incoming.paymentLinkId ?? null);
     if (!same) {
