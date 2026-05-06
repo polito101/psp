@@ -1,6 +1,6 @@
 import Link from "next/link"
 import Image from "next/image"
-import { Instagram, Twitter, Music } from "lucide-react"
+import { Instagram, Twitter, Music, Youtube, Linkedin } from "lucide-react"
 
 const footerLinks = {
   solutions: [
@@ -37,10 +37,22 @@ const socialLinks = [
     color: "hover:text-white",
   },
   {
+    icon: Youtube,
+    href: "https://www.youtube.com/@FinaraOnline",
+    label: "YouTube",
+    color: "hover:text-[#FF0000]",
+  },
+  {
     icon: Music,
     href: "https://www.tiktok.com/@finara.online",
     label: "TikTok",
     color: "hover:text-[#25F4EE]",
+  },
+  {
+    icon: Linkedin,
+    href: "https://www.linkedin.com/company/finaraonline/about/",
+    label: "LinkedIn",
+    color: "hover:text-[#0A66C2]",
   },
 ]
 
