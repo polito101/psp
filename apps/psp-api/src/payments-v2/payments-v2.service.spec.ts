@@ -1,3 +1,8 @@
+jest.mock('node:dns/promises', () => ({
+  resolve4: jest.fn().mockResolvedValue(['1.1.1.1']),
+  resolve6: jest.fn().mockRejectedValue(Object.assign(new Error('none'), { code: 'ENODATA' })),
+}));
+
 import {
   BadRequestException,
   ConflictException,
@@ -11,6 +16,7 @@ import { hashCreatePaymentIntentPayload } from './create-payment-intent-payload-
 import { PaymentsV2Service } from './payments-v2.service';
 import { PAYMENT_V2_STATUS, unsupportedPersistedProviderLifecycleMessage } from './domain/payment-status';
 import { ProviderResult } from './providers/payment-provider.interface';
+import { Prisma } from '../generated/prisma/client';
 
 describe('PaymentsV2Service', () => {
   const config = {
@@ -265,6 +271,27 @@ describe('PaymentsV2Service', () => {
   it('rechaza Idempotency-Key con caracteres fuera del charset permitido', async () => {
     await expect(
       service.createIntent('m_1', { amountMinor: 1000, currency: 'EUR' }, 'key with space'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rechaza amountMinor por encima del límite INTEGER persistible', async () => {
+    await expect(
+      service.createIntent('m_1', { amountMinor: 2_147_483_648, currency: 'EUR' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rechaza amount decimal que al convertir a minor supera el límite INTEGER (EUR)', async () => {
+    await expect(
+      service.createIntent('m_1', {
+        amount: 21_474_836.48,
+        currency: 'EUR',
+        customer: {
+          firstName: 'A',
+          lastName: 'B',
+          email: 'a@b.co',
+          country: 'ES',
+        },
+      }),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
@@ -2168,12 +2195,17 @@ describe('PaymentsV2Service', () => {
     it('crea entrega de reenvío y hace POST al notificationUrl', async () => {
       global.fetch = jest.fn().mockResolvedValue({
         status: 202,
-        text: async () => '{"ok":true}',
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"ok":true}'));
+            controller.close();
+          },
+        }),
       });
       prisma.payment.findUnique.mockResolvedValue({
         id: 'pay_1',
         merchantId: 'm_1',
-        notificationUrl: 'https://hook.example/notify',
+        notificationUrl: 'https://example.com/notify',
       });
       prisma.paymentNotificationDelivery.findFirst.mockResolvedValue({
         id: 'del_1',
@@ -2195,8 +2227,53 @@ describe('PaymentsV2Service', () => {
       const out = await service.resendPaymentNotificationDelivery('pay_1', 'del_1', {});
       expect(out.id).toBe('del_2');
       expect(global.fetch).toHaveBeenCalledWith(
-        'https://hook.example/notify',
-        expect.objectContaining({ method: 'POST' }),
+        'https://example.com/notify',
+        expect.objectContaining({ method: 'POST', redirect: 'manual' }),
+      );
+    });
+
+    it('no persiste responseBodyMasked cuando hay alcance merchant (defensa en profundidad)', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        status: 200,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"secret":"nope"}'));
+            controller.close();
+          },
+        }),
+      });
+      prisma.payment.findUnique.mockResolvedValue({
+        id: 'pay_1',
+        merchantId: 'm_1',
+        notificationUrl: 'https://example.com/notify',
+      });
+      prisma.paymentNotificationDelivery.findFirst.mockResolvedValue({
+        id: 'del_1',
+        paymentId: 'pay_1',
+        statusSnapshot: 'PAID',
+        requestBodyMasked: { amount: 1 },
+        attemptNo: 1,
+      } as never);
+      prisma.paymentNotificationDelivery.aggregate.mockResolvedValue({ _max: { attemptNo: 1 } });
+      prisma.paymentNotificationDelivery.create.mockResolvedValue({
+        id: 'del_2',
+        attemptNo: 2,
+        httpStatus: 200,
+        createdAt: new Date(),
+        isResend: true,
+        originalDeliveryId: 'del_1',
+      });
+
+      await service.resendPaymentNotificationDelivery('pay_1', 'del_1', {
+        backofficeMerchantScopeId: 'm_1',
+      });
+
+      expect(prisma.paymentNotificationDelivery.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            responseBodyMasked: Prisma.JsonNull,
+          }),
+        }),
       );
     });
   });

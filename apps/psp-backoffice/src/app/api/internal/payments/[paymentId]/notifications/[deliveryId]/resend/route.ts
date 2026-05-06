@@ -24,6 +24,10 @@ export async function POST(
     return auth.response;
   }
 
+  if (auth.claims.role === "merchant") {
+    return NextResponse.json({ message: "Not found" }, { status: 404 });
+  }
+
   const resolved = await params;
   const parsed = paramsSchema.safeParse(resolved);
   if (!parsed.success) {

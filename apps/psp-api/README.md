@@ -101,7 +101,12 @@ Sigue soportado el cuerpo **legacy** `amountMinor` + `currency` (3 letras) para 
 
 En `mock`, el intent tipicamente queda `authorized` para importes comunes (p. ej. `19.99` EUR → 1999 minor; `20.02` EUR dispara `requires_action`).
 
-**Notificaciones al comercio:** `notificationUrl` se persiste en `Payment.notification_url` para el flujo de avisos por cambio de estado (entregas auditadas en `PaymentNotificationDelivery` en ops). El detalle ops y el backoffice pueden mostrar envíos enmascarados y acciones de reintento según la versión desplegada.
+**Notificaciones al comercio (importante separar rutas):**
+- **`notificationUrl` del create v2:** se persiste en `Payment.notification_url` como URL declarativa (validación al create alineada con las mismas reglas estructurales que el **reenvío** salvo la parte DNS, que solo aplica justo antes del `fetch`). Sandbox/no prod: `http` solo en loopback salvo **`PSP_ALLOW_HTTP_MERCHANT_CALLBACKS=true`**. Hoy sirve sobre todo para extensiones del motor y para el **`POST .../ops/payments/:paymentId/notifications/:deliveryId/resend`** (solo **admin** en ops/backoffice), que hace un `POST` **server-side** con carga enmascarada: HTTPS público en producción; sin credenciales en URL; comprobación de rangos no públicos en IPs literales **y** resolución DNS previa al outbound; lectura del cuerpo de respuesta acotada antes de persistir metadatos; **`fetch`** sin seguir redirects automáticos (`redirect: 'manual'`).
+- **Webhooks de negocio (post-capture / refund):** siguen siendo la cola clásica `webhook_deliveries` contra `merchant.webhookUrl` gestionada por `WebhooksService` (véase § **Webhooks** más abajo), **no** un `POST` automático a `notificationUrl` tras cada cambio de estado hasta que exista un pipeline explícito.
+- **`PaymentNotificationDelivery`:** audita intentos relacionados con la notificación (p. ej. reenvíos manuales) cuando proceda; puede estar vacío en pagos solo con webhooks hasta que se registren dichas operaciones.
+
+El detalle ops y el backoffice muestran el historial cuando haya datos (máscaras, sin ciphertext bruto por BFF donde aplique).
 
 ### 3) Capturar
 

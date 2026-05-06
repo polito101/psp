@@ -13,6 +13,9 @@ import {
  *
  * Requisitos en el servidor: `PAYMENTS_PROVIDER_ORDER` con `mock` primero, `PAYMENTS_V2_ENABLED_MERCHANTS`,
  * tarifas activas para **EUR** (seed por defecto al crear merchant vía `POST /api/v1/merchants` — usar `currency: EUR` en el body v2).
+ *
+ * Por defecto no hay espera entre `POST /api/v2/payments` y la siguiente petición (`SMOKE_BACKOFFICE_DEMO_CREATE_GAP_MS` vacío).
+ * Si el deploy aplica `@Throttle` de creación v2 muy estricto o recibes `429`, sube ese valor (p. ej. `2100`).
  */
 
 function parseAmountEur(raw: string | undefined, fallback: number, name: string): number {
@@ -76,10 +79,10 @@ function parseGapMs(): number {
   return parsed;
 }
 
-/** Tras cada create: el controller v2 aplica `@Throttle({ limit: 30, ttl: 60_000 })`. */
+/** Opcional tras cada create si hace falta espaciar frente al throttle `@Throttle({ limit: 30, ttl: 60_000 })` del controller v2. */
 function parseCreateGapMs(): number {
   const raw = process.env.SMOKE_BACKOFFICE_DEMO_CREATE_GAP_MS;
-  if (raw === undefined || raw.trim() === '') return 2100;
+  if (raw === undefined || raw.trim() === '') return 0;
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed < 0) {
     throw new Error('SMOKE_BACKOFFICE_DEMO_CREATE_GAP_MS must be a non-negative integer');

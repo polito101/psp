@@ -225,6 +225,39 @@ describe('InternalSecretGuard', () => {
     ).toBe(true);
   });
 
+  it('throws Forbidden when merchant scope attempts payment notification resend', () => {
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+    expect(() =>
+      guard.canActivate(
+        makeContext(
+          {
+            'x-internal-secret': VALID_SECRET,
+            'x-backoffice-role': 'merchant',
+            'x-backoffice-merchant-id': 'mrc_1',
+          },
+          '/api/v2/payments/ops/payments/pay_1/notifications/del_1/resend',
+          {},
+        ),
+      ),
+    ).toThrow(ForbiddenException);
+  });
+
+  it('allows admin role for payment notification resend path', () => {
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+    expect(
+      guard.canActivate(
+        makeContext(
+          {
+            'x-internal-secret': VALID_SECRET,
+            'x-backoffice-role': 'admin',
+          },
+          '/api/v2/payments/ops/payments/pay_1/notifications/del_1/resend',
+          {},
+        ),
+      ),
+    ).toBe(true);
+  });
+
   it('throws Forbidden when merchant onboarding ops request misses X-Backoffice-Role', () => {
     const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
     expect(() =>
@@ -295,6 +328,39 @@ describe('InternalSecretGuard', () => {
         ),
       ),
     ).toThrow(ForbiddenException);
+  });
+
+  it('throws Forbidden when merchant role hits payments ops configuration', () => {
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+    expect(() =>
+      guard.canActivate(
+        makeContext(
+          {
+            'x-internal-secret': VALID_SECRET,
+            'x-backoffice-role': 'merchant',
+            'x-backoffice-merchant-id': 'mrc_1',
+          },
+          '/api/v2/payments/ops/configuration/providers',
+          {},
+        ),
+      ),
+    ).toThrow(ForbiddenException);
+  });
+
+  it('allows admin role for payments ops configuration endpoints', () => {
+    const guard = new InternalSecretGuard(makeConfig(VALID_SECRET) as never);
+    expect(
+      guard.canActivate(
+        makeContext(
+          {
+            'x-internal-secret': VALID_SECRET,
+            'x-backoffice-role': 'admin',
+          },
+          '/api/v2/payments/ops/configuration/routes',
+          {},
+        ),
+      ),
+    ).toBe(true);
   });
 
   it('throws Forbidden when non-ops request sends merchant backoffice role', () => {
