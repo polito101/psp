@@ -1,11 +1,10 @@
 import Link from "next/link"
 import Image from "next/image"
-import { ArrowRight, ChevronDown, Instagram, Twitter, Music } from "lucide-react"
+import { ArrowRight, ChevronDown, Instagram, Twitter, Music, Youtube, Linkedin } from "lucide-react"
 
 import { getMerchantBackofficeLoginUrl } from "@/lib/merchant-portal-url"
 
 const merchantPortalLoginUrl = getMerchantBackofficeLoginUrl()
-
 
 const stats = [
   { value: "Global", label: "Coverage" },
@@ -28,10 +27,22 @@ const socialLinks = [
     color: "hover:text-white",
   },
   {
+    icon: Youtube,
+    href: "https://www.youtube.com/@FinaraOnline",
+    label: "YouTube",
+    color: "hover:text-[#FF0000]",
+  },
+  {
     icon: Music,
     href: "https://www.tiktok.com/@finara.online",
     label: "TikTok",
     color: "hover:text-[#25F4EE]",
+  },
+  {
+    icon: Linkedin,
+    href: "https://www.linkedin.com/company/finaraonline/about/",
+    label: "LinkedIn",
+    color: "hover:text-[#0A66C2]",
   },
 ]
 
@@ -164,8 +175,8 @@ export function HeroSection() {
           <div className="relative flex items-center justify-center">
             <div className="absolute inset-0 rounded-3xl bg-gradient-to-br from-[#4f6ef7]/20 via-[#c936e8]/10 to-[#00d4c8]/10 blur-2xl" />
             <Image
-              src="https://hebbkx1anhila5yf.public.blob.vercel-storage.com/ChatGPT%20Image%2029%20abr%202026%2C%2014_46_24-DNE6LFRAf8cvWFRHh3oqD3YmZ9JNId.png"
-              alt="Finara payment solutions — secure cards and global infrastructure"
+              src="/hero-image.png"
+              alt="Finara payment infrastructure — mobile app showing dashboard with transactions and growth chart"
               width={560}
               height={560}
               className="relative z-10 w-full max-w-sm lg:max-w-full rounded-2xl"

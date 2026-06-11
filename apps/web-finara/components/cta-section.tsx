@@ -1,6 +1,6 @@
 import { ArrowRight } from "lucide-react"
-import Image from "next/image"
 import Link from "next/link"
+import Image from "next/image"
 
 import { getMerchantBackofficeLoginUrl } from "@/lib/merchant-portal-url"
 
